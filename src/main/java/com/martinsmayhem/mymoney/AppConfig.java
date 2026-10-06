@@ -16,10 +16,12 @@ import java.util.List;
 
 /**
  * Application settings, stored in an UNENCRYPTED SQLite file in the user's
- * settings folder. It holds the list of recently used databases.
- * Never store financial data here.
+ * settings folder. It holds the list of recently used databases and which
+ * one (if any) is the default. Never store financial data here.
  */
 public class AppConfig implements AutoCloseable {
+
+    private static final String DEFAULT_DB_KEY = "default_database";
 
     private final Connection conn;
 
@@ -32,6 +34,12 @@ public class AppConfig implements AutoCloseable {
                 CREATE TABLE IF NOT EXISTS recent_database (
                     path        TEXT PRIMARY KEY,
                     last_opened TEXT NOT NULL
+                )
+                """);
+            st.execute("""
+                CREATE TABLE IF NOT EXISTS setting (
+                    key   TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
                 )
                 """);
         }
@@ -52,6 +60,8 @@ public class AppConfig implements AutoCloseable {
                 : Paths.get(System.getProperty("user.home"), ".config");
         return base.resolve("mymoney");
     }
+
+    // ----- Recent databases ---------------------------------------------
 
     /** Full paths of recently used databases, most recent first. */
     public List<String> getRecentDatabases() throws SQLException {
@@ -79,11 +89,55 @@ public class AppConfig implements AutoCloseable {
         }
     }
 
-    /** Removes an entry from the list. Does NOT delete the file itself. */
+    /**
+     * Removes an entry from the list (and clears it as the default if it was).
+     * Does NOT delete the file itself.
+     */
     public void removeRecent(String path) throws SQLException {
         try (PreparedStatement ps = conn.prepareStatement(
                 "DELETE FROM recent_database WHERE path = ?")) {
             ps.setString(1, path);
+            ps.executeUpdate();
+        }
+        try (PreparedStatement ps = conn.prepareStatement(
+                "DELETE FROM setting WHERE key = ? AND value = ?")) {
+            ps.setString(1, DEFAULT_DB_KEY);
+            ps.setString(2, path);
+            ps.executeUpdate();
+        }
+    }
+
+    // ----- Default database ---------------------------------------------
+
+    /** Full path of the default database, or null if none is set. */
+    public String getDefaultDatabase() throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT value FROM setting WHERE key = ?")) {
+            ps.setString(1, DEFAULT_DB_KEY);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getString(1) : null;
+            }
+        }
+    }
+
+    /** Marks a database as the one to open automatically at startup. */
+    public void setDefaultDatabase(Path file) throws SQLException {
+        String sql = """
+            INSERT INTO setting (key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """;
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, DEFAULT_DB_KEY);
+            ps.setString(2, file.toAbsolutePath().toString());
+            ps.executeUpdate();
+        }
+    }
+
+    /** No default: the database selector will open at startup. */
+    public void clearDefaultDatabase() throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "DELETE FROM setting WHERE key = ?")) {
+            ps.setString(1, DEFAULT_DB_KEY);
             ps.executeUpdate();
         }
     }
