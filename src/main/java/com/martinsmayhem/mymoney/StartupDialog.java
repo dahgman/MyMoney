@@ -4,15 +4,16 @@
  */
 package com.martinsmayhem.mymoney;
 
+import java.awt.Component;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.sql.SQLException;
-import java.util.Arrays;
+import javax.swing.DefaultListCellRenderer;
 import javax.swing.DefaultListModel;
 import javax.swing.JFileChooser;
+import javax.swing.JList;
 import javax.swing.JOptionPane;
-import javax.swing.JPasswordField;
 import javax.swing.filechooser.FileNameExtensionFilter;
 
 /**
@@ -23,16 +24,27 @@ public class StartupDialog extends javax.swing.JDialog {
     private final AppConfig config;
     private final DefaultListModel<String> recentModel = new DefaultListModel<>();
     private Database database;
-
+    private String defaultPath; 
 
     /**
      * Creates new form StartupDialog
      */
-    public StartupDialog(java.awt.Frame parent, boolean modal, AppConfig config) {
+        public StartupDialog(java.awt.Frame parent, boolean modal, AppConfig config) {
         super(parent, modal);
         this.config = config;
         initComponents();
         recentList.setModel(recentModel);
+        recentList.setCellRenderer(new DefaultListCellRenderer() {
+            @Override
+            public Component getListCellRendererComponent(JList<?> list, Object value,
+                    int index, boolean isSelected, boolean cellHasFocus) {
+                super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
+                if (value != null && value.equals(defaultPath)) {
+                    setText(value + "   (default)");
+                }
+                return this;
+            }
+        });
         loadRecent();
         getRootPane().setDefaultButton(openButton);
     }
@@ -46,7 +58,7 @@ public class StartupDialog extends javax.swing.JDialog {
     // <editor-fold defaultstate="collapsed" desc="Generated Code">//GEN-BEGIN:initComponents
     private void initComponents() {
 
-        jLabel1 = new javax.swing.JLabel();
+        labelRecentDB = new javax.swing.JLabel();
         jScrollPane1 = new javax.swing.JScrollPane();
         recentList = new javax.swing.JList<>();
         openButton = new javax.swing.JButton();
@@ -54,11 +66,13 @@ public class StartupDialog extends javax.swing.JDialog {
         browseButton = new javax.swing.JButton();
         removeButton = new javax.swing.JButton();
         exitButton = new javax.swing.JButton();
+        defaultButton = new javax.swing.JButton();
+        clearDefaultButton = new javax.swing.JButton();
 
         setDefaultCloseOperation(javax.swing.WindowConstants.DISPOSE_ON_CLOSE);
         setTitle("Open Database");
 
-        jLabel1.setText("Recent Databases");
+        labelRecentDB.setText("Recent Databases");
 
         recentList.setModel(new javax.swing.AbstractListModel<String>() {
             String[] strings = { "Item 1", "Item 2", "Item 3", "Item 4", "Item 5" };
@@ -73,24 +87,46 @@ public class StartupDialog extends javax.swing.JDialog {
         jScrollPane1.setViewportView(recentList);
 
         openButton.setText("Open");
-        openButton.setPreferredSize(new java.awt.Dimension(90, 24));
+        openButton.setMaximumSize(new java.awt.Dimension(125, 24));
+        openButton.setMinimumSize(new java.awt.Dimension(125, 24));
+        openButton.setPreferredSize(new java.awt.Dimension(125, 24));
         openButton.addActionListener(this::openButtonActionPerformed);
 
         newButton.setText("New");
-        newButton.setPreferredSize(new java.awt.Dimension(90, 24));
+        newButton.setMaximumSize(new java.awt.Dimension(125, 24));
+        newButton.setMinimumSize(new java.awt.Dimension(125, 24));
+        newButton.setPreferredSize(new java.awt.Dimension(125, 24));
         newButton.addActionListener(this::newButtonActionPerformed);
 
         browseButton.setText("Browse");
-        browseButton.setPreferredSize(new java.awt.Dimension(90, 24));
+        browseButton.setMaximumSize(new java.awt.Dimension(125, 24));
+        browseButton.setMinimumSize(new java.awt.Dimension(125, 24));
+        browseButton.setPreferredSize(new java.awt.Dimension(125, 24));
         browseButton.addActionListener(this::browseButtonActionPerformed);
 
         removeButton.setText("Remove");
-        removeButton.setPreferredSize(new java.awt.Dimension(90, 24));
+        removeButton.setMaximumSize(new java.awt.Dimension(125, 24));
+        removeButton.setMinimumSize(new java.awt.Dimension(125, 24));
+        removeButton.setPreferredSize(new java.awt.Dimension(125, 24));
         removeButton.addActionListener(this::removeButtonActionPerformed);
 
         exitButton.setText("Exit");
-        exitButton.setPreferredSize(new java.awt.Dimension(90, 24));
+        exitButton.setMaximumSize(new java.awt.Dimension(125, 24));
+        exitButton.setMinimumSize(new java.awt.Dimension(125, 24));
+        exitButton.setPreferredSize(new java.awt.Dimension(125, 24));
         exitButton.addActionListener(this::exitButtonActionPerformed);
+
+        defaultButton.setText("Set as Default");
+        defaultButton.setMaximumSize(new java.awt.Dimension(125, 24));
+        defaultButton.setMinimumSize(new java.awt.Dimension(125, 24));
+        defaultButton.setPreferredSize(new java.awt.Dimension(125, 24));
+        defaultButton.addActionListener(this::defaultButtonActionPerformed);
+
+        clearDefaultButton.setText("Clear Default");
+        clearDefaultButton.setMaximumSize(new java.awt.Dimension(125, 24));
+        clearDefaultButton.setMinimumSize(new java.awt.Dimension(125, 24));
+        clearDefaultButton.setPreferredSize(new java.awt.Dimension(125, 24));
+        clearDefaultButton.addActionListener(this::clearDefaultButtonActionPerformed);
 
         javax.swing.GroupLayout layout = new javax.swing.GroupLayout(getContentPane());
         getContentPane().setLayout(layout);
@@ -100,26 +136,29 @@ public class StartupDialog extends javax.swing.JDialog {
                 .addContainerGap()
                 .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
                     .addGroup(layout.createSequentialGroup()
-                        .addComponent(jLabel1)
+                        .addComponent(labelRecentDB)
                         .addGap(0, 0, Short.MAX_VALUE))
                     .addGroup(javax.swing.GroupLayout.Alignment.TRAILING, layout.createSequentialGroup()
-                        .addComponent(jScrollPane1, javax.swing.GroupLayout.PREFERRED_SIZE, 297, javax.swing.GroupLayout.PREFERRED_SIZE)
-                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED, javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE)
+                        .addGap(0, 0, Short.MAX_VALUE)
+                        .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+                            .addComponent(exitButton, javax.swing.GroupLayout.Alignment.TRAILING, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                            .addComponent(clearDefaultButton, javax.swing.GroupLayout.Alignment.TRAILING, javax.swing.GroupLayout.PREFERRED_SIZE, 123, javax.swing.GroupLayout.PREFERRED_SIZE)))
+                    .addGroup(layout.createSequentialGroup()
+                        .addComponent(jScrollPane1, javax.swing.GroupLayout.DEFAULT_SIZE, 250, Short.MAX_VALUE)
+                        .addGap(18, 18, 18)
                         .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
                             .addComponent(openButton, javax.swing.GroupLayout.Alignment.TRAILING, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                            .addComponent(defaultButton, javax.swing.GroupLayout.Alignment.TRAILING, javax.swing.GroupLayout.PREFERRED_SIZE, 123, javax.swing.GroupLayout.PREFERRED_SIZE)
                             .addComponent(newButton, javax.swing.GroupLayout.Alignment.TRAILING, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
                             .addComponent(browseButton, javax.swing.GroupLayout.Alignment.TRAILING, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                            .addComponent(removeButton, javax.swing.GroupLayout.Alignment.TRAILING, javax.swing.GroupLayout.PREFERRED_SIZE, 88, javax.swing.GroupLayout.PREFERRED_SIZE)))
-                    .addGroup(javax.swing.GroupLayout.Alignment.TRAILING, layout.createSequentialGroup()
-                        .addGap(0, 0, Short.MAX_VALUE)
-                        .addComponent(exitButton, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)))
+                            .addComponent(removeButton, javax.swing.GroupLayout.Alignment.TRAILING, javax.swing.GroupLayout.PREFERRED_SIZE, 125, javax.swing.GroupLayout.PREFERRED_SIZE))))
                 .addContainerGap())
         );
         layout.setVerticalGroup(
             layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
             .addGroup(layout.createSequentialGroup()
                 .addContainerGap()
-                .addComponent(jLabel1)
+                .addComponent(labelRecentDB)
                 .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                 .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
                     .addGroup(layout.createSequentialGroup()
@@ -129,11 +168,15 @@ public class StartupDialog extends javax.swing.JDialog {
                         .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                         .addComponent(browseButton, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
                         .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                        .addComponent(removeButton, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
+                        .addComponent(removeButton, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                        .addComponent(defaultButton, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
                     .addComponent(jScrollPane1, javax.swing.GroupLayout.PREFERRED_SIZE, 144, javax.swing.GroupLayout.PREFERRED_SIZE))
-                .addGap(7, 7, 7)
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                .addComponent(clearDefaultButton, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                .addGap(19, 19, 19)
                 .addComponent(exitButton, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                .addContainerGap(javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE))
+                .addContainerGap(87, Short.MAX_VALUE))
         );
 
         pack();
@@ -185,18 +228,49 @@ public class StartupDialog extends javax.swing.JDialog {
         }        
     }//GEN-LAST:event_recentListMouseClicked
 
+    private void defaultButtonActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_defaultButtonActionPerformed
+        String sel = recentList.getSelectedValue();
+        if (sel == null) {
+            JOptionPane.showMessageDialog(this, "Select a database from the list first.");
+            return;
+        }
+        try {
+            config.setDefaultDatabase(Paths.get(sel));
+        } catch (SQLException e) {
+            JOptionPane.showMessageDialog(this, "Could not set default: " + e.getMessage());
+        }
+        loadRecent();
+    }//GEN-LAST:event_defaultButtonActionPerformed
+
+    private void clearDefaultButtonActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_clearDefaultButtonActionPerformed
+        try {
+            config.clearDefaultDatabase();
+        } catch (SQLException e) {
+            JOptionPane.showMessageDialog(this, "Could not clear default: " + e.getMessage());
+        }
+        loadRecent();
+    }//GEN-LAST:event_clearDefaultButtonActionPerformed
+
     public Database getDatabase() {
         return database;
     }
 
     private void loadRecent() {
+        String previous = recentList.getSelectedValue();
         recentModel.clear();
         try {
+            defaultPath = config.getDefaultDatabase();
             for (String p : config.getRecentDatabases()) recentModel.addElement(p);
         } catch (SQLException e) {
             JOptionPane.showMessageDialog(this, "Could not read recent list: " + e.getMessage());
         }
-        if (!recentModel.isEmpty()) recentList.setSelectedIndex(0);
+        if (previous != null && recentModel.contains(previous)) {
+            recentList.setSelectedValue(previous, true);
+        } else if (defaultPath != null && recentModel.contains(defaultPath)) {
+            recentList.setSelectedValue(defaultPath, true);
+        } else if (!recentModel.isEmpty()) {
+            recentList.setSelectedIndex(0);
+        }
     }
 
     private void openFile(Path file) {
@@ -210,31 +284,20 @@ public class StartupDialog extends javax.swing.JDialog {
             }
             return;
         }
-        JPasswordField pf = new JPasswordField(20);
-        int r = JOptionPane.showConfirmDialog(this, pf, "Password for " + file.getFileName(),
-                JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
-        if (r != JOptionPane.OK_OPTION) return;
-        char[] pw = pf.getPassword();
-        try {
-            database = Database.open(file, new String(pw));
-        } catch (SQLException e) {
-            JOptionPane.showMessageDialog(this,
-                    "Could not open the database. The password may be wrong,\n"
-                    + "or the file may not be a MyMoney database.",
-                    "Open Failed", JOptionPane.ERROR_MESSAGE);
-            return;
-        } finally {
-            Arrays.fill(pw, '\0');
-        }
+        Database opened = PasswordPrompt.open(this, file);
+        if (opened == null) return;          // user cancelled
+        database = opened;
         try { config.addRecent(file); } catch (SQLException ignored) { }
         dispose();
     }    
     
     // Variables declaration - do not modify//GEN-BEGIN:variables
     private javax.swing.JButton browseButton;
+    private javax.swing.JButton clearDefaultButton;
+    private javax.swing.JButton defaultButton;
     private javax.swing.JButton exitButton;
-    private javax.swing.JLabel jLabel1;
     private javax.swing.JScrollPane jScrollPane1;
+    private javax.swing.JLabel labelRecentDB;
     private javax.swing.JButton newButton;
     private javax.swing.JButton openButton;
     private javax.swing.JList<String> recentList;

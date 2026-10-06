@@ -203,6 +203,7 @@ public class NewDatabaseDialog extends javax.swing.JDialog {
         }
         try {
             config.addRecent(file);
+            config.setDefaultDatabase(file);
         } catch (SQLException ignored) {
             // not critical; the database itself was created
         }
