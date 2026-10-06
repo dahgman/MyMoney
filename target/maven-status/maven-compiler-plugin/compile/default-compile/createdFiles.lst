@@ -1,9 +1,11 @@
 com/martinsmayhem/mymoney/Database.class
 com/martinsmayhem/mymoney/StartupDialog.class
 com/martinsmayhem/mymoney/MainFrame$1.class
+com/martinsmayhem/mymoney/PasswordPrompt.class
 com/martinsmayhem/mymoney/AppConfig.class
 com/martinsmayhem/mymoney/StartupDialog$1.class
 com/martinsmayhem/mymoney/MainFrame.class
 com/martinsmayhem/mymoney/NewDatabaseDialog.class
 com/martinsmayhem/mymoney/MyMoney.class
+com/martinsmayhem/mymoney/PasswordPrompt$1.class
 com/martinsmayhem/mymoney/StartupDialog$2.class

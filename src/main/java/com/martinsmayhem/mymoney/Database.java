@@ -20,7 +20,7 @@ import java.time.Instant;
 public class Database implements AutoCloseable {
 
     /** File extension for MyMoney data files (without the dot). */
-    public static final String EXTENSION = "mymoney";
+    public static final String EXTENSION = "MyMoney";
 
     /** Increase this whenever the schema changes, and add an upgrade step in open(). */
     public static final int SCHEMA_VERSION = 1;

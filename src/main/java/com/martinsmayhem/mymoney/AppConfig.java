@@ -45,7 +45,7 @@ public class AppConfig implements AutoCloseable {
         }
     }
 
-    /** %APPDATA%\MyMoney on Windows; ~/.config/mymoney on Linux. */
+    /** %APPDATA%\MyMoney on Windows; ~/.config/MyMoney on Linux. */
     public static Path configDirectory() {
         String os = System.getProperty("os.name").toLowerCase();
         if (os.contains("win")) {
@@ -58,7 +58,7 @@ public class AppConfig implements AutoCloseable {
         Path base = (xdg != null && !xdg.isBlank())
                 ? Paths.get(xdg)
                 : Paths.get(System.getProperty("user.home"), ".config");
-        return base.resolve("mymoney");
+        return base.resolve("MyMoney");
     }
 
     // ----- Recent databases ---------------------------------------------
