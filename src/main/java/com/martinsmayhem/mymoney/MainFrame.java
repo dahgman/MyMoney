@@ -4,24 +4,108 @@
  */
 package com.martinsmayhem.mymoney;
 
+import java.awt.event.WindowEvent;
+import java.sql.SQLException;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import javax.swing.JOptionPane;
+import javax.swing.tree.DefaultMutableTreeNode;
+import javax.swing.tree.DefaultTreeModel;
+import javax.swing.tree.TreePath;
+
 /**
+ * The main window: account tree on the left, the selected account's
+ * summary at top right, and its ledger below.
  *
  * @author mike@asylum.martinsmayhem.com
  */
 public class MainFrame extends javax.swing.JFrame {
 
+    private final Database db;
+    private final AppConfig config;
+    private final AccountRepository accounts;
+
     /**
      * Creates new form MainFrame
      */
-    private final Database db;
-    private final AppConfig config;
-
     public MainFrame(Database db, AppConfig config) {
         this.db = db;
         this.config = config;
+        this.accounts = new AccountRepository(db);
         initComponents();
         setTitle("MyMoney - " + db.getFile().getFileName());
-        fileLabel.setText("Opened: " + db.getFile());
+        setSize(1000, 650);
+        accountTree.addTreeSelectionListener(e -> showAccount(selectedAccount()));
+        loadAccounts(null);
+        showAccount(null);
+    }
+
+    /** Rebuilds the account tree, optionally selecting one account afterwards. */
+    private void loadAccounts(Long selectId) {
+        List<Account> all;
+        try {
+            all = accounts.findAll();
+        } catch (SQLException e) {
+            JOptionPane.showMessageDialog(this, "Could not load accounts:\n" + e.getMessage(),
+                    "MyMoney", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+
+        DefaultMutableTreeNode root = new DefaultMutableTreeNode("Accounts");
+        Map<Long, DefaultMutableTreeNode> nodes = new HashMap<>();
+
+        // Top-level accounts first, so their envelopes have somewhere to go.
+        for (Account a : all) {
+            if (a.parentId() == null) {
+                DefaultMutableTreeNode node = new DefaultMutableTreeNode(a);
+                nodes.put(a.id(), node);
+                root.add(node);
+            }
+        }
+        for (Account a : all) {
+            if (a.parentId() != null) {
+                DefaultMutableTreeNode node = new DefaultMutableTreeNode(a);
+                nodes.put(a.id(), node);
+                DefaultMutableTreeNode parent = nodes.get(a.parentId());
+                (parent != null ? parent : root).add(node);
+            }
+        }
+
+        accountTree.setModel(new DefaultTreeModel(root));
+        for (int i = 0; i < accountTree.getRowCount(); i++) {
+            accountTree.expandRow(i);              // show every envelope
+        }
+
+        if (selectId != null && nodes.containsKey(selectId)) {
+            TreePath path = new TreePath(nodes.get(selectId).getPath());
+            accountTree.setSelectionPath(path);
+            accountTree.scrollPathToVisible(path);
+        }
+    }
+
+    /** The account selected in the tree, or null if none. */
+    private Account selectedAccount() {
+        Object node = accountTree.getLastSelectedPathComponent();
+        if (node instanceof DefaultMutableTreeNode n && n.getUserObject() instanceof Account a) {
+            return a;
+        }
+        return null;
+    }
+
+    /** Fills the summary pane for an account (or clears it for null). */
+    private void showAccount(Account a) {
+        if (a == null) {
+            accountNameLabel.setText("No account selected");
+            balanceLabel.setText(" ");
+            return;
+        }
+        accountNameLabel.setText(a.name() + "  (" + a.type() + ")");
+        try {
+            balanceLabel.setText("Balance: " + Money.format(accounts.balanceCents(a)));
+        } catch (SQLException e) {
+            balanceLabel.setText("Balance: unavailable");
+        }
     }
 
     /**
@@ -33,7 +117,20 @@ public class MainFrame extends javax.swing.JFrame {
     // <editor-fold defaultstate="collapsed" desc="Generated Code">//GEN-BEGIN:initComponents
     private void initComponents() {
 
-        fileLabel = new javax.swing.JLabel();
+        mainSplit = new javax.swing.JSplitPane();
+        accountScroll = new javax.swing.JScrollPane();
+        accountTree = new javax.swing.JTree();
+        rightSplit = new javax.swing.JSplitPane();
+        summaryPanel = new javax.swing.JPanel();
+        accountNameLabel = new javax.swing.JLabel();
+        balanceLabel = new javax.swing.JLabel();
+        ledgerScroll = new javax.swing.JScrollPane();
+        ledgerTable = new javax.swing.JTable();
+        menuBar = new javax.swing.JMenuBar();
+        fileMenu = new javax.swing.JMenu();
+        newAccountItem = new javax.swing.JMenuItem();
+        jSeparator1 = new javax.swing.JPopupMenu.Separator();
+        exitItem = new javax.swing.JMenuItem();
 
         setDefaultCloseOperation(javax.swing.WindowConstants.EXIT_ON_CLOSE);
         addWindowListener(new java.awt.event.WindowAdapter() {
@@ -42,35 +139,108 @@ public class MainFrame extends javax.swing.JFrame {
             }
         });
 
-        fileLabel.setText("jLabel1");
+        mainSplit.setDividerLocation(250);
 
-        javax.swing.GroupLayout layout = new javax.swing.GroupLayout(getContentPane());
-        getContentPane().setLayout(layout);
-        layout.setHorizontalGroup(
-            layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
-            .addGroup(layout.createSequentialGroup()
+        accountTree.setModel(new javax.swing.tree.DefaultTreeModel(new javax.swing.tree.DefaultMutableTreeNode("Accounts")));
+        accountTree.setRootVisible(false);
+        accountTree.setShowsRootHandles(true);
+        accountScroll.setViewportView(accountTree);
+
+        mainSplit.setLeftComponent(accountScroll);
+
+        rightSplit.setDividerLocation(80);
+        rightSplit.setOrientation(javax.swing.JSplitPane.VERTICAL_SPLIT);
+
+        accountNameLabel.setFont(new java.awt.Font("Liberation Sans", 1, 16)); // NOI18N
+        accountNameLabel.setText("Account");
+
+        balanceLabel.setText("Balance");
+
+        javax.swing.GroupLayout summaryPanelLayout = new javax.swing.GroupLayout(summaryPanel);
+        summaryPanel.setLayout(summaryPanelLayout);
+        summaryPanelLayout.setHorizontalGroup(
+            summaryPanelLayout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+            .addGroup(summaryPanelLayout.createSequentialGroup()
                 .addContainerGap()
-                .addComponent(fileLabel)
-                .addContainerGap(348, Short.MAX_VALUE))
+                .addComponent(accountNameLabel)
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                .addComponent(balanceLabel)
+                .addContainerGap())
         );
-        layout.setVerticalGroup(
-            layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
-            .addGroup(layout.createSequentialGroup()
-                .addContainerGap()
-                .addComponent(fileLabel)
-                .addContainerGap(276, Short.MAX_VALUE))
+        summaryPanelLayout.setVerticalGroup(
+            summaryPanelLayout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+            .addGroup(summaryPanelLayout.createSequentialGroup()
+                .addGap(4, 4, 4)
+                .addGroup(summaryPanelLayout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
+                    .addComponent(balanceLabel)
+                    .addComponent(accountNameLabel))
+                .addGap(1, 1, 1))
         );
+
+        rightSplit.setTopComponent(summaryPanel);
+
+        ledgerTable.setModel(new javax.swing.table.DefaultTableModel(new Object[][] {}, new String[] {"Date", "Num", "Payee", "Description", "Memo", "Status", "Payment", "Deposit", "Balance"}));
+        ledgerScroll.setViewportView(ledgerTable);
+
+        rightSplit.setRightComponent(ledgerScroll);
+
+        mainSplit.setRightComponent(rightSplit);
+
+        getContentPane().add(mainSplit, java.awt.BorderLayout.CENTER);
+
+        fileMenu.setText("File");
+
+        newAccountItem.setText("New Account...");
+        newAccountItem.addActionListener(this::newAccountItemActionPerformed);
+        fileMenu.add(newAccountItem);
+        fileMenu.add(jSeparator1);
+
+        exitItem.setText("Exit");
+        exitItem.addActionListener(this::exitItemActionPerformed);
+        fileMenu.add(exitItem);
+
+        menuBar.add(fileMenu);
+
+        setJMenuBar(menuBar);
 
         pack();
     }// </editor-fold>//GEN-END:initComponents
 
     private void formWindowClosing(java.awt.event.WindowEvent evt) {//GEN-FIRST:event_formWindowClosing
         db.close();
-        config.close();        
+        config.close();
     }//GEN-LAST:event_formWindowClosing
+
+    private void newAccountItemActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_newAccountItemActionPerformed
+        AccountDialog dlg = new AccountDialog(this, true, accounts);
+        dlg.setLocationRelativeTo(this);
+        dlg.setVisible(true);                      // modal: waits here until closed
+        Long id = dlg.getCreatedAccountId();
+        if (id != null) {
+            loadAccounts(id);                      // rebuild the tree and select the new account
+        }
+    }//GEN-LAST:event_newAccountItemActionPerformed
+
+    private void exitItemActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_exitItemActionPerformed
+        // Same path as clicking the window's X, so formWindowClosing still closes everything.
+        dispatchEvent(new WindowEvent(this, WindowEvent.WINDOW_CLOSING));
+    }//GEN-LAST:event_exitItemActionPerformed
 
 
     // Variables declaration - do not modify//GEN-BEGIN:variables
-    private javax.swing.JLabel fileLabel;
+    private javax.swing.JLabel accountNameLabel;
+    private javax.swing.JScrollPane accountScroll;
+    private javax.swing.JTree accountTree;
+    private javax.swing.JLabel balanceLabel;
+    private javax.swing.JMenuItem exitItem;
+    private javax.swing.JMenu fileMenu;
+    private javax.swing.JPopupMenu.Separator jSeparator1;
+    private javax.swing.JScrollPane ledgerScroll;
+    private javax.swing.JTable ledgerTable;
+    private javax.swing.JSplitPane mainSplit;
+    private javax.swing.JMenuBar menuBar;
+    private javax.swing.JMenuItem newAccountItem;
+    private javax.swing.JSplitPane rightSplit;
+    private javax.swing.JPanel summaryPanel;
     // End of variables declaration//GEN-END:variables
 }
