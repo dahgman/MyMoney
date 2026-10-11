@@ -1,6 +1,10 @@
+/mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/Account.java
+/mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/AccountRepository.java
+/mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/AccountType.java
 /mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/AppConfig.java
 /mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/Database.java
 /mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/MainFrame.java
+/mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/Money.java
 /mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/MyMoney.java
 /mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/NewDatabaseDialog.java
 /mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/PasswordPrompt.java
