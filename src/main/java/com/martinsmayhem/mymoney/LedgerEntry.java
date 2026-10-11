@@ -1,5 +1,6 @@
 package com.martinsmayhem.mymoney;
 
+import java.awt.Color;
 import java.time.LocalDate;
 
 /**
@@ -13,10 +14,47 @@ public class LedgerEntry {
     String checkNumber;
     String payee;
     String category;          // full path, e.g. "Food:Groceries"; null = none
+    String tag;               // tag name; null = none
+    Color tagColor;           // the tag's color (read from the database)
     String description;
     String memo;
     TxnStatus status = TxnStatus.NONE;
     long amountCents;         // negative = payment, positive = deposit
+    long balanceCents;        // running balance in date order (calculated, not stored)
+
+    /** A separate copy, for trying out changes before saving them. */
+    LedgerEntry copy() {
+        LedgerEntry c = new LedgerEntry();
+        c.id = id;
+        c.date = date;
+        c.checkNumber = checkNumber;
+        c.payee = payee;
+        c.category = category;
+        c.tag = tag;
+        c.tagColor = tagColor;
+        c.description = description;
+        c.memo = memo;
+        c.status = status;
+        c.amountCents = amountCents;
+        c.balanceCents = balanceCents;
+        return c;
+    }
+
+    /** True if every field a user can edit is the same in both. */
+    boolean sameContent(LedgerEntry o) {
+        return java.util.Objects.equals(date, o.date)
+                && java.util.Objects.equals(blank(checkNumber), blank(o.checkNumber))
+                && java.util.Objects.equals(blank(payee), blank(o.payee))
+                && java.util.Objects.equals(blank(category), blank(o.category))
+                && java.util.Objects.equals(blank(tag), blank(o.tag))
+                && java.util.Objects.equals(blank(description), blank(o.description))
+                && java.util.Objects.equals(blank(memo), blank(o.memo))
+                && status == o.status && amountCents == o.amountCents;
+    }
+
+    private static String blank(String s) {
+        return s == null ? "" : s.trim();
+    }
 
     boolean isSaved() {
         return id != 0;

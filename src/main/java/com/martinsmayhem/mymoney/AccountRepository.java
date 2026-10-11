@@ -37,9 +37,36 @@ public class AccountRepository {
 
     /** True if an account already has this name, ignoring upper/lower case. */
     public boolean nameExists(String name) throws SQLException {
+        return nameExists(name, 0);
+    }
+
+    /** True if an account other than excludeId already has this name, ignoring case. */
+    public boolean nameExists(String name, long excludeId) throws SQLException {
         try (PreparedStatement ps = conn.prepareStatement(
-                "SELECT 1 FROM account WHERE name = ? COLLATE NOCASE")) {
+                "SELECT 1 FROM account WHERE name = ? COLLATE NOCASE AND id <> ?")) {
             ps.setString(1, name);
+            ps.setLong(2, excludeId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next();
+            }
+        }
+    }
+
+    /** The account with this name (ignoring case), or null if there isn't one. */
+    public Account findByName(String name) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT " + COLUMNS + " FROM account WHERE name = ? COLLATE NOCASE")) {
+            ps.setString(1, name);
+            List<Account> found = read(ps);
+            return found.isEmpty() ? null : found.get(0);
+        }
+    }
+
+    /** True if any account has this one as its parent. */
+    public boolean hasChildren(long accountId) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT 1 FROM account WHERE parent_id = ? LIMIT 1")) {
+            ps.setLong(1, accountId);
             try (ResultSet rs = ps.executeQuery()) {
                 return rs.next();
             }
@@ -72,16 +99,129 @@ public class AccountRepository {
         }
     }
 
-    /** Opening balance plus every split on this account's transactions. */
-    public long balanceCents(Account account) throws SQLException {
-        String sql = "SELECT COALESCE(SUM(s.amount_cents), 0)"
+    /** Saves changes to an account's name, type, opening balance and parent. */
+    public void update(long id, String name, AccountType type, long openingBalanceCents, Long parentId)
+            throws SQLException {
+        String sql = "UPDATE account SET name = ?, type = ?, opening_balance_cents = ?, parent_id = ?"
+                + " WHERE id = ?";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, name);
+            ps.setString(2, type.name());
+            ps.setLong(3, openingBalanceCents);
+            if (parentId == null) {
+                ps.setNull(4, Types.INTEGER);
+            } else {
+                ps.setLong(4, parentId);
+            }
+            ps.setLong(5, id);
+            ps.executeUpdate();
+        }
+    }
+
+    /** What deleting an account would affect, for the confirmation message. */
+    public record DeleteInfo(int transactions, int reconciled, int transfers, List<String> envelopes) {
+    }
+
+    public DeleteInfo deleteInfo(long id) throws SQLException {
+        int transactions;
+        int reconciled;
+        int transfers;
+        try (PreparedStatement ps = conn.prepareStatement("""
+                SELECT (SELECT COUNT(*) FROM txn WHERE account_id = ?),
+                       (SELECT COUNT(*) FROM txn WHERE account_id = ? AND status = ?),
+                       (SELECT COUNT(*) FROM split s JOIN txn t ON t.id = s.txn_id
+                         WHERE s.transfer_account_id = ? AND t.account_id <> ?)
+                """)) {
+            ps.setLong(1, id);
+            ps.setLong(2, id);
+            ps.setString(3, TxnStatus.RECONCILED.code());
+            ps.setLong(4, id);
+            ps.setLong(5, id);
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                transactions = rs.getInt(1);
+                reconciled = rs.getInt(2);
+                transfers = rs.getInt(3);
+            }
+        }
+        List<String> envelopes = new ArrayList<>();
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT name FROM account WHERE parent_id = ? ORDER BY name COLLATE NOCASE")) {
+            ps.setLong(1, id);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    envelopes.add(rs.getString(1));
+                }
+            }
+        }
+        return new DeleteInfo(transactions, reconciled, transfers, envelopes);
+    }
+
+    /**
+     * Deletes an account and all of its transactions, all at once. Transfers
+     * with other accounts keep their side in the other account, as a plain
+     * transaction with no category, so those balances don't change.
+     * The account must not have envelopes.
+     */
+    public void delete(long id) throws SQLException {
+        conn.setAutoCommit(false);
+        try {
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "UPDATE split SET transfer_account_id = NULL, transfer_txn_id = NULL"
+                    + " WHERE transfer_account_id = ?"
+                    + " AND txn_id IN (SELECT id FROM txn WHERE account_id <> ?)")) {
+                ps.setLong(1, id);
+                ps.setLong(2, id);
+                ps.executeUpdate();
+            }
+            try (PreparedStatement ps = conn.prepareStatement("DELETE FROM txn WHERE account_id = ?")) {
+                ps.setLong(1, id);
+                ps.executeUpdate();             // their splits go too (ON DELETE CASCADE)
+            }
+            try (PreparedStatement ps = conn.prepareStatement("DELETE FROM account WHERE id = ?")) {
+                ps.setLong(1, id);
+                ps.executeUpdate();
+            }
+            conn.commit();
+        } catch (SQLException e) {
+            conn.rollback();
+            throw e;
+        } finally {
+            conn.setAutoCommit(true);
+        }
+    }
+
+    /** Sets just the opening balance (used by the QIF import). */
+    public void setOpeningBalance(long id, long openingBalanceCents) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "UPDATE account SET opening_balance_cents = ? WHERE id = ?")) {
+            ps.setLong(1, openingBalanceCents);
+            ps.setLong(2, id);
+            ps.executeUpdate();
+        }
+    }
+
+    /**
+     * An account's balances.
+     * cleared: opening balance plus reconciled and cleared transactions.
+     * total:   opening balance plus every transaction, whatever its status or date.
+     */
+    public record Balances(long clearedCents, long totalCents) {
+    }
+
+    public Balances balances(Account account) throws SQLException {
+        String sql = "SELECT COALESCE(SUM(CASE WHEN t.status IN (?, ?) THEN s.amount_cents ELSE 0 END), 0),"
+                + " COALESCE(SUM(s.amount_cents), 0)"
                 + " FROM split s JOIN txn t ON s.txn_id = t.id"
                 + " WHERE t.account_id = ?";
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setLong(1, account.id());
+            ps.setString(1, TxnStatus.RECONCILED.code());
+            ps.setString(2, TxnStatus.CLEARED.code());
+            ps.setLong(3, account.id());
             try (ResultSet rs = ps.executeQuery()) {
                 rs.next();
-                return account.openingBalanceCents() + rs.getLong(1);
+                long opening = account.openingBalanceCents();
+                return new Balances(opening + rs.getLong(1), opening + rs.getLong(2));
             }
         }
     }
@@ -89,9 +229,14 @@ public class AccountRepository {
     // ---------------------------------------------------------------------
 
     private List<Account> query(String sql) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            return read(ps);
+        }
+    }
+
+    private List<Account> read(PreparedStatement ps) throws SQLException {
         List<Account> list = new ArrayList<>();
-        try (Statement st = conn.createStatement();
-             ResultSet rs = st.executeQuery(sql)) {
+        try (ResultSet rs = ps.executeQuery()) {
             while (rs.next()) {
                 long parent = rs.getLong(7);
                 Long parentId = rs.wasNull() ? null : parent;

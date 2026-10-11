@@ -4,19 +4,34 @@
  */
 package com.martinsmayhem.mymoney;
 
+import java.awt.Color;
+import java.awt.Cursor;
 import java.awt.event.ActionEvent;
 import java.awt.event.KeyEvent;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
 import java.awt.event.WindowEvent;
+import java.io.IOException;
+import java.nio.file.Path;
 import java.sql.SQLException;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import javax.swing.AbstractAction;
+import javax.swing.JComboBox;
 import javax.swing.JComponent;
+import javax.swing.JFileChooser;
+import javax.swing.JMenuItem;
 import javax.swing.JOptionPane;
+import javax.swing.JPopupMenu;
 import javax.swing.KeyStroke;
 import javax.swing.SwingConstants;
+import javax.swing.SwingUtilities;
+import javax.swing.filechooser.FileNameExtensionFilter;
 import javax.swing.table.DefaultTableCellRenderer;
+import javax.swing.table.JTableHeader;
+import javax.swing.table.TableCellRenderer;
 import javax.swing.table.TableColumnModel;
 import javax.swing.tree.DefaultMutableTreeNode;
 import javax.swing.tree.DefaultTreeModel;
@@ -34,7 +49,17 @@ public class MainFrame extends javax.swing.JFrame {
     private final AppConfig config;
     private final AccountRepository accounts;
     private final CategoryRepository categories;
+    private final TagRepository tags;
+    private final TransactionRepository transactionRepo;
     private final LedgerTableModel ledgerModel;
+
+    private UndoLog undoLog;                 // null if undo couldn't be set up
+    private JMenuItem undoItem;
+    private JMenuItem redoItem;
+    private boolean reloadingTree;           // true while loadAccounts rebuilds the tree
+
+    private int lastLedgerRow = -1;          // for noticing when the new-transaction row is left
+    private boolean resolvingDraft;          // true while asking about an unsaved new transaction
 
     /**
      * Creates new form MainFrame
@@ -44,15 +69,45 @@ public class MainFrame extends javax.swing.JFrame {
         this.config = config;
         this.accounts = new AccountRepository(db);
         this.categories = new CategoryRepository(db);
-        this.ledgerModel = new LedgerTableModel(new TransactionRepository(db),
-                this::showError, this::confirm, () -> updateSummary(selectedAccount()));
+        this.tags = new TagRepository(db);
+        this.transactionRepo = new TransactionRepository(db);
+        this.ledgerModel = new LedgerTableModel(transactionRepo,
+                this::showError, this::confirm, this::afterLedgerChange);
         initComponents();
         setTitle("MyMoney - " + db.getFile().getFileName());
         setSize(1000, 650);
         setupLedger();
-        accountTree.addTreeSelectionListener(e -> showAccount(selectedAccount()));
+        setupMenus();
+        try {
+            undoLog = new UndoLog(db);
+        } catch (SQLException e) {
+            showError("Undo is not available for this file:\n" + e.getMessage());
+        }
+        updateUndoMenu();
+        accountTree.addTreeSelectionListener(e -> {
+            if (!reloadingTree) {
+                showAccount(selectedAccount());
+            }
+        });
         loadAccounts(null);
-        showAccount(null);
+        if (accountTree.getRowCount() > 0) {
+            accountTree.setSelectionRow(0);    // open on the first account
+        } else {
+            showAccount(null);                 // no accounts yet
+        }
+        SwingUtilities.invokeLater(this::selectTransactionNearToday);   // once the window is showing
+    }
+
+    /**
+     * Selects (and scrolls to) today's transaction, or the last one before
+     * today, and puts the keyboard focus in the ledger.
+     */
+    private void selectTransactionNearToday() {
+        int row = ledgerModel.rowNearestToday();
+        if (row >= 0) {
+            ledgerTable.changeSelection(row, LedgerTableModel.DATE, false, false);   // also scrolls to it
+        }
+        ledgerTable.requestFocusInWindow();
     }
 
     /** Connects the ledger table to its model and sets up columns and keys. */
@@ -62,25 +117,61 @@ public class MainFrame extends javax.swing.JFrame {
         ledgerTable.setSurrendersFocusOnKeystroke(true);                         // typing goes straight into the cell
 
         TableColumnModel cols = ledgerTable.getColumnModel();
-        int[] widths = {90, 60, 170, 170, 170, 140, 100, 90, 90, 100};
+        int[] widths = {110, 60, 160, 160, 110, 150, 130, 100, 90, 90, 100};
         for (int i = 0; i < widths.length; i++) {
             cols.getColumn(i).setPreferredWidth(widths[i]);
         }
+        // With 11 columns the table squeezes them to fit; never squeeze dates or amounts.
+        cols.getColumn(LedgerTableModel.DATE).setMinWidth(100);
+        cols.getColumn(LedgerTableModel.TAG).setMinWidth(80);
+        cols.getColumn(LedgerTableModel.PAYMENT).setMinWidth(80);
+        cols.getColumn(LedgerTableModel.DEPOSIT).setMinWidth(80);
+        cols.getColumn(LedgerTableModel.BALANCE).setMinWidth(90);
+
+        // Future-dated transactions are drawn with grey text, in every column.
+        ledgerTable.setDefaultRenderer(Object.class, muted(ledgerTable.getDefaultRenderer(Object.class)));
 
         DefaultTableCellRenderer right = new DefaultTableCellRenderer();
         right.setHorizontalAlignment(SwingConstants.RIGHT);
-        cols.getColumn(LedgerTableModel.PAYMENT).setCellRenderer(right);
-        cols.getColumn(LedgerTableModel.DEPOSIT).setCellRenderer(right);
-        cols.getColumn(LedgerTableModel.BALANCE).setCellRenderer(right);
+        TableCellRenderer money = muted(right);
+        cols.getColumn(LedgerTableModel.PAYMENT).setCellRenderer(money);
+        cols.getColumn(LedgerTableModel.DEPOSIT).setCellRenderer(money);
+        cols.getColumn(LedgerTableModel.BALANCE).setCellRenderer(money);
 
-        // Text cells: Enter saves and moves down. Category also suggests as you type.
+        // Text cells: Enter saves and moves down. Category also suggests as you type,
+        // and Date also has a pop-out calendar.
         ledgerTable.setDefaultEditor(String.class, new AutoCompleteEditor(null, this::commitAndMoveDown));
         cols.getColumn(LedgerTableModel.CATEGORY).setCellEditor(
                 new AutoCompleteEditor(this::categoryPaths, this::commitAndMoveDown));
+        cols.getColumn(LedgerTableModel.DATE).setCellEditor(new DateCellEditor(this::commitAndMoveDown));
+
+        // Tag: a colored pill; typing suggests existing tags, and a new name creates a tag.
+        cols.getColumn(LedgerTableModel.TAG).setCellRenderer(muted(TagCell.renderer(ledgerModel::tagColor)));
+        cols.getColumn(LedgerTableModel.TAG).setCellEditor(
+                new AutoCompleteEditor(this::tagNames, this::commitAndMoveDown));
 
         // Status: a colored dot, edited with a drop-down.
-        cols.getColumn(LedgerTableModel.STATUS).setCellRenderer(StatusCell.renderer());
+        cols.getColumn(LedgerTableModel.STATUS).setCellRenderer(muted(StatusCell.renderer()));
         cols.getColumn(LedgerTableModel.STATUS).setCellEditor(StatusCell.editor());
+
+        setupSorting();
+
+        // Leaving the new-transaction row without an amount: ask what to do.
+        ledgerTable.getSelectionModel().addListSelectionListener(e -> {
+            if (e.getValueIsAdjusting() || resolvingDraft) {
+                return;
+            }
+            int row = ledgerTable.getSelectedRow();
+            int previous = lastLedgerRow;
+            lastLedgerRow = row;
+            if (row != previous && ledgerModel.isDraftRow(previous) && ledgerModel.draftHasData()) {
+                SwingUtilities.invokeLater(() -> {      // let the click finish first
+                    if (!resolveDraft(true)) {
+                        selectDraftAmount();
+                    }
+                });
+            }
+        });
 
         // The Delete key removes the selected transaction (after asking).
         ledgerTable.getInputMap(JComponent.WHEN_FOCUSED)
@@ -89,6 +180,56 @@ public class MainFrame extends javax.swing.JFrame {
             @Override
             public void actionPerformed(ActionEvent e) {
                 deleteSelectedTransaction();
+            }
+        });
+    }
+
+    /** Text color for transactions dated after today. */
+    private static final Color FUTURE_TEXT = new Color(128, 128, 128);         // grey
+
+    /**
+     * Wraps a cell renderer so future-dated rows get grey text (on the normal
+     * background). Selected rows keep the normal selection colors.
+     */
+    private TableCellRenderer muted(TableCellRenderer base) {
+        return (table, value, isSelected, hasFocus, row, column) -> {
+            java.awt.Component c = base.getTableCellRendererComponent(
+                    table, value, isSelected, hasFocus, row, column);
+            if (!isSelected) {
+                c.setBackground(table.getBackground());
+                c.setForeground(ledgerModel.isFuture(row) ? FUTURE_TEXT : table.getForeground());
+            }
+            return c;
+        };
+    }
+
+    /**
+     * Header clicks sort the ledger: click to sort by one column (click again
+     * to reverse), Ctrl+click to add another sort level (again to reverse it).
+     */
+    private void setupSorting() {
+        JTableHeader header = ledgerTable.getTableHeader();
+
+        // Show the sort arrows (and level numbers) after the column names.
+        TableCellRenderer plain = header.getDefaultRenderer();
+        header.setDefaultRenderer((table, value, isSelected, hasFocus, row, column) -> {
+            int modelColumn = table.convertColumnIndexToModel(column);
+            String text = value + ledgerModel.sortIndicator(modelColumn);
+            return plain.getTableCellRendererComponent(table, text, isSelected, hasFocus, row, column);
+        });
+
+        header.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mouseClicked(MouseEvent e) {
+                int column = header.columnAtPoint(e.getPoint());
+                if (column < 0 || !SwingUtilities.isLeftMouseButton(e)) {
+                    return;
+                }
+                if (ledgerTable.isEditing()) {
+                    ledgerTable.getCellEditor().stopCellEditing();
+                }
+                ledgerModel.sortBy(ledgerTable.convertColumnIndexToModel(column), e.isControlDown());
+                header.repaint();
             }
         });
     }
@@ -107,6 +248,11 @@ public class MainFrame extends javax.swing.JFrame {
         if (!ledgerTable.getCellEditor().stopCellEditing()) {
             return;
         }
+        if (ledgerTable.getRowCount() == rowsBefore && ledgerModel.isDraftRow(row)
+                && ledgerModel.draftHasData() && !resolveDraft(true)) {
+            selectDraftAmount();                        // Enter on a new transaction with no amount
+            return;
+        }
         int rows = ledgerTable.getRowCount();
         if (rows > rowsBefore) {
             ledgerTable.changeSelection(rows - 1, LedgerTableModel.DATE, false, false);
@@ -115,28 +261,619 @@ public class MainFrame extends javax.swing.JFrame {
         }
     }
 
-    /** Category paths for the drop-down; an empty list if they can't be read. */
-    private List<String> categoryPaths() {
+    /**
+     * The new-transaction row has typing in it but no amount, so it isn't
+     * saved. Asks whether to save it at $0.00, discard it, or (if allowed)
+     * go back to it. Returns false only for "Go Back".
+     */
+    private boolean resolveDraft(boolean allowGoBack) {
+        if (!ledgerModel.draftHasData() || resolvingDraft) {
+            return true;
+        }
+        resolvingDraft = true;
         try {
-            return categories.findAllPaths();
+            Object[] options = allowGoBack
+                    ? new Object[] {"Save with $0.00", "Discard", "Go Back"}
+                    : new Object[] {"Save with $0.00", "Discard"};
+            int choice = JOptionPane.showOptionDialog(this,
+                    "The new transaction has no Payment or Deposit amount,\n"
+                    + "so it hasn't been saved.",
+                    "Unsaved Transaction", JOptionPane.DEFAULT_OPTION, JOptionPane.WARNING_MESSAGE,
+                    null, options, options[options.length - 1]);
+            if (choice == 0 || (choice < 0 && !allowGoBack)) {
+                ledgerModel.recordDraft();              // closing the box without Go Back keeps it
+                return true;
+            }
+            if (choice == 1) {
+                ledgerModel.discardDraft();
+                return true;
+            }
+            return false;
+        } finally {
+            resolvingDraft = false;
+        }
+    }
+
+    /** Puts the cursor on the new-transaction row's Payment cell. */
+    private void selectDraftAmount() {
+        int draftRow = ledgerModel.getRowCount() - 1;
+        if (draftRow >= 0) {
+            resolvingDraft = true;
+            try {
+                ledgerTable.changeSelection(draftRow, LedgerTableModel.PAYMENT, false, false);
+                lastLedgerRow = draftRow;
+            } finally {
+                resolvingDraft = false;
+            }
+            ledgerTable.requestFocusInWindow();
+        }
+    }
+
+    /** Category paths, then "[Account]" transfers, for the drop-down. */
+    private List<String> categoryPaths() {
+        List<String> list = new ArrayList<>();
+        try {
+            list.addAll(categories.findAllPaths());
+            for (Account a : accounts.findAll()) {
+                list.add("[" + a.name() + "]");
+            }
+        } catch (SQLException e) {
+            // show whatever was read
+        }
+        return list;
+    }
+
+    /** Tag names for the Tag column's drop-down. */
+    private List<String> tagNames() {
+        try {
+            return tags.findAllNames();
         } catch (SQLException e) {
             return List.of();
         }
     }
 
+    // ----- File menu additions --------------------------------------------
+
+    /** Adds Edit Account and Import QIF to the File menu, and a right-click menu to the tree. */
+    private void setupMenus() {
+        JMenuItem editAccountItem = new JMenuItem("Edit Account...");
+        editAccountItem.addActionListener(e -> editAccount());
+        JMenuItem importQifItem = new JMenuItem("Import QIF...");
+        importQifItem.addActionListener(e -> importQif());
+        JMenuItem manageTagsItem = new JMenuItem("Manage Tags...");
+        manageTagsItem.addActionListener(e -> manageTags());
+        fileMenu.insert(editAccountItem, 1);           // after New Account...
+        fileMenu.insert(menuItem("Delete Account...", this::deleteAccount), 2);
+        fileMenu.insert(manageTagsItem, 3);
+        fileMenu.insertSeparator(4);
+        fileMenu.insert(importQifItem, 5);
+
+        // Edit menu: changes to the selected transactions.
+        javax.swing.JMenu editMenu = new javax.swing.JMenu("Edit");
+        JPopupMenu ledgerMenu = new JPopupMenu();
+        for (javax.swing.JComponent menu : new javax.swing.JComponent[] {editMenu, ledgerMenu}) {
+            menu.add(menuItem("Change Date...", () -> bulkChange(LedgerTableModel.DATE)));
+            menu.add(menuItem("Change Payee...", () -> bulkChange(LedgerTableModel.PAYEE)));
+            menu.add(menuItem("Change Category...", () -> bulkChange(LedgerTableModel.CATEGORY)));
+            menu.add(menuItem("Change Tag...", () -> bulkChange(LedgerTableModel.TAG)));
+            menu.add(menuItem("Change Status...", () -> bulkChange(LedgerTableModel.STATUS)));
+            menu.add(menuItem("Move Memo to Description", this::moveMemoToDescription));
+            menu.add(new javax.swing.JSeparator());
+            menu.add(menuItem("Delete Transactions...", this::deleteSelectedTransaction));
+        }
+        undoItem = menuItem("Undo", this::undo);
+        undoItem.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_Z, menuShortcut()));
+        redoItem = menuItem("Redo", this::redo);
+        redoItem.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_Y, menuShortcut()));
+        // Also on the ledger itself, so Ctrl+Z isn't taken as typing into a cell.
+        for (Object[] b : new Object[][] {{undoItem, "undo", (Runnable) this::undo},
+                                          {redoItem, "redo", (Runnable) this::redo}}) {
+            KeyStroke ks = ((JMenuItem) b[0]).getAccelerator();
+            ledgerTable.getInputMap(JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT).put(ks, b[1]);
+            ledgerTable.getActionMap().put(b[1], new AbstractAction() {
+                @Override
+                public void actionPerformed(ActionEvent e) {
+                    ((Runnable) b[2]).run();
+                }
+            });
+        }
+        editMenu.insert(undoItem, 0);
+        editMenu.insert(redoItem, 1);
+        editMenu.insertSeparator(2);
+        menuBar.add(editMenu, 1);                       // after File
+
+        // Right-click in the ledger: the same menu. A row outside the selection gets selected first.
+        ledgerTable.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mousePressed(MouseEvent e) {
+                showMenu(e);
+            }
+
+            @Override
+            public void mouseReleased(MouseEvent e) {
+                showMenu(e);
+            }
+
+            private void showMenu(MouseEvent e) {
+                if (!e.isPopupTrigger()) {
+                    return;
+                }
+                int row = ledgerTable.rowAtPoint(e.getPoint());
+                if (row >= 0 && !ledgerTable.isRowSelected(row)) {
+                    ledgerTable.changeSelection(row, ledgerTable.columnAtPoint(e.getPoint()), false, false);
+                }
+                ledgerMenu.show(ledgerTable, e.getX(), e.getY());
+            }
+        });
+
+        JPopupMenu treeMenu = new JPopupMenu();
+        JMenuItem editFromTree = new JMenuItem("Edit Account...");
+        editFromTree.addActionListener(e -> editAccount());
+        treeMenu.add(editFromTree);
+        treeMenu.add(menuItem("Delete Account...", this::deleteAccount));
+        accountTree.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mousePressed(MouseEvent e) {
+                showMenu(e);
+            }
+
+            @Override
+            public void mouseReleased(MouseEvent e) {
+                showMenu(e);                            // Windows opens menus on release
+            }
+
+            private void showMenu(MouseEvent e) {
+                if (!e.isPopupTrigger()) {
+                    return;
+                }
+                TreePath path = accountTree.getPathForLocation(e.getX(), e.getY());
+                if (path != null) {
+                    accountTree.setSelectionPath(path);
+                    treeMenu.show(accountTree, e.getX(), e.getY());
+                }
+            }
+        });
+    }
+
+    /** Ctrl on Windows and Linux (Cmd on a Mac). */
+    private static int menuShortcut() {
+        return java.awt.Toolkit.getDefaultToolkit().getMenuShortcutKeyMaskEx();
+    }
+
+    // ----- Undo / Redo -----------------------------------------------------
+
+    /** After each saved ledger change: new balances, and one undo step. */
+    private void afterLedgerChange() {
+        updateSummary(selectedAccount());
+        checkpoint(ledgerModel.lastAction());
+    }
+
+    /** Groups everything saved since the last checkpoint into one undo step. */
+    private void checkpoint(String label) {
+        if (undoLog == null) {
+            return;
+        }
+        try {
+            undoLog.checkpoint(label);
+        } catch (SQLException e) {
+            // undo history is a convenience; never block the change itself
+        }
+        updateUndoMenu();
+    }
+
+    /** Edit > Undo (Ctrl+Z). While typing in a cell, it just cancels the typing. */
+    private void undo() {
+        if (ledgerTable.isEditing()) {
+            ledgerTable.getCellEditor().cancelCellEditing();
+            return;
+        }
+        if (undoLog == null || undoLog.undoLabel() == null) {
+            return;
+        }
+        checkpoint("Change");
+        try {
+            undoLog.undo();
+        } catch (SQLException e) {
+            showError("Could not undo:\n" + e.getMessage());
+        }
+        refreshAfterUndo();
+    }
+
+    /** Edit > Redo (Ctrl+Y). */
+    private void redo() {
+        if (ledgerTable.isEditing()) {
+            ledgerTable.getCellEditor().stopCellEditing();
+        }
+        if (undoLog == null || undoLog.redoLabel() == null) {
+            return;
+        }
+        try {
+            undoLog.redo();
+        } catch (SQLException e) {
+            showError("Could not redo:\n" + e.getMessage());
+        }
+        refreshAfterUndo();
+    }
+
+    /** Redraws accounts, ledger and balances after Undo or Redo, keeping the selection and sort. */
+    private void refreshAfterUndo() {
+        Account selected = selectedAccount();
+        loadAccounts(selected == null ? null : selected.id());
+        if (selectedAccount() == null && accountTree.getRowCount() > 0) {
+            accountTree.setSelectionRow(0);            // the selected account was undone away
+        }
+        updateUndoMenu();
+    }
+
+    /** Shows what Undo and Redo would do, like "Undo Edit Payee". */
+    private void updateUndoMenu() {
+        if (undoItem == null) {
+            return;
+        }
+        String u = undoLog == null ? null : undoLog.undoLabel();
+        String r = undoLog == null ? null : undoLog.redoLabel();
+        undoItem.setText(u == null ? "Undo" : "Undo " + u);
+        undoItem.setEnabled(u != null);
+        redoItem.setText(r == null ? "Redo" : "Redo " + r);
+        redoItem.setEnabled(r != null);
+    }
+
+    private static JMenuItem menuItem(String text, Runnable action) {
+        JMenuItem item = new JMenuItem(text);
+        item.addActionListener(e -> action.run());
+        return item;
+    }
+
+    /**
+     * Deletes the selected account and its transactions, after a confirmation
+     * that says what will happen. An account with envelopes can't be deleted.
+     */
+    private void deleteAccount() {
+        Account a = selectedAccount();
+        if (a == null) {
+            showError("Select an account to delete first.");
+            return;
+        }
+        AccountRepository.DeleteInfo info;
+        try {
+            info = accounts.deleteInfo(a.id());
+        } catch (SQLException e) {
+            showError("Could not check the account:\n" + e.getMessage());
+            return;
+        }
+        if (!info.envelopes().isEmpty()) {
+            showError("\"" + a.name() + "\" has envelopes (" + String.join(", ", info.envelopes())
+                    + ").\nDelete them, or move them under another account with Edit Account, first.");
+            return;
+        }
+
+        StringBuilder message = new StringBuilder("Delete the account \"" + a.name() + "\"?");
+        if (info.transactions() > 0) {
+            message.append("\n\nIts ").append(info.transactions())
+                   .append(info.transactions() == 1 ? " transaction" : " transactions");
+            if (info.reconciled() > 0) {
+                message.append(" (").append(info.reconciled()).append(" reconciled)");
+            }
+            message.append(info.transactions() == 1 ? " will be deleted." : " will be deleted.");
+        }
+        if (info.transfers() > 0) {
+            message.append("\n").append(info.transfers())
+                   .append(info.transfers() == 1 ? " transfer" : " transfers")
+                   .append(" with other accounts will stay in those accounts, with no category.");
+        }
+        message.append("\n\nYou can undo this with Edit > Undo.");
+        Object[] options = {"Delete Account", "Cancel"};
+        int choice = JOptionPane.showOptionDialog(this, message.toString(), "Delete Account",
+                JOptionPane.DEFAULT_OPTION, JOptionPane.WARNING_MESSAGE, null, options, options[1]);
+        if (choice != 0) {
+            return;
+        }
+
+        if (ledgerTable.isEditing()) {
+            ledgerTable.getCellEditor().cancelCellEditing();
+        }
+        Account shown = ledgerModel.currentAccount();
+        if (shown != null && shown.id() == a.id()) {
+            ledgerModel.discardDraft();                // its blank-row typing goes with it
+        }
+        try {
+            accounts.delete(a.id());
+        } catch (SQLException e) {
+            showError("Could not delete the account, so nothing was changed:\n" + e.getMessage());
+            return;
+        }
+        checkpoint("Delete Account");
+        loadAccounts(null);
+        if (accountTree.getRowCount() > 0) {
+            accountTree.setSelectionRow(0);
+        }
+    }
+
+    /** Opens Manage Tags; redraws the ledger if anything changed. */
+    private void manageTags() {
+        if (ledgerTable.isEditing()) {
+            ledgerTable.getCellEditor().stopCellEditing();
+        }
+        TagDialog dlg = new TagDialog(this, tags);
+        dlg.setLocationRelativeTo(this);
+        dlg.setVisible(true);
+        if (dlg.wasChanged()) {
+            checkpoint("Tag Changes");
+            ledgerModel.reload();
+        }
+    }
+
+    /** Edits the selected account (name, type, opening balance, parent). */
+    private void editAccount() {
+        Account a = selectedAccount();
+        if (a == null) {
+            showError("Select an account to edit first.");
+            return;
+        }
+        AccountDialog dlg = new AccountDialog(this, true, accounts, a);
+        dlg.setLocationRelativeTo(this);
+        dlg.setVisible(true);
+        Long id = dlg.getSavedAccountId();
+        if (id != null) {
+            checkpoint("Edit Account");
+            loadAccounts(id);
+        }
+    }
+
+    /** Imports a QIF file, creating any accounts it names that don't exist yet. */
+    private void importQif() {
+        if (ledgerTable.isEditing()) {
+            ledgerTable.getCellEditor().stopCellEditing();
+        }
+        resolveDraft(false);
+
+        JFileChooser fc = new JFileChooser();
+        fc.setDialogTitle("Import QIF File");
+        fc.setFileFilter(new FileNameExtensionFilter("QIF files (*.qif)", "qif"));
+        if (fc.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) {
+            return;
+        }
+        Path file = fc.getSelectedFile().toPath();
+
+        QifParser.QifFile qif;
+        try {
+            qif = QifParser.parse(file);
+        } catch (IOException e) {
+            showError("Could not read the file:\n" + e.getMessage());
+            return;
+        }
+
+        String unnamedAccount = null;
+        if (qif.hasUnnamedTransactions()) {
+            unnamedAccount = askImportAccount(file);
+            if (unnamedAccount == null) {
+                return;                                 // cancelled
+            }
+        }
+
+        QifImporter.Summary summary;
+        setCursor(Cursor.getPredefinedCursor(Cursor.WAIT_CURSOR));
+        try {
+            summary = new QifImporter(db).run(qif, unnamedAccount);
+        } catch (SQLException | RuntimeException e) {
+            showError("The import failed, so nothing was imported:\n" + e.getMessage());
+            return;
+        } finally {
+            setCursor(Cursor.getDefaultCursor());
+        }
+
+        checkpoint("Import QIF");
+        Account selected = selectedAccount();
+        loadAccounts(selected == null ? null : selected.id());
+        if (selectedAccount() == null && accountTree.getRowCount() > 0) {
+            accountTree.setSelectionRow(0);
+        }
+        JOptionPane.showMessageDialog(this, summary.describe(), "Import QIF",
+                JOptionPane.INFORMATION_MESSAGE);
+    }
+
+    /**
+     * The QIF file doesn't say which account its transactions belong to:
+     * asks the user to pick one or type a new name. Null if cancelled.
+     */
+    private String askImportAccount(Path file) {
+        JComboBox<String> combo = new JComboBox<>();
+        combo.setEditable(true);
+        try {
+            for (Account a : accounts.findAll()) {
+                combo.addItem(a.name());
+            }
+        } catch (SQLException ignored) {
+        }
+        String suggested = file.getFileName().toString().replaceFirst("(?i)\\.qif$", "");
+        combo.setSelectedItem(suggested);
+        while (true) {
+            int r = JOptionPane.showConfirmDialog(this, new Object[] {
+                    "This file doesn't say which account its transactions are for.\n"
+                    + "Choose an account, or type a name to create a new one:", combo},
+                    "Import QIF", JOptionPane.OK_CANCEL_OPTION, JOptionPane.QUESTION_MESSAGE);
+            if (r != JOptionPane.OK_OPTION) {
+                return null;
+            }
+            Object value = combo.getEditor().getItem();
+            String name = value == null ? "" : value.toString().trim();
+            if (!name.isEmpty()) {
+                return name;
+            }
+        }
+    }
+
+    /** Deletes the selected transactions (after asking). Reconciled ones are left alone. */
     private void deleteSelectedTransaction() {
-        int row = ledgerTable.getSelectedRow();
-        if (!ledgerModel.isSavedRow(row)) {
+        int[] rows = selectedTransactionRows();
+        if (rows.length == 0) {
             return;
         }
-        if (ledgerModel.isLocked(row)) {
-            showError("Reconciled transactions can't be deleted.\nChange the status first.");
+        int reconciled = 0;
+        int transfers = 0;
+        String transferAccount = null;
+        for (int row : rows) {
+            if (ledgerModel.isLocked(row)) {
+                reconciled++;
+            } else if (ledgerModel.transferAccount(row) != null) {
+                transfers++;
+                transferAccount = ledgerModel.transferAccount(row);
+            }
+        }
+        int deletable = rows.length - reconciled;
+        if (deletable == 0) {
+            showError(rows.length == 1 ? "Reconciled transactions can't be deleted.\nChange the status first."
+                    : "All of the selected transactions are reconciled, so none can be deleted.");
             return;
         }
-        int r = JOptionPane.showConfirmDialog(this, "Delete this transaction?",
-                "Delete Transaction", JOptionPane.YES_NO_OPTION);
+
+        StringBuilder message = new StringBuilder();
+        if (deletable == 1) {
+            message.append(transfers == 1 ? "Delete this transfer?" : "Delete this transaction?");
+        } else {
+            message.append("Delete these ").append(deletable).append(" transactions?");
+        }
+        if (transfers == 1) {
+            message.append("\nThe matching transaction in \"").append(transferAccount).append("\" will be deleted too.");
+        } else if (transfers > 1) {
+            message.append("\n").append(transfers).append(" of them are transfers; their matching")
+                   .append(" transactions in the other accounts will be deleted too.");
+        }
+        if (reconciled > 0) {
+            message.append("\n\n").append(reconciled).append(" reconciled ")
+                   .append(reconciled == 1 ? "transaction is" : "transactions are")
+                   .append(" selected too and will be left alone.");
+        }
+        int r = JOptionPane.showConfirmDialog(this, message.toString(),
+                deletable == 1 ? "Delete Transaction" : "Delete Transactions",
+                JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
         if (r == JOptionPane.YES_OPTION) {
-            ledgerModel.deleteRow(row);
+            ledgerModel.deleteRows(rows);
+        }
+    }
+
+    // ----- Bulk changes ----------------------------------------------------
+
+    /** The selected rows that are saved transactions (not the blank row). */
+    private int[] selectedTransactionRows() {
+        if (ledgerTable.isEditing()) {
+            ledgerTable.getCellEditor().stopCellEditing();
+        }
+        return java.util.Arrays.stream(ledgerTable.getSelectedRows())
+                .filter(ledgerModel::isSavedRow).toArray();
+    }
+
+    /** Edit menu / right-click: set Date, Payee, Category, Tag or Status on every selected transaction. */
+    private void bulkChange(int column) {
+        int[] rows = selectedTransactionRows();
+        if (rows.length == 0) {
+            showError("Select one or more transactions first.\n"
+                    + "(Ctrl+click or Shift+click to select several.)");
+            return;
+        }
+        String what = rows.length == 1 ? "1 transaction" : rows.length + " transactions";
+        Object value = switch (column) {
+            case LedgerTableModel.DATE -> askDate(what);
+            case LedgerTableModel.PAYEE -> askChoice("Change Payee", "New payee for " + what + ":",
+                    payeeNames(), "Leave it blank to remove the payee.");
+            case LedgerTableModel.CATEGORY -> askChoice("Change Category", "New category for " + what + ":",
+                    categoryPaths(), "Use Parent:Child for a child category, [Account] for a transfer.\n"
+                    + "Leave it blank to remove the category.");
+            case LedgerTableModel.TAG -> askChoice("Change Tag", "New tag for " + what + ":",
+                    tagNames(), "A new name creates a new tag. Leave it blank to remove the tag.");
+            case LedgerTableModel.STATUS -> askStatus(what);
+            default -> null;
+        };
+        if (value == null) {
+            return;                                     // cancelled
+        }
+        String note = ledgerModel.bulkSet(rows, column, value);
+        if (note != null) {
+            JOptionPane.showMessageDialog(this, note, "MyMoney", JOptionPane.INFORMATION_MESSAGE);
+        }
+    }
+
+    /** Edit menu / right-click: moves the selected transactions' memos into their descriptions. */
+    private void moveMemoToDescription() {
+        int[] rows = selectedTransactionRows();
+        if (rows.length == 0) {
+            showError("Select one or more transactions first.\n"
+                    + "(Ctrl+click or Shift+click to select several.)");
+            return;
+        }
+        if (ledgerModel.countWithMemo(rows) == 0) {
+            JOptionPane.showMessageDialog(this, rows.length == 1 ? "This transaction has no memo."
+                    : "None of the selected transactions has a memo.", "MyMoney", JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+        boolean append = false;
+        int both = ledgerModel.countWithMemoAndDescription(rows);
+        if (both > 0) {
+            Object[] options = {"Replace the Description", "Add the Memo After It", "Cancel"};
+            int choice = JOptionPane.showOptionDialog(this,
+                    (both == 1 ? "1 of these transactions already has a description."
+                            : both + " of these transactions already have a description.")
+                    + "\nWhat should happen to it?",
+                    "Move Memo to Description", JOptionPane.DEFAULT_OPTION, JOptionPane.QUESTION_MESSAGE,
+                    null, options, options[1]);
+            if (choice != 0 && choice != 1) {
+                return;
+            }
+            append = choice == 1;
+        }
+        ledgerModel.moveMemoToDescription(rows, append);
+    }
+
+    /** Asks for a status from the same drop-down as the Status column. Null if cancelled. */
+    private TxnStatus askStatus(String what) {
+        JComboBox<TxnStatus> combo = StatusCell.comboBox();
+        combo.setSelectedItem(TxnStatus.CLEARED);
+        int r = JOptionPane.showConfirmDialog(this, new Object[] {"New status for " + what + ":", combo},
+                "Change Status", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+        return r == JOptionPane.OK_OPTION ? (TxnStatus) combo.getSelectedItem() : null;
+    }
+
+    /** Asks for a date by typing or with the calendar. Null if cancelled. */
+    private String askDate(String what) {
+        javax.swing.JTextField field = new javax.swing.JTextField(
+                java.time.LocalDate.now().format(LedgerTableModel.DISPLAY_DATE), 12);
+        CalendarPanel calendar = new CalendarPanel(d -> field.setText(d.format(LedgerTableModel.DISPLAY_DATE)));
+        calendar.setSelected(java.time.LocalDate.now());
+        while (true) {
+            int r = JOptionPane.showConfirmDialog(this,
+                    new Object[] {"New date for " + what + ":", field, calendar},
+                    "Change Date", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+            if (r != JOptionPane.OK_OPTION) {
+                return null;
+            }
+            try {
+                LedgerTableModel.parseDate(field.getText().trim());
+                return field.getText().trim();
+            } catch (IllegalArgumentException e) {
+                showError(e.getMessage());
+            }
+        }
+    }
+
+    /** Asks for a value, offering the existing ones in an editable list. Null if cancelled. */
+    private String askChoice(String title, String prompt, List<String> choices, String hint) {
+        JComboBox<String> combo = new JComboBox<>(choices.toArray(new String[0]));
+        combo.setEditable(true);
+        combo.setSelectedItem("");
+        int r = JOptionPane.showConfirmDialog(this, new Object[] {prompt, combo, hint},
+                title, JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+        if (r != JOptionPane.OK_OPTION) {
+            return null;
+        }
+        Object value = combo.getEditor().getItem();
+        return value == null ? "" : value.toString().trim();
+    }
+
+    private List<String> payeeNames() {
+        try {
+            return transactionRepo.findPayeeNames();
+        } catch (SQLException e) {
+            return List.of();
         }
     }
 
@@ -180,16 +917,41 @@ public class MainFrame extends javax.swing.JFrame {
             }
         }
 
-        accountTree.setModel(new DefaultTreeModel(root));
-        for (int i = 0; i < accountTree.getRowCount(); i++) {
-            accountTree.expandRow(i);              // show every envelope
-        }
+        reloadingTree = true;                      // don't react to the selection coming and going
+        try {
+            accountTree.setModel(new DefaultTreeModel(root));
+            for (int i = 0; i < accountTree.getRowCount(); i++) {
+                accountTree.expandRow(i);          // show every envelope
+            }
+            fitTreeWidth();
 
-        if (selectId != null && nodes.containsKey(selectId)) {
-            TreePath path = new TreePath(nodes.get(selectId).getPath());
-            accountTree.setSelectionPath(path);
-            accountTree.scrollPathToVisible(path);
+            if (selectId != null && nodes.containsKey(selectId)) {
+                TreePath path = new TreePath(nodes.get(selectId).getPath());
+                accountTree.setSelectionPath(path);
+                accountTree.scrollPathToVisible(path);
+            }
+        } finally {
+            reloadingTree = false;
         }
+        showAccount(selectedAccount());
+    }
+
+    /** Narrowest and widest the account tree pane is sized to automatically. */
+    private static final int TREE_MIN_WIDTH = 150;
+    private static final int TREE_MAX_WIDTH = 400;
+
+    /**
+     * Moves the divider so the account tree pane is just wide enough for the
+     * longest account name (within the limits above). The divider can still
+     * be dragged; this runs again whenever the account list is reloaded.
+     */
+    private void fitTreeWidth() {
+        java.awt.Insets in = accountScroll.getInsets();
+        int width = accountTree.getPreferredSize().width
+                + in.left + in.right
+                + accountScroll.getVerticalScrollBar().getPreferredSize().width   // room if it scrolls
+                + 10;                                                              // a little breathing room
+        mainSplit.setDividerLocation(Math.max(TREE_MIN_WIDTH, Math.min(TREE_MAX_WIDTH, width)));
     }
 
     /** The account selected in the tree, or null if none. */
@@ -203,14 +965,25 @@ public class MainFrame extends javax.swing.JFrame {
 
     /** Shows an account's summary and ledger (or clears both for null). */
     private void showAccount(Account a) {
+        Account current = ledgerModel.currentAccount();
+        if (a != null && current != null && a.id() == current.id()) {
+            ledgerModel.updateAccount(a);                // same account: refresh, keep sort and blank row
+            updateSummary(a);
+            return;
+        }
         if (ledgerTable.isEditing()) {
             ledgerTable.getCellEditor().stopCellEditing();   // save a half-finished cell first
         }
-        ledgerModel.setAccount(a);
+        resolveDraft(false);                             // a new transaction left without an amount
+        ledgerModel.setAccount(a);                       // also resets the sort to Status, Date
+        ledgerTable.getTableHeader().repaint();          // update the sort arrows
         updateSummary(a);
     }
 
-    /** Fills the summary pane: account name, type, and current balance. */
+    /**
+     * Fills the summary pane: account name and type, the cleared balance
+     * (reconciled + cleared), and the total balance (every transaction).
+     */
     private void updateSummary(Account a) {
         if (a == null) {
             accountNameLabel.setText("No account selected");
@@ -219,7 +992,11 @@ public class MainFrame extends javax.swing.JFrame {
         }
         accountNameLabel.setText(a.name() + "  (" + a.type() + ")");
         try {
-            balanceLabel.setText("Balance: " + Money.format(accounts.balanceCents(a)));
+            AccountRepository.Balances b = accounts.balances(a);
+            balanceLabel.setText("<html><div align='right'><b><font size='+1'>Cleared Balance: "
+                    + Money.format(b.clearedCents()) + "</font></b><br>"
+                    + "Total Balance (all transactions): " + Money.format(b.totalCents())
+                    + "</div></html>");
         } catch (SQLException e) {
             balanceLabel.setText("Balance: unavailable");
         }
@@ -305,6 +1082,10 @@ public class MainFrame extends javax.swing.JFrame {
     }// </editor-fold>//GEN-END:initComponents
 
     private void formWindowClosing(java.awt.event.WindowEvent evt) {//GEN-FIRST:event_formWindowClosing
+        if (ledgerTable.isEditing()) {
+            ledgerTable.getCellEditor().stopCellEditing();
+        }
+        resolveDraft(false);
         db.close();
         config.close();
     }//GEN-LAST:event_formWindowClosing
@@ -313,8 +1094,9 @@ public class MainFrame extends javax.swing.JFrame {
         AccountDialog dlg = new AccountDialog(this, true, accounts);
         dlg.setLocationRelativeTo(this);
         dlg.setVisible(true);                      // modal: waits here until closed
-        Long id = dlg.getCreatedAccountId();
+        Long id = dlg.getSavedAccountId();
         if (id != null) {
+            checkpoint("New Account");
             loadAccounts(id);                      // rebuild the tree and select the new account
         }
     }//GEN-LAST:event_newAccountItemActionPerformed

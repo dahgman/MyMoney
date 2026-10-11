@@ -1,5 +1,6 @@
 package com.martinsmayhem.mymoney;
 
+import java.awt.Color;
 import java.sql.SQLException;
 import java.time.LocalDate;
 import java.time.MonthDay;
@@ -7,8 +8,10 @@ import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.time.format.ResolverStyle;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Predicate;
 import javax.swing.table.AbstractTableModel;
 
@@ -20,8 +23,15 @@ import javax.swing.table.AbstractTableModel;
  * Deposit amount, and a fresh blank row appears below it. Edits to saved rows
  * are written to the database as soon as each cell is changed.
  *
- * A reconciled transaction is locked: only its status can be changed, and
- * changing it away from Reconciled must be confirmed.
+ * A reconciled transaction is locked, except for its status, category and
+ * tag: none of them changes any account balance. (Changing the status away
+ * from Reconciled must be confirmed.) A reconciled transaction can't be made
+ * into a transfer or stop being one, since that would change another
+ * account's balance.
+ *
+ * Rows can be sorted by several columns at once (see sortBy). The blank row
+ * always stays at the bottom, and Balance is always the running balance in
+ * date order, whatever the sort.
  */
 public class LedgerTableModel extends AbstractTableModel {
 
@@ -29,19 +39,21 @@ public class LedgerTableModel extends AbstractTableModel {
     public static final int NUM = 1;
     public static final int PAYEE = 2;
     public static final int CATEGORY = 3;
-    public static final int DESCRIPTION = 4;
-    public static final int MEMO = 5;
-    public static final int STATUS = 6;
-    public static final int PAYMENT = 7;
-    public static final int DEPOSIT = 8;
-    public static final int BALANCE = 9;
+    public static final int TAG = 4;
+    public static final int DESCRIPTION = 5;
+    public static final int MEMO = 6;
+    public static final int STATUS = 7;
+    public static final int PAYMENT = 8;
+    public static final int DEPOSIT = 9;
+    public static final int BALANCE = 10;
 
     private static final String[] COLUMNS = {
-        "Date", "Num", "Payee", "Category", "Description", "Memo", "Status",
+        "Date", "Num", "Payee", "Category", "Tag", "Description", "Memo", "Status",
         "Payment", "Deposit", "Balance"
     };
 
-    private static final DateTimeFormatter DISPLAY_DATE = DateTimeFormatter.ofPattern("MM/dd/yyyy");
+    /** How dates are shown in the ledger (also used by DateCellEditor). */
+    static final DateTimeFormatter DISPLAY_DATE = DateTimeFormatter.ofPattern("MM/dd/yyyy");
 
     /** Date formats accepted when typing. A date without a year means this year. */
     private static final DateTimeFormatter[] INPUT_DATES = {
@@ -57,8 +69,17 @@ public class LedgerTableModel extends AbstractTableModel {
     private final Runnable onChanged;           // called after anything is saved
 
     private Account account;
+    private String lastAction = "Change";        // name of the last saved change, for Undo
+    /** One level of sorting: a column and its direction. */
+    public record SortKey(int column, boolean ascending) {
+    }
+
     private final List<LedgerEntry> entries = new ArrayList<>();
-    private final List<Long> balances = new ArrayList<>();   // running balance per entry
+    /** The sort used whenever an account is selected: Status, then Date. */
+    private static final List<SortKey> DEFAULT_SORT =
+            List.of(new SortKey(STATUS, true), new SortKey(DATE, true));
+
+    private final List<SortKey> sortKeys = new ArrayList<>(DEFAULT_SORT);
     private LedgerEntry draft = newDraft(LocalDate.now());   // the blank row
 
     public LedgerTableModel(TransactionRepository transactions,
@@ -70,10 +91,31 @@ public class LedgerTableModel extends AbstractTableModel {
         this.onChanged = onChanged;
     }
 
-    /** Shows a different account's ledger (or nothing, for null). */
+    /** The account being shown, or null. */
+    public Account currentAccount() {
+        return account;
+    }
+
+    /**
+     * Same account, possibly changed (name, opening balance) or with changed
+     * transactions (after Undo): reloads it, keeping the sort and the blank row.
+     */
+    public void updateAccount(Account account) {
+        this.account = account;
+        refresh();
+    }
+
+    /** A short name for the last change saved, like "Edit Payee" (shown as "Undo Edit Payee"). */
+    public String lastAction() {
+        return lastAction;
+    }
+
+    /** Shows a different account's ledger (or nothing, for null), in the default sort. */
     public void setAccount(Account account) {
         this.account = account;
         this.draft = newDraft(LocalDate.now());
+        sortKeys.clear();
+        sortKeys.addAll(DEFAULT_SORT);
         load();
         fireTableDataChanged();
     }
@@ -83,22 +125,273 @@ public class LedgerTableModel extends AbstractTableModel {
         return row >= 0 && row < entries.size();
     }
 
-    /** True for a reconciled transaction, which can't be edited or deleted. */
+    /** True for the blank new-transaction row at the bottom. */
+    public boolean isDraftRow(int row) {
+        return account != null && row == entries.size();
+    }
+
+    /** True if something besides the date has been typed into the new-transaction row. */
+    public boolean draftHasData() {
+        return account != null
+                && (!text(draft.checkNumber).isBlank() || !text(draft.payee).isBlank()
+                    || !text(draft.category).isBlank() || !text(draft.tag).isBlank()
+                    || !text(draft.description).isBlank()
+                    || !text(draft.memo).isBlank() || draft.status != TxnStatus.NONE);
+    }
+
+    /** Saves the new-transaction row as it is, even with no amount ($0.00). */
+    public void recordDraft() {
+        if (account == null) {
+            return;
+        }
+        lastAction = "New Transaction";
+        try {
+            transactions.insert(account.id(), draft);
+            draft = newDraft(draft.date);
+        } catch (SQLException ex) {
+            onError.accept("Could not save the transaction:\n" + ex.getMessage());
+        }
+        refresh();
+        onChanged.run();
+    }
+
+    /** Clears the new-transaction row (keeping its date). */
+    public void discardDraft() {
+        draft = newDraft(draft.date);
+        if (account != null) {
+            fireTableRowsUpdated(entries.size(), entries.size());
+        }
+    }
+
+    /** For a saved transfer row, the other account's name; otherwise null. */
+    public String transferAccount(int row) {
+        if (!isSavedRow(row)) {
+            return null;
+        }
+        String c = entries.get(row).category;
+        return TransactionRepository.isTransfer(c) ? c.substring(1, c.length() - 1) : null;
+    }
+
+    /** The tag color for a row, or null if it has no (saved) tag. */
+    public Color tagColor(int row) {
+        return isSavedRow(row) ? entries.get(row).tagColor : null;
+    }
+
+    /** Re-reads the current account's transactions, keeping the sort (after tags change). */
+    public void reload() {
+        refresh();
+    }
+
+    /**
+     * The row of the transaction dated today, or else the latest one before
+     * today (the most recently entered, if several share that date).
+     * -1 if every transaction is in the future or there are none.
+     */
+    public int rowNearestToday() {
+        LocalDate today = LocalDate.now();
+        int best = -1;
+        for (int row = 0; row < entries.size(); row++) {
+            LedgerEntry e = entries.get(row);
+            if (e.date.isAfter(today)) {
+                continue;
+            }
+            if (best < 0) {
+                best = row;
+                continue;
+            }
+            LedgerEntry b = entries.get(best);
+            if (e.date.isAfter(b.date) || (e.date.equals(b.date) && e.id > b.id)) {
+                best = row;
+            }
+        }
+        return best;
+    }
+
+    /** True for a saved transaction dated after today. */
+    public boolean isFuture(int row) {
+        return isSavedRow(row) && entries.get(row).date.isAfter(LocalDate.now());
+    }
+
+    /**
+     * A reconciled transaction's category may change unless the old or new
+     * category is a transfer or it is a split transaction.
+     */
+    private static boolean reconciledCategoryChangeOk(String oldCategory, Object newValue) {
+        String newText = newValue == null ? "" : newValue.toString().trim();
+        return !TransactionRepository.isTransfer(oldCategory)
+                && !TransactionRepository.SPLIT_LABEL.equals(oldCategory)
+                && !TransactionRepository.isTransfer(newText);
+    }
+
+    /** True for a reconciled transaction: only its status, category and tag can be changed, and it can't be deleted. */
     public boolean isLocked(int row) {
         return isSavedRow(row) && entries.get(row).status == TxnStatus.RECONCILED;
     }
 
     public void deleteRow(int row) {
-        if (!isSavedRow(row) || isLocked(row)) {
+        deleteRows(new int[] {row});
+    }
+
+    /**
+     * Deletes the saved, unreconciled transactions among these rows (and the
+     * other side of any transfers), all at once. Other rows are left alone.
+     */
+    public void deleteRows(int[] rows) {
+        List<Long> ids = new ArrayList<>();
+        for (int row : rows) {
+            if (isSavedRow(row) && !isLocked(row)) {
+                ids.add(entries.get(row).id);
+            }
+        }
+        if (ids.isEmpty()) {
             return;
         }
+        lastAction = ids.size() == 1 ? "Delete Transaction" : "Delete Transactions";
         try {
-            transactions.delete(entries.get(row).id);
+            transactions.deleteAll(ids);
         } catch (SQLException e) {
-            onError.accept("Could not delete the transaction:\n" + e.getMessage());
+            onError.accept("Could not delete " + (ids.size() == 1 ? "the transaction" : "the transactions")
+                    + ", so nothing was deleted:\n" + e.getMessage());
         }
         refresh();
         onChanged.run();
+    }
+
+    /** How many of these rows are saved transactions with a memo. */
+    public int countWithMemo(int[] rows) {
+        int n = 0;
+        for (int row : rows) {
+            if (isSavedRow(row) && !text(entries.get(row).memo).isBlank()) {
+                n++;
+            }
+        }
+        return n;
+    }
+
+    /** How many of these rows have both a memo and a description already. */
+    public int countWithMemoAndDescription(int[] rows) {
+        int n = 0;
+        for (int row : rows) {
+            if (isSavedRow(row) && !text(entries.get(row).memo).isBlank()
+                    && !text(entries.get(row).description).isBlank()) {
+                n++;
+            }
+        }
+        return n;
+    }
+
+    /**
+     * Moves each row's memo into its description and clears the memo.
+     * Rows without a memo are left alone. Where there is already a
+     * description, the memo either replaces it or is added after it
+     * ("description - memo"). Reconciled rows are included: neither field
+     * affects a balance.
+     */
+    public void moveMemoToDescription(int[] rows, boolean append) {
+        List<LedgerEntry> changes = new ArrayList<>();
+        for (int row : rows) {
+            if (!isSavedRow(row) || text(entries.get(row).memo).isBlank()) {
+                continue;
+            }
+            LedgerEntry e = entries.get(row).copy();
+            String memo = e.memo.trim();
+            String description = text(e.description).trim();
+            e.description = append && !description.isEmpty() ? description + " - " + memo : memo;
+            e.memo = null;
+            changes.add(e);
+        }
+        if (changes.isEmpty()) {
+            return;
+        }
+        lastAction = "Move Memo to Description";
+        try {
+            transactions.updateAll(changes);
+        } catch (SQLException ex) {
+            onError.accept("Could not move the memos, so nothing was changed:\n" + ex.getMessage());
+        }
+        refresh();
+        onChanged.run();
+    }
+
+    /**
+     * Sets one column (Date, Payee, Category, Tag or Status) to the same value
+     * on several rows at once, saving them all together. Reconciled rows are
+     * skipped, except for Status, Tag and (non-transfer) Category changes; split
+     * transactions are skipped when changing Category. Taking reconciled rows
+     * off Reconciled must be confirmed.
+     *
+     * @param value the text to set, or a TxnStatus for the Status column
+     * @return a note about skipped rows, or null if every row was changed
+     *         (also null if cancelled or on error)
+     */
+    public String bulkSet(int[] rows, int column, Object value) {
+        List<LedgerEntry> changes = new ArrayList<>();
+        int reconciled = 0;
+        int splits = 0;
+        if (column == STATUS) {
+            int unreconciling = 0;
+            for (int row : rows) {
+                if (isLocked(row) && value != TxnStatus.RECONCILED) {
+                    unreconciling++;
+                }
+            }
+            if (unreconciling > 0 && !confirm.test((unreconciling == 1 ? "1 of the selected transactions is"
+                    : unreconciling + " of the selected transactions are") + " reconciled. Change "
+                    + (unreconciling == 1 ? "it" : "them") + " to " + value + "?\n\n"
+                    + (unreconciling == 1 ? "It" : "They") + " will no longer be locked, and your"
+                    + " reconciled balance may no longer match your statement.")) {
+                return null;
+            }
+        }
+        try {
+            for (int row : rows) {
+                if (!isSavedRow(row)) {
+                    continue;
+                }
+                LedgerEntry e = entries.get(row);
+                if (e.status == TxnStatus.RECONCILED && column != STATUS && column != TAG
+                        && !(column == CATEGORY && reconciledCategoryChangeOk(e.category, value))) {
+                    reconciled++;
+                } else if (column == CATEGORY && TransactionRepository.SPLIT_LABEL.equals(e.category)) {
+                    splits++;
+                } else {
+                    LedgerEntry changed = e.copy();
+                    apply(changed, column, value);
+                    changes.add(changed);
+                }
+            }
+        } catch (IllegalArgumentException ex) {
+            onError.accept(ex.getMessage());
+            return null;
+        }
+        if (!changes.isEmpty()) {
+            lastAction = "Change " + COLUMNS[column];
+            try {
+                transactions.updateAll(changes);
+            } catch (SQLException ex) {
+                onError.accept("Could not change the transactions, so nothing was changed:\n" + ex.getMessage());
+                refresh();
+                return null;
+            }
+            refresh();
+            onChanged.run();
+        }
+        if (reconciled == 0 && splits == 0) {
+            return null;
+        }
+        StringBuilder note = new StringBuilder(changes.isEmpty() ? "Nothing was changed."
+                : "Changed " + changes.size() + " of " + (changes.size() + reconciled + splits) + " transactions.");
+        if (reconciled > 0) {
+            note.append("\n").append(reconciled).append(" reconciled ")
+                .append(reconciled == 1 ? "transaction was" : "transactions were").append(" left alone")
+                .append(column == CATEGORY ? " (a reconciled transfer, or a change to a transfer,"
+                        + " would change another account's balance)." : ".");
+        }
+        if (splits > 0) {
+            note.append("\n").append(splits).append(" split ")
+                .append(splits == 1 ? "transaction keeps its" : "transactions keep their").append(" categories.");
+        }
+        return note.toString();
     }
 
     // ----- TableModel ---------------------------------------------------
@@ -129,7 +422,9 @@ public class LedgerTableModel extends AbstractTableModel {
             return false;
         }
         if (isLocked(row)) {
-            return column == STATUS;            // reconciled: only the status can change
+            // Reconciled: status, tag and category only (a transfer's category stays put).
+            return column == STATUS || column == TAG
+                    || (column == CATEGORY && reconciledCategoryChangeOk(entries.get(row).category, null));
         }
         return true;
     }
@@ -142,12 +437,13 @@ public class LedgerTableModel extends AbstractTableModel {
             case NUM -> text(e.checkNumber);
             case PAYEE -> text(e.payee);
             case CATEGORY -> text(e.category);
+            case TAG -> text(e.tag);
             case DESCRIPTION -> text(e.description);
             case MEMO -> text(e.memo);
             case STATUS -> e.status;
             case PAYMENT -> e.amountCents < 0 ? Money.format(-e.amountCents) : "";
             case DEPOSIT -> e.amountCents > 0 ? Money.format(e.amountCents) : "";
-            case BALANCE -> isSavedRow(row) ? Money.format(balances.get(row)) : "";
+            case BALANCE -> isSavedRow(row) ? Money.format(e.balanceCents) : "";
             default -> "";
         };
     }
@@ -160,7 +456,6 @@ public class LedgerTableModel extends AbstractTableModel {
         if (!isCellEditable(row, column)) {
             return;
         }
-        String text = value == null ? "" : value.toString().trim();
         boolean isDraft = !isSavedRow(row);
         LedgerEntry e = isDraft ? draft : entries.get(row);
 
@@ -178,37 +473,24 @@ public class LedgerTableModel extends AbstractTableModel {
             }
         }
 
+        if (column == CATEGORY && isLocked(row) && !reconciledCategoryChangeOk(e.category, value)) {
+            onError.accept("A reconciled transaction can't be made into a transfer,"
+                    + " because that would change another account's balance.");
+            return;
+        }
+
         // 1. Put the typed value into the entry. Bad input changes nothing.
+        LedgerEntry before = e.copy();
         try {
-            switch (column) {
-                case DATE -> e.date = parseDate(text);
-                case NUM -> e.checkNumber = text;
-                case PAYEE -> e.payee = text;
-                case CATEGORY -> e.category = text.isEmpty() ? null : CategoryRepository.normalize(text);
-                case DESCRIPTION -> e.description = text;
-                case MEMO -> e.memo = text;
-                case STATUS -> e.status = value instanceof TxnStatus s ? s : TxnStatus.NONE;
-                case PAYMENT -> {
-                    if (!text.isEmpty()) {
-                        e.amountCents = -Money.parse(text);
-                    } else if (e.amountCents < 0) {
-                        e.amountCents = 0;
-                    }
-                }
-                case DEPOSIT -> {
-                    if (!text.isEmpty()) {
-                        e.amountCents = Money.parse(text);
-                    } else if (e.amountCents > 0) {
-                        e.amountCents = 0;
-                    }
-                }
-                default -> {
-                    return;
-                }
+            if (!apply(e, column, value)) {
+                return;
             }
         } catch (IllegalArgumentException ex) {
             onError.accept(ex.getMessage());
             return;
+        }
+        if (!isDraft && e.sameContent(before)) {
+            return;                                     // nothing actually changed: no save, no undo step
         }
 
         // 2. Save it.
@@ -219,9 +501,11 @@ public class LedgerTableModel extends AbstractTableModel {
                     fireTableRowsUpdated(row, row);      // keep filling in the blank row
                     return;
                 }
+                lastAction = "New Transaction";
                 transactions.insert(account.id(), draft);
                 draft = newDraft(draft.date);           // next entry starts on the same date
             } else {
+                lastAction = column == STATUS ? "Change Status" : "Edit " + COLUMNS[column];
                 transactions.update(e);
             }
         } catch (SQLException ex) {
@@ -231,25 +515,189 @@ public class LedgerTableModel extends AbstractTableModel {
         onChanged.run();
     }
 
+    /**
+     * Puts a typed (or chosen) value into one field of an entry.
+     * Returns false for a column that can't be set this way.
+     * @throws IllegalArgumentException for bad input; the entry is unchanged
+     */
+    private static boolean apply(LedgerEntry e, int column, Object value) {
+        String text = value == null ? "" : value.toString().trim();
+        switch (column) {
+            case DATE -> e.date = parseDate(text);
+            case NUM -> e.checkNumber = text;
+            case PAYEE -> e.payee = text;
+            case CATEGORY -> e.category = text.isEmpty() ? null
+                    : TransactionRepository.isTransfer(text) ? text      // "[Savings]" = transfer
+                    : CategoryRepository.normalize(text);
+            case TAG -> e.tag = text.isEmpty() ? null : TagRepository.normalize(text);
+            case DESCRIPTION -> e.description = text;
+            case MEMO -> e.memo = text;
+            case STATUS -> e.status = value instanceof TxnStatus s ? s : TxnStatus.NONE;
+            case PAYMENT -> {
+                if (!text.isEmpty()) {
+                    e.amountCents = -Money.parse(text);
+                } else if (e.amountCents < 0) {
+                    e.amountCents = 0;
+                }
+            }
+            case DEPOSIT -> {
+                if (!text.isEmpty()) {
+                    e.amountCents = Money.parse(text);
+                } else if (e.amountCents > 0) {
+                    e.amountCents = 0;
+                }
+            }
+            default -> {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // ----- Sorting ------------------------------------------------------
+
+    /**
+     * Sorts by a column (a header click).
+     * Plain click: sort by this column only; if it already was the only
+     * sort column, flip between ascending and descending.
+     * Ctrl+click: add this column as the next sort level; if it is already
+     * one of the levels, flip its direction.
+     */
+    public void sortBy(int column, boolean addLevel) {
+        int i = sortLevelOf(column);
+        if (addLevel) {
+            if (i >= 0) {
+                flip(i);
+            } else {
+                sortKeys.add(new SortKey(column, true));
+            }
+        } else if (i == 0 && sortKeys.size() == 1) {
+            flip(0);
+        } else {
+            sortKeys.clear();
+            sortKeys.add(new SortKey(column, true));
+        }
+        entries.sort(sortOrder());
+        fireTableDataChanged();
+    }
+
+    /** Header suffix: " ▲" / " ▼", numbered when sorting by several columns. */
+    public String sortIndicator(int column) {
+        int i = sortLevelOf(column);
+        if (i < 0) {
+            return "";
+        }
+        String arrow = sortKeys.get(i).ascending() ? " \u25B2" : " \u25BC";
+        return sortKeys.size() > 1 ? arrow + (i + 1) : arrow;
+    }
+
+    private int sortLevelOf(int column) {
+        for (int i = 0; i < sortKeys.size(); i++) {
+            if (sortKeys.get(i).column() == column) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private void flip(int level) {
+        SortKey k = sortKeys.get(level);
+        sortKeys.set(level, new SortKey(k.column(), !k.ascending()));
+    }
+
+    /** The sort levels in order, then date and entry order to break ties. */
+    private Comparator<LedgerEntry> sortOrder() {
+        Comparator<LedgerEntry> order = (a, b) -> 0;
+        for (SortKey k : sortKeys) {
+            order = order.thenComparing(columnOrder(k.column(), k.ascending()));
+        }
+        return order.thenComparing(e -> e.date).thenComparingLong(e -> e.id);
+    }
+
+    /** How one column sorts. Blank values always go last (amounts: see amountOrder). */
+    private static Comparator<LedgerEntry> columnOrder(int column, boolean ascending) {
+        return switch (column) {
+            case DATE -> by(e -> e.date, Comparator.<LocalDate>naturalOrder(), ascending);
+            case NUM -> by(e -> blankToNull(e.checkNumber), LedgerTableModel::compareNumbers, ascending);
+            case PAYEE -> by(e -> blankToNull(e.payee), String.CASE_INSENSITIVE_ORDER, ascending);
+            case CATEGORY -> by(e -> blankToNull(e.category), String.CASE_INSENSITIVE_ORDER, ascending);
+            case TAG -> by(e -> blankToNull(e.tag), String.CASE_INSENSITIVE_ORDER, ascending);
+            case DESCRIPTION -> by(e -> blankToNull(e.description), String.CASE_INSENSITIVE_ORDER, ascending);
+            case MEMO -> by(e -> blankToNull(e.memo), String.CASE_INSENSITIVE_ORDER, ascending);
+            case STATUS -> by(e -> e.status == TxnStatus.NONE ? null : e.status,
+                    Comparator.<TxnStatus>naturalOrder(), ascending);
+            case PAYMENT -> amountOrder(true, ascending);
+            case DEPOSIT -> amountOrder(false, ascending);
+            case BALANCE -> by(e -> e.balanceCents, Comparator.<Long>naturalOrder(), ascending);
+            default -> (a, b) -> 0;
+        };
+    }
+
+    /**
+     * Payment or Deposit: rows with an amount in this column come first,
+     * sorted by it; then rows whose amount is in the other column, sorted by
+     * that amount in the same direction; then $0.00 rows.
+     */
+    private static Comparator<LedgerEntry> amountOrder(boolean payments, boolean ascending) {
+        Comparator<LedgerEntry> group = Comparator.comparingInt(e -> {
+            if (e.amountCents == 0) {
+                return 2;
+            }
+            return (e.amountCents < 0) == payments ? 0 : 1;
+        });
+        Comparator<Long> size = ascending ? Comparator.<Long>naturalOrder() : Comparator.<Long>reverseOrder();
+        return group.thenComparing(e -> Math.abs(e.amountCents), size);
+    }
+
+    private static <T> Comparator<LedgerEntry> by(Function<LedgerEntry, T> key,
+            Comparator<T> order, boolean ascending) {
+        return Comparator.comparing(key, Comparator.nullsLast(ascending ? order : order.reversed()));
+    }
+
+    /** Check numbers: numbers in numeric order (2 before 10), then other text. */
+    private static int compareNumbers(String a, String b) {
+        Long x = asLong(a);
+        Long y = asLong(b);
+        if (x != null && y != null) {
+            return x.compareTo(y);
+        }
+        if (x != null || y != null) {
+            return x != null ? -1 : 1;
+        }
+        return a.compareToIgnoreCase(b);
+    }
+
+    private static Long asLong(String s) {
+        try {
+            return Long.valueOf(s.trim());
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private static String blankToNull(String s) {
+        return s == null || s.isBlank() ? null : s;
+    }
+
     // ---------------------------------------------------------------------
 
-    /** Re-reads the account's transactions and recomputes running balances. */
+    /** Re-reads the account's transactions, computes balances, and sorts. */
     private void load() {
         entries.clear();
-        balances.clear();
         if (account == null) {
             return;
         }
         try {
-            entries.addAll(transactions.findByAccount(account.id()));
+            entries.addAll(transactions.findByAccount(account.id()));   // date order
         } catch (SQLException e) {
             onError.accept("Could not load transactions:\n" + e.getMessage());
         }
         long balance = account.openingBalanceCents();
         for (LedgerEntry e : entries) {
             balance += e.amountCents;
-            balances.add(balance);
+            e.balanceCents = balance;
         }
+        entries.sort(sortOrder());
     }
 
     /**

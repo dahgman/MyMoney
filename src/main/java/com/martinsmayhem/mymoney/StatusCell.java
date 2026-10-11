@@ -36,6 +36,11 @@ public final class StatusCell {
 
     /** A drop-down showing each status as a dot and its name. */
     public static TableCellEditor editor() {
+        return new DefaultCellEditor(comboBox());
+    }
+
+    /** The status drop-down on its own (also used by Edit > Change Status). */
+    public static JComboBox<TxnStatus> comboBox() {
         JComboBox<TxnStatus> combo = new JComboBox<>(TxnStatus.values());
         combo.setRenderer(new DefaultListCellRenderer() {
             @Override
@@ -49,6 +54,6 @@ public final class StatusCell {
                 return this;
             }
         });
-        return new DefaultCellEditor(combo);
+        return combo;
     }
 }

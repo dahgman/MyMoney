@@ -7,6 +7,7 @@ public enum AccountType {
     CREDIT_CARD("Credit Card"),
     CASH("Cash"),
     LOAN("Loan"),
+    OTHER_ASSET("Other Asset"),
     ENVELOPE("Envelope");          // a child account that sets money aside inside its parent
 
     private final String label;

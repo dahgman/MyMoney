@@ -12,29 +12,40 @@ import javax.swing.JList;
 import javax.swing.JOptionPane;
 
 /**
- * Creates a new account. Choosing a parent account makes it an envelope.
+ * Creates a new account, or edits an existing one. Choosing a parent account
+ * makes it an envelope; an account that has envelopes can't have a parent.
  *
  * @author mike@asylum.martinsmayhem.com
  */
 public class AccountDialog extends javax.swing.JDialog {
 
     private final AccountRepository accounts;
-    private Long createdAccountId;
+    private final Account editing;             // null when creating a new account
+    private Long savedAccountId;
 
     /**
-     * Creates new form AccountDialog
+     * Creates new form AccountDialog, for a new account.
      */
     public AccountDialog(java.awt.Frame parent, boolean modal, AccountRepository accounts) {
-        super(parent, modal);
-        this.accounts = accounts;
-        initComponents();
-        loadParents();
-        getRootPane().setDefaultButton(createButton);   // Enter = Create
+        this(parent, modal, accounts, null);
     }
 
-    /** Id of the account that was created, or null if the user cancelled. */
-    public Long getCreatedAccountId() {
-        return createdAccountId;
+    /** Opens the dialog to edit an existing account (or create one, if editing is null). */
+    public AccountDialog(java.awt.Frame parent, boolean modal, AccountRepository accounts, Account editing) {
+        super(parent, modal);
+        this.accounts = accounts;
+        this.editing = editing;
+        initComponents();
+        loadParents();
+        getRootPane().setDefaultButton(createButton);   // Enter = Create / Save
+        if (editing != null) {
+            fillFromAccount();
+        }
+    }
+
+    /** Id of the account that was created or edited, or null if the user cancelled. */
+    public Long getSavedAccountId() {
+        return savedAccountId;
     }
 
     /** Fills the parent list: "(none)" first, then accounts that can hold envelopes. */
@@ -43,7 +54,9 @@ public class AccountDialog extends javax.swing.JDialog {
         model.addElement(null);                         // null = top-level account
         try {
             for (Account a : accounts.findParentCandidates()) {
-                model.addElement(a);
+                if (editing == null || a.id() != editing.id()) {   // not its own parent
+                    model.addElement(a);
+                }
             }
         } catch (SQLException e) {
             showError("Could not load accounts:\n" + e.getMessage());
@@ -60,6 +73,31 @@ public class AccountDialog extends javax.swing.JDialog {
                 return this;
             }
         });
+    }
+
+    /** Edit mode: shows the account's current values. */
+    private void fillFromAccount() {
+        setTitle("Edit Account");
+        createButton.setText("Save");
+        nameField.setText(editing.name());
+
+        // Parent first: choosing it adjusts the type, which is then set below.
+        for (int i = 0; i < parentCombo.getItemCount(); i++) {
+            Account a = parentCombo.getItemAt(i);
+            if (a != null && editing.parentId() != null && a.id() == editing.parentId()) {
+                parentCombo.setSelectedIndex(i);
+            }
+        }
+        try {
+            if (accounts.hasChildren(editing.id())) {
+                parentCombo.setEnabled(false);
+                parentCombo.setToolTipText("This account has envelopes, so it can't go under another account.");
+            }
+        } catch (SQLException e) {
+            showError("Could not check this account's envelopes:\n" + e.getMessage());
+        }
+        typeCombo.setSelectedItem(editing.type());
+        openingField.setText(Money.format(editing.openingBalanceCents()));
     }
 
     private void showError(String message) {
@@ -186,15 +224,20 @@ public class AccountDialog extends javax.swing.JDialog {
             return;
         }
 
+        Long parentId = parent == null ? null : parent.id();
         try {
-            if (accounts.nameExists(name)) {
+            if (accounts.nameExists(name, editing == null ? 0 : editing.id())) {
                 showError("An account with that name already exists.");
                 return;
             }
-            createdAccountId = accounts.insert(name, type, openingCents,
-                    parent == null ? null : parent.id());
+            if (editing == null) {
+                savedAccountId = accounts.insert(name, type, openingCents, parentId);
+            } else {
+                accounts.update(editing.id(), name, type, openingCents, parentId);
+                savedAccountId = editing.id();
+            }
         } catch (SQLException e) {
-            showError("Could not create the account:\n" + e.getMessage());
+            showError("Could not save the account:\n" + e.getMessage());
             return;
         }
         dispose();

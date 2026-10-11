@@ -17,6 +17,7 @@ public enum TxnStatus {
     CLEARED("C", "Cleared", new Color(39, 174, 96)),          // green
     PENDING("P", "Pending", new Color(241, 196, 15)),         // yellow
     PAID("D", "Paid", new Color(230, 126, 34)),               // orange
+    SCHEDULED("S", "Scheduled", new Color(52, 152, 219)),     // blue
     NONE("U", "None", null);                                  // no dot
 
     private final String code;

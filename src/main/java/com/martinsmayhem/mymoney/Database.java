@@ -27,9 +27,11 @@ public class Database implements AutoCloseable {
      * Version history:
      *   1 - initial schema
      *   2 - account.parent_id (envelopes / child accounts), txn.description
+     *   3 - tag table (name + color), txn.tag_id
+     *   4 - split.transfer_txn_id (links the two sides of a transfer)
      * When changing the schema: bump this, update createSchema(), and add a step to upgrade().
      */
-    public static final int SCHEMA_VERSION = 2;
+    public static final int SCHEMA_VERSION = 4;
 
     private final Path file;
     private final Connection conn;
@@ -133,7 +135,22 @@ public class Database implements AutoCloseable {
                 st.execute("ALTER TABLE txn ADD COLUMN description TEXT");
                 st.execute("CREATE INDEX idx_account_parent ON account(parent_id)");
             }
-            // Future: if (fromVersion < 3) { ... }
+            if (fromVersion < 3) {
+                st.execute("""
+                    CREATE TABLE tag (
+                        id    INTEGER PRIMARY KEY,
+                        name  TEXT    NOT NULL UNIQUE COLLATE NOCASE,
+                        color TEXT    NOT NULL                 -- #RRGGBB
+                    )
+                    """);
+                st.execute("ALTER TABLE txn ADD COLUMN tag_id INTEGER REFERENCES tag(id)");
+                st.execute("CREATE INDEX idx_txn_tag ON txn(tag_id)");
+            }
+            if (fromVersion < 4) {
+                st.execute("ALTER TABLE split ADD COLUMN transfer_txn_id INTEGER"
+                        + " REFERENCES txn(id) ON DELETE SET NULL");
+            }
+            // Future: if (fromVersion < 5) { ... }
 
             try (PreparedStatement ps = conn.prepareStatement(
                     "UPDATE meta SET value = ? WHERE key = 'schema_version'")) {
@@ -183,6 +200,13 @@ public class Database implements AutoCloseable {
             )
             """,
             """
+            CREATE TABLE tag (
+                id    INTEGER PRIMARY KEY,
+                name  TEXT    NOT NULL UNIQUE COLLATE NOCASE,
+                color TEXT    NOT NULL                         -- #RRGGBB
+            )
+            """,
+            """
             CREATE TABLE txn (
                 id           INTEGER PRIMARY KEY,
                 account_id   INTEGER NOT NULL REFERENCES account(id),
@@ -190,8 +214,9 @@ public class Database implements AutoCloseable {
                 payee_id     INTEGER REFERENCES payee(id),
                 check_number TEXT,
                 memo         TEXT,
-                status       TEXT    NOT NULL DEFAULT 'U',       -- U=uncleared, C=cleared, R=reconciled
-                description  TEXT
+                status       TEXT    NOT NULL DEFAULT 'U',       -- R=reconciled, C=cleared, P=pending, D=paid, S=scheduled, U=none
+                description  TEXT,
+                tag_id       INTEGER REFERENCES tag(id)          -- one tag per transaction
             )
             """,
             """
@@ -201,12 +226,14 @@ public class Database implements AutoCloseable {
                 category_id         INTEGER REFERENCES category(id),
                 transfer_account_id INTEGER REFERENCES account(id),
                 amount_cents        INTEGER NOT NULL,            -- negative = payment, positive = deposit
-                memo                TEXT
+                memo                TEXT,
+                transfer_txn_id     INTEGER REFERENCES txn(id) ON DELETE SET NULL   -- other side of a transfer
             )
             """,
             "CREATE INDEX idx_account_parent ON account(parent_id)",
             "CREATE INDEX idx_txn_account_date ON txn(account_id, txn_date)",
-            "CREATE INDEX idx_split_txn ON split(txn_id)"
+            "CREATE INDEX idx_split_txn ON split(txn_id)",
+            "CREATE INDEX idx_txn_tag ON txn(tag_id)"
         };
 
         conn.setAutoCommit(false);

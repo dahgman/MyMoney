@@ -84,6 +84,40 @@ public class CategoryRepository {
         return id;
     }
 
+    /** Marks a category as income (true) or expense (false). */
+    public void setIncome(long id, boolean income) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "UPDATE category SET is_income = ? WHERE id = ?")) {
+            ps.setInt(1, income ? 1 : 0);
+            ps.setLong(2, id);
+            ps.executeUpdate();
+        }
+    }
+
+    /**
+     * Fits a path from another program into MyMoney's two levels:
+     * "Auto:Fuel:Premium" -> "Auto:Fuel - Premium". Empty parts are dropped.
+     * Returns null if nothing is left.
+     */
+    public static String flatten(String path) {
+        if (path == null) {
+            return null;
+        }
+        List<String> parts = new ArrayList<>();
+        for (String p : path.split(SEPARATOR)) {
+            if (!p.isBlank()) {
+                parts.add(p.trim());
+            }
+        }
+        if (parts.isEmpty()) {
+            return null;
+        }
+        if (parts.size() <= 2) {
+            return String.join(SEPARATOR, parts);
+        }
+        return parts.get(0) + SEPARATOR + String.join(" - ", parts.subList(1, parts.size()));
+    }
+
     // ---------------------------------------------------------------------
 
     private long findOrCreate(String name, Long parentId) throws SQLException {
