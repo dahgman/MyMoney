@@ -4,12 +4,20 @@
  */
 package com.martinsmayhem.mymoney;
 
+import java.awt.event.ActionEvent;
+import java.awt.event.KeyEvent;
 import java.awt.event.WindowEvent;
 import java.sql.SQLException;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import javax.swing.AbstractAction;
+import javax.swing.JComponent;
 import javax.swing.JOptionPane;
+import javax.swing.KeyStroke;
+import javax.swing.SwingConstants;
+import javax.swing.table.DefaultTableCellRenderer;
+import javax.swing.table.TableColumnModel;
 import javax.swing.tree.DefaultMutableTreeNode;
 import javax.swing.tree.DefaultTreeModel;
 import javax.swing.tree.TreePath;
@@ -25,6 +33,8 @@ public class MainFrame extends javax.swing.JFrame {
     private final Database db;
     private final AppConfig config;
     private final AccountRepository accounts;
+    private final CategoryRepository categories;
+    private final LedgerTableModel ledgerModel;
 
     /**
      * Creates new form MainFrame
@@ -33,12 +43,110 @@ public class MainFrame extends javax.swing.JFrame {
         this.db = db;
         this.config = config;
         this.accounts = new AccountRepository(db);
+        this.categories = new CategoryRepository(db);
+        this.ledgerModel = new LedgerTableModel(new TransactionRepository(db),
+                this::showError, this::confirm, () -> updateSummary(selectedAccount()));
         initComponents();
         setTitle("MyMoney - " + db.getFile().getFileName());
         setSize(1000, 650);
+        setupLedger();
         accountTree.addTreeSelectionListener(e -> showAccount(selectedAccount()));
         loadAccounts(null);
         showAccount(null);
+    }
+
+    /** Connects the ledger table to its model and sets up columns and keys. */
+    private void setupLedger() {
+        ledgerTable.setModel(ledgerModel);
+        ledgerTable.putClientProperty("terminateEditOnFocusLost", Boolean.TRUE);  // clicking away saves the cell
+        ledgerTable.setSurrendersFocusOnKeystroke(true);                         // typing goes straight into the cell
+
+        TableColumnModel cols = ledgerTable.getColumnModel();
+        int[] widths = {90, 60, 170, 170, 170, 140, 100, 90, 90, 100};
+        for (int i = 0; i < widths.length; i++) {
+            cols.getColumn(i).setPreferredWidth(widths[i]);
+        }
+
+        DefaultTableCellRenderer right = new DefaultTableCellRenderer();
+        right.setHorizontalAlignment(SwingConstants.RIGHT);
+        cols.getColumn(LedgerTableModel.PAYMENT).setCellRenderer(right);
+        cols.getColumn(LedgerTableModel.DEPOSIT).setCellRenderer(right);
+        cols.getColumn(LedgerTableModel.BALANCE).setCellRenderer(right);
+
+        // Text cells: Enter saves and moves down. Category also suggests as you type.
+        ledgerTable.setDefaultEditor(String.class, new AutoCompleteEditor(null, this::commitAndMoveDown));
+        cols.getColumn(LedgerTableModel.CATEGORY).setCellEditor(
+                new AutoCompleteEditor(this::categoryPaths, this::commitAndMoveDown));
+
+        // Status: a colored dot, edited with a drop-down.
+        cols.getColumn(LedgerTableModel.STATUS).setCellRenderer(StatusCell.renderer());
+        cols.getColumn(LedgerTableModel.STATUS).setCellEditor(StatusCell.editor());
+
+        // The Delete key removes the selected transaction (after asking).
+        ledgerTable.getInputMap(JComponent.WHEN_FOCUSED)
+                .put(KeyStroke.getKeyStroke(KeyEvent.VK_DELETE, 0), "deleteTransaction");
+        ledgerTable.getActionMap().put("deleteTransaction", new AbstractAction() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                deleteSelectedTransaction();
+            }
+        });
+    }
+
+    /**
+     * Saves the cell being edited, then moves down one row. After a new
+     * transaction is recorded, moves to the Date of the new blank row instead.
+     */
+    private void commitAndMoveDown() {
+        if (!ledgerTable.isEditing()) {
+            return;
+        }
+        int row = ledgerTable.getEditingRow();
+        int column = ledgerTable.getEditingColumn();
+        int rowsBefore = ledgerTable.getRowCount();
+        if (!ledgerTable.getCellEditor().stopCellEditing()) {
+            return;
+        }
+        int rows = ledgerTable.getRowCount();
+        if (rows > rowsBefore) {
+            ledgerTable.changeSelection(rows - 1, LedgerTableModel.DATE, false, false);
+        } else if (row + 1 < rows) {
+            ledgerTable.changeSelection(row + 1, column, false, false);
+        }
+    }
+
+    /** Category paths for the drop-down; an empty list if they can't be read. */
+    private List<String> categoryPaths() {
+        try {
+            return categories.findAllPaths();
+        } catch (SQLException e) {
+            return List.of();
+        }
+    }
+
+    private void deleteSelectedTransaction() {
+        int row = ledgerTable.getSelectedRow();
+        if (!ledgerModel.isSavedRow(row)) {
+            return;
+        }
+        if (ledgerModel.isLocked(row)) {
+            showError("Reconciled transactions can't be deleted.\nChange the status first.");
+            return;
+        }
+        int r = JOptionPane.showConfirmDialog(this, "Delete this transaction?",
+                "Delete Transaction", JOptionPane.YES_NO_OPTION);
+        if (r == JOptionPane.YES_OPTION) {
+            ledgerModel.deleteRow(row);
+        }
+    }
+
+    private void showError(String message) {
+        JOptionPane.showMessageDialog(this, message, "MyMoney", JOptionPane.ERROR_MESSAGE);
+    }
+
+    private boolean confirm(String message) {
+        return JOptionPane.showConfirmDialog(this, message, "MyMoney",
+                JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE) == JOptionPane.YES_OPTION;
     }
 
     /** Rebuilds the account tree, optionally selecting one account afterwards. */
@@ -93,8 +201,17 @@ public class MainFrame extends javax.swing.JFrame {
         return null;
     }
 
-    /** Fills the summary pane for an account (or clears it for null). */
+    /** Shows an account's summary and ledger (or clears both for null). */
     private void showAccount(Account a) {
+        if (ledgerTable.isEditing()) {
+            ledgerTable.getCellEditor().stopCellEditing();   // save a half-finished cell first
+        }
+        ledgerModel.setAccount(a);
+        updateSummary(a);
+    }
+
+    /** Fills the summary pane: account name, type, and current balance. */
+    private void updateSummary(Account a) {
         if (a == null) {
             accountNameLabel.setText("No account selected");
             balanceLabel.setText(" ");
@@ -153,29 +270,10 @@ public class MainFrame extends javax.swing.JFrame {
 
         accountNameLabel.setFont(new java.awt.Font("Liberation Sans", 1, 16)); // NOI18N
         accountNameLabel.setText("Account");
+        summaryPanel.add(accountNameLabel);
 
         balanceLabel.setText("Balance");
-
-        javax.swing.GroupLayout summaryPanelLayout = new javax.swing.GroupLayout(summaryPanel);
-        summaryPanel.setLayout(summaryPanelLayout);
-        summaryPanelLayout.setHorizontalGroup(
-            summaryPanelLayout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
-            .addGroup(summaryPanelLayout.createSequentialGroup()
-                .addContainerGap()
-                .addComponent(accountNameLabel)
-                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                .addComponent(balanceLabel)
-                .addContainerGap())
-        );
-        summaryPanelLayout.setVerticalGroup(
-            summaryPanelLayout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
-            .addGroup(summaryPanelLayout.createSequentialGroup()
-                .addGap(4, 4, 4)
-                .addGroup(summaryPanelLayout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
-                    .addComponent(balanceLabel)
-                    .addComponent(accountNameLabel))
-                .addGap(1, 1, 1))
-        );
+        summaryPanel.add(balanceLabel);
 
         rightSplit.setTopComponent(summaryPanel);
 
