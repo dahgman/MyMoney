@@ -30,12 +30,15 @@ import javax.swing.table.AbstractTableModel;
  * account's balance.
  *
  * Rows can be sorted by several columns at once (see sortBy). The blank row
- * always stays at the bottom, and Balance is always the running balance in
- * date order, whatever the sort.
+ * always stays at the bottom. Balance is the running balance in date order,
+ * except when sorting by Status first: then it runs in the order shown, so
+ * the last cleared row's balance is the cleared balance. Sorting by Status puts transfers to an
+ * envelope (whatever their own status) after Reconciled and Cleared and
+ * before Pending, Paid, Scheduled and no status.
  *
  * Rows can also be filtered (see setFilter): by text found in any column,
  * and by hiding reconciled transactions. Filtering only hides rows; Balance
- * is still the running balance over every transaction, shown or not.
+ * still counts every transaction, shown or not.
  */
 public class LedgerTableModel extends AbstractTableModel {
 
@@ -156,6 +159,11 @@ public class LedgerTableModel extends AbstractTableModel {
     /** How many transactions are shown (not counting the blank row). */
     public int shownCount() {
         return entries.size();
+    }
+
+    /** A saved row's amount in cents (negative = payment); 0 for the blank row. */
+    public long amountCents(int row) {
+        return isSavedRow(row) ? entries.get(row).amountCents : 0;
     }
 
     /** True for a saved transaction, false for the blank entry row. */
@@ -615,7 +623,7 @@ public class LedgerTableModel extends AbstractTableModel {
             sortKeys.clear();
             sortKeys.add(new SortKey(column, true));
         }
-        entries.sort(sortOrder());
+        applyFilter();                   // re-sorts, and the running balance may follow the new order
         fireTableDataChanged();
     }
 
@@ -662,12 +670,30 @@ public class LedgerTableModel extends AbstractTableModel {
             case TAG -> by(e -> blankToNull(e.tag), String.CASE_INSENSITIVE_ORDER, ascending);
             case DESCRIPTION -> by(e -> blankToNull(e.description), String.CASE_INSENSITIVE_ORDER, ascending);
             case MEMO -> by(e -> blankToNull(e.memo), String.CASE_INSENSITIVE_ORDER, ascending);
-            case STATUS -> by(e -> e.status == TxnStatus.NONE ? null : e.status,
-                    Comparator.<TxnStatus>naturalOrder(), ascending);
+            case STATUS -> by(LedgerTableModel::statusRank, Comparator.<Integer>naturalOrder(), ascending);
             case PAYMENT -> amountOrder(true, ascending);
             case DEPOSIT -> amountOrder(false, ascending);
             case BALANCE -> by(e -> e.balanceCents, Comparator.<Long>naturalOrder(), ascending);
             default -> (a, b) -> 0;
+        };
+    }
+
+    /**
+     * Where a row goes when sorting by Status: Reconciled, Cleared, then
+     * transfers to an envelope (whatever their status), then Pending, Paid
+     * and Scheduled. Null (no status) always goes last.
+     */
+    private static Integer statusRank(LedgerEntry e) {
+        if (e.toEnvelope) {
+            return 2;
+        }
+        return switch (e.status) {
+            case RECONCILED -> 0;
+            case CLEARED -> 1;
+            case PENDING -> 3;
+            case PAID -> 4;
+            case SCHEDULED -> 5;
+            case NONE -> null;
         };
     }
 
@@ -728,18 +754,21 @@ public class LedgerTableModel extends AbstractTableModel {
             } catch (SQLException e) {
                 onError.accept("Could not load transactions:\n" + e.getMessage());
             }
-            // Balances run over every transaction, before any are filtered out.
-            long balance = account.openingBalanceCents();
-            for (LedgerEntry e : all) {
-                balance += e.amountCents;
-                e.balanceCents = balance;
-            }
         }
         applyFilter();
     }
 
-    /** Fills the shown rows from all transactions: the ones that pass the filter, sorted. */
+    /**
+     * Computes running balances over every transaction (shown or not), then
+     * fills the shown rows: the ones that pass the filter, sorted.
+     */
     private void applyFilter() {
+        all.sort(Comparator.comparing((LedgerEntry e) -> e.date).thenComparingLong(e -> e.id));
+        runBalances();
+        if (sortKeys.get(0).column() == STATUS) {
+            all.sort(sortOrder());       // sorted by Status: the balance runs in the order shown
+            runBalances();
+        }
         entries.clear();
         for (LedgerEntry e : all) {
             if (!(hideReconciled && e.status == TxnStatus.RECONCILED) && matchesText(e)) {
@@ -747,6 +776,18 @@ public class LedgerTableModel extends AbstractTableModel {
             }
         }
         entries.sort(sortOrder());
+    }
+
+    /** Running balance down the all list, in its current order. */
+    private void runBalances() {
+        if (account == null) {
+            return;
+        }
+        long balance = account.openingBalanceCents();
+        for (LedgerEntry e : all) {
+            balance += e.amountCents;
+            e.balanceCents = balance;
+        }
     }
 
     /** True if the filter text appears in any column, as shown or (for amounts) as typed. */

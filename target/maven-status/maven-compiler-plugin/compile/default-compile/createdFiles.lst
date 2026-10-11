@@ -61,6 +61,7 @@ com/martinsmayhem/mymoney/TagRepository$Tag.class
 com/martinsmayhem/mymoney/StatusCell$2.class
 com/martinsmayhem/mymoney/QifParser$QifCategory.class
 com/martinsmayhem/mymoney/DateCellEditor$1.class
+com/martinsmayhem/mymoney/LedgerTableModel$1.class
 com/martinsmayhem/mymoney/StartupDialog$1.class
 com/martinsmayhem/mymoney/AccountType.class
 com/martinsmayhem/mymoney/MainFrame$9.class

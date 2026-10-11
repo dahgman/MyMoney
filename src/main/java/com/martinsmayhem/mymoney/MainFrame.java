@@ -74,6 +74,7 @@ public class MainFrame extends javax.swing.JFrame {
     private final JTextField filterField = new JTextField(20);
     private final JCheckBox hideReconciledBox = new JCheckBox("Hide reconciled");
     private final JLabel filterCountLabel = new JLabel(" ");
+    private final JLabel selectionTotalLabel = new JLabel(" ");
 
     /**
      * Creates new form MainFrame
@@ -231,6 +232,7 @@ public class MainFrame extends javax.swing.JFrame {
         JPanel ledgerPanel = new JPanel(new java.awt.BorderLayout());
         ledgerPanel.add(bar, java.awt.BorderLayout.NORTH);
         ledgerPanel.add(ledgerScroll, java.awt.BorderLayout.CENTER);
+        ledgerPanel.add(selectionTotalBar(), java.awt.BorderLayout.SOUTH);
         rightSplit.setRightComponent(ledgerPanel);
 
         filterField.getDocument().addDocumentListener(new DocumentListener() {
@@ -277,6 +279,46 @@ public class MainFrame extends javax.swing.JFrame {
 
         // "Showing 12 of 340" whenever rows are hidden.
         ledgerModel.addTableModelListener(e -> updateFilterCount());
+    }
+
+    /** The bar under the ledger that totals the selected transactions. */
+    private JPanel selectionTotalBar() {
+        JPanel bar = new JPanel(new java.awt.BorderLayout());
+        bar.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createMatteBorder(1, 0, 0, 0, java.awt.Color.LIGHT_GRAY),
+                BorderFactory.createEmptyBorder(4, 6, 4, 6)));
+        bar.add(selectionTotalLabel, java.awt.BorderLayout.EAST);
+        ledgerTable.getSelectionModel().addListSelectionListener(e -> {
+            if (!e.getValueIsAdjusting()) {
+                updateSelectionTotal();
+            }
+        });
+        ledgerModel.addTableModelListener(e -> updateSelectionTotal());   // amounts edited or rows changed
+        return bar;
+    }
+
+    /** "3 selected   Payments: $120.00   Deposits: $50.00   Net: -$70.00" */
+    private void updateSelectionTotal() {
+        int count = 0;
+        long payments = 0;
+        long deposits = 0;
+        for (int row : ledgerTable.getSelectedRows()) {
+            if (!ledgerModel.isSavedRow(row)) {
+                continue;                                // the blank row isn't a transaction yet
+            }
+            count++;
+            long amount = ledgerModel.amountCents(row);
+            if (amount < 0) {
+                payments -= amount;
+            } else {
+                deposits += amount;
+            }
+        }
+        selectionTotalLabel.setText(count == 0 ? "No transactions selected"
+                : "<html>" + count + (count == 1 ? " transaction" : " transactions") + " selected"
+                        + "&nbsp;&nbsp;&nbsp;Payments: " + Money.format(payments)
+                        + "&nbsp;&nbsp;&nbsp;Deposits: " + Money.format(deposits)
+                        + "&nbsp;&nbsp;&nbsp;<b>Net: " + Money.format(deposits - payments) + "</b></html>");
     }
 
     /** Passes the filter bar's settings to the ledger. */

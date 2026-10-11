@@ -57,7 +57,8 @@ public class TransactionRepository {
                        WHEN cp.id IS NULL THEN c.name
                        ELSE cp.name || ':' || c.name
                    END,
-                   tg.name, tg.color
+                   tg.name, tg.color,
+                   CASE WHEN sp.n = 1 AND xa.type = 'ENVELOPE' THEN 1 ELSE 0 END
             FROM txn t
             LEFT JOIN payee p ON p.id = t.payee_id
             LEFT JOIN (SELECT txn_id, COUNT(*) AS n, SUM(amount_cents) AS total,
@@ -88,6 +89,7 @@ public class TransactionRepository {
                     e.category = rs.getString(9);
                     e.tag = rs.getString(10);
                     e.tagColor = e.tag == null ? null : TagRepository.fromHex(rs.getString(11));
+                    e.toEnvelope = rs.getInt(12) == 1;
                     list.add(e);
                 }
             }
