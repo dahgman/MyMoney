@@ -22,8 +22,14 @@ public class Database implements AutoCloseable {
     /** File extension for MyMoney data files (without the dot). */
     public static final String EXTENSION = "MyMoney";
 
-    /** Increase this whenever the schema changes, and add an upgrade step in open(). */
-    public static final int SCHEMA_VERSION = 1;
+    /**
+     * Current schema version.
+     * Version history:
+     *   1 - initial schema
+     *   2 - account.parent_id (envelopes / child accounts), txn.description
+     * When changing the schema: bump this, update createSchema(), and add a step to upgrade().
+     */
+    public static final int SCHEMA_VERSION = 2;
 
     private final Path file;
     private final Connection conn;
@@ -39,7 +45,7 @@ public class Database implements AutoCloseable {
         }
     }
 
-    /** Creates a brand-new encrypted file and builds the base schema in it. */
+    /** Creates a brand-new encrypted file and builds the current schema in it. */
     public static Database create(Path file, String password) throws SQLException {
         if (Files.exists(file)) {
             throw new SQLException("File already exists: " + file);
@@ -58,7 +64,10 @@ public class Database implements AutoCloseable {
         }
     }
 
-    /** Opens an existing encrypted file. Throws SQLException if the password is wrong. */
+    /**
+     * Opens an existing encrypted file, upgrading its schema if it is older.
+     * Throws SQLException if the password is wrong.
+     */
     public static Database open(Path file, String password) throws SQLException {
         if (!Files.isRegularFile(file)) {
             throw new SQLException("File not found: " + file);
@@ -69,7 +78,9 @@ public class Database implements AutoCloseable {
             if (version > SCHEMA_VERSION) {
                 throw new SQLException("This file was created by a newer version of MyMoney.");
             }
-            // Future: if (version < SCHEMA_VERSION) upgrade the schema here.
+            if (version < SCHEMA_VERSION) {
+                db.upgrade(version);
+            }
             return db;
         } catch (SQLException e) {
             db.close();
@@ -81,7 +92,7 @@ public class Database implements AutoCloseable {
         return file;
     }
 
-    /** For data-access classes added later (accounts, transactions, ...). */
+    /** For data-access classes in this package (AccountRepository, ...). */
     Connection getConnection() {
         return conn;
     }
@@ -113,6 +124,31 @@ public class Database implements AutoCloseable {
         }
     }
 
+    /** Brings an older file up to SCHEMA_VERSION, one step at a time, all-or-nothing. */
+    private void upgrade(int fromVersion) throws SQLException {
+        conn.setAutoCommit(false);
+        try (Statement st = conn.createStatement()) {
+            if (fromVersion < 2) {
+                st.execute("ALTER TABLE account ADD COLUMN parent_id INTEGER REFERENCES account(id)");
+                st.execute("ALTER TABLE txn ADD COLUMN description TEXT");
+                st.execute("CREATE INDEX idx_account_parent ON account(parent_id)");
+            }
+            // Future: if (fromVersion < 3) { ... }
+
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "UPDATE meta SET value = ? WHERE key = 'schema_version'")) {
+                ps.setString(1, String.valueOf(SCHEMA_VERSION));
+                ps.executeUpdate();
+            }
+            conn.commit();
+        } catch (SQLException e) {
+            conn.rollback();
+            throw e;
+        } finally {
+            conn.setAutoCommit(true);
+        }
+    }
+
     private void createSchema() throws SQLException {
         String[] ddl = {
             """
@@ -125,10 +161,11 @@ public class Database implements AutoCloseable {
             CREATE TABLE account (
                 id                    INTEGER PRIMARY KEY,
                 name                  TEXT    NOT NULL UNIQUE,
-                type                  TEXT    NOT NULL,          -- CHECKING, SAVINGS, CREDIT_CARD, ...
+                type                  TEXT    NOT NULL,          -- CHECKING, SAVINGS, CREDIT_CARD, ENVELOPE, ...
                 opening_balance_cents INTEGER NOT NULL DEFAULT 0,
                 currency              TEXT    NOT NULL DEFAULT 'USD',
-                closed                INTEGER NOT NULL DEFAULT 0
+                closed                INTEGER NOT NULL DEFAULT 0,
+                parent_id             INTEGER REFERENCES account(id)   -- set for envelopes / child accounts
             )
             """,
             """
@@ -153,7 +190,8 @@ public class Database implements AutoCloseable {
                 payee_id     INTEGER REFERENCES payee(id),
                 check_number TEXT,
                 memo         TEXT,
-                status       TEXT    NOT NULL DEFAULT 'U'        -- U=uncleared, C=cleared, R=reconciled
+                status       TEXT    NOT NULL DEFAULT 'U',       -- U=uncleared, C=cleared, R=reconciled
+                description  TEXT
             )
             """,
             """
@@ -162,10 +200,11 @@ public class Database implements AutoCloseable {
                 txn_id              INTEGER NOT NULL REFERENCES txn(id) ON DELETE CASCADE,
                 category_id         INTEGER REFERENCES category(id),
                 transfer_account_id INTEGER REFERENCES account(id),
-                amount_cents        INTEGER NOT NULL,
+                amount_cents        INTEGER NOT NULL,            -- negative = payment, positive = deposit
                 memo                TEXT
             )
             """,
+            "CREATE INDEX idx_account_parent ON account(parent_id)",
             "CREATE INDEX idx_txn_account_date ON txn(account_id, txn_date)",
             "CREATE INDEX idx_split_txn ON split(txn_id)"
         };

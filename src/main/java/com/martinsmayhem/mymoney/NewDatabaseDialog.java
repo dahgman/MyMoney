@@ -185,7 +185,7 @@ public class NewDatabaseDialog extends javax.swing.JDialog {
             return;
         }
         String ext = "." + Database.EXTENSION;
-        Path file = dir.resolve(name.toLowerCase().endsWith(ext) ? name : name + ext);
+        Path file = dir.resolve(name.toLowerCase().endsWith(ext.toLowerCase()) ? name : name + ext);
         if (Files.exists(file)) { showError("A file with that name already exists in this folder."); return; }
 
         char[] pw1 = passwordField.getPassword();
