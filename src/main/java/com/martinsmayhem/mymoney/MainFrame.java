@@ -19,15 +19,25 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import javax.swing.AbstractAction;
+import javax.swing.BorderFactory;
+import javax.swing.Box;
+import javax.swing.BoxLayout;
+import javax.swing.JButton;
+import javax.swing.JCheckBox;
 import javax.swing.JComboBox;
 import javax.swing.JComponent;
 import javax.swing.JFileChooser;
+import javax.swing.JLabel;
 import javax.swing.JMenuItem;
 import javax.swing.JOptionPane;
+import javax.swing.JPanel;
 import javax.swing.JPopupMenu;
 import javax.swing.KeyStroke;
 import javax.swing.SwingConstants;
+import javax.swing.JTextField;
 import javax.swing.SwingUtilities;
+import javax.swing.event.DocumentEvent;
+import javax.swing.event.DocumentListener;
 import javax.swing.filechooser.FileNameExtensionFilter;
 import javax.swing.table.DefaultTableCellRenderer;
 import javax.swing.table.JTableHeader;
@@ -60,6 +70,10 @@ public class MainFrame extends javax.swing.JFrame {
 
     private int lastLedgerRow = -1;          // for noticing when the new-transaction row is left
     private boolean resolvingDraft;          // true while asking about an unsaved new transaction
+
+    private final JTextField filterField = new JTextField(20);
+    private final JCheckBox hideReconciledBox = new JCheckBox("Hide reconciled");
+    private final JLabel filterCountLabel = new JLabel(" ");
 
     /**
      * Creates new form MainFrame
@@ -155,6 +169,7 @@ public class MainFrame extends javax.swing.JFrame {
         cols.getColumn(LedgerTableModel.STATUS).setCellEditor(StatusCell.editor());
 
         setupSorting();
+        setupFilter();
 
         // Leaving the new-transaction row without an amount: ask what to do.
         ledgerTable.getSelectionModel().addListSelectionListener(e -> {
@@ -182,6 +197,101 @@ public class MainFrame extends javax.swing.JFrame {
                 deleteSelectedTransaction();
             }
         });
+    }
+
+    /**
+     * The filter bar above the ledger: text typed there hides every
+     * transaction that doesn't contain it in some column, and "Hide
+     * reconciled" hides reconciled ones. Balances are not affected.
+     * Ctrl+F jumps to the filter; Escape there clears it.
+     */
+    private void setupFilter() {
+        JButton clear = new JButton("Clear");
+        clear.addActionListener(e -> {
+            filterField.setText("");
+            ledgerTable.requestFocusInWindow();
+        });
+        filterField.setToolTipText("Show only transactions with this text in any column");
+        hideReconciledBox.setToolTipText("Hide reconciled transactions (balances still include them)");
+
+        JPanel bar = new JPanel();
+        bar.setLayout(new BoxLayout(bar, BoxLayout.LINE_AXIS));
+        bar.setBorder(BorderFactory.createEmptyBorder(4, 6, 4, 6));
+        bar.add(new JLabel("Filter: "));
+        bar.add(filterField);
+        bar.add(Box.createHorizontalStrut(4));
+        bar.add(clear);
+        bar.add(Box.createHorizontalStrut(12));
+        bar.add(hideReconciledBox);
+        bar.add(Box.createHorizontalGlue());
+        bar.add(filterCountLabel);
+        filterField.setMaximumSize(new java.awt.Dimension(300, filterField.getPreferredSize().height));
+
+        // Put the bar on top of the ledger, in the ledger's place in the split pane.
+        JPanel ledgerPanel = new JPanel(new java.awt.BorderLayout());
+        ledgerPanel.add(bar, java.awt.BorderLayout.NORTH);
+        ledgerPanel.add(ledgerScroll, java.awt.BorderLayout.CENTER);
+        rightSplit.setRightComponent(ledgerPanel);
+
+        filterField.getDocument().addDocumentListener(new DocumentListener() {
+            @Override
+            public void insertUpdate(DocumentEvent e) {
+                applyFilter();
+            }
+
+            @Override
+            public void removeUpdate(DocumentEvent e) {
+                applyFilter();
+            }
+
+            @Override
+            public void changedUpdate(DocumentEvent e) {
+                applyFilter();
+            }
+        });
+        hideReconciledBox.addActionListener(e -> applyFilter());
+
+        // Escape in the filter clears it and goes back to the ledger.
+        filterField.getInputMap(JComponent.WHEN_FOCUSED)
+                .put(KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0), "clearFilter");
+        filterField.getActionMap().put("clearFilter", new AbstractAction() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                filterField.setText("");
+                ledgerTable.requestFocusInWindow();
+            }
+        });
+        // Enter in the filter goes to the ledger, keeping the filter.
+        filterField.addActionListener(e -> ledgerTable.requestFocusInWindow());
+
+        // Ctrl+F from anywhere in the window jumps to the filter.
+        getRootPane().getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW)
+                .put(KeyStroke.getKeyStroke(KeyEvent.VK_F, menuShortcut()), "focusFilter");
+        getRootPane().getActionMap().put("focusFilter", new AbstractAction() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                filterField.requestFocusInWindow();
+                filterField.selectAll();
+            }
+        });
+
+        // "Showing 12 of 340" whenever rows are hidden.
+        ledgerModel.addTableModelListener(e -> updateFilterCount());
+    }
+
+    /** Passes the filter bar's settings to the ledger. */
+    private void applyFilter() {
+        if (ledgerTable.isEditing()) {
+            ledgerTable.getCellEditor().stopCellEditing();   // save a half-finished cell first
+        }
+        ledgerModel.setFilter(filterField.getText(), hideReconciledBox.isSelected());
+    }
+
+    private void updateFilterCount() {
+        filterCountLabel.setText(ledgerModel.isFiltered()
+                ? "Showing " + ledgerModel.shownCount() + " of " + ledgerModel.transactionCount()
+                        + " transactions"
+                : " ");
     }
 
     /** Text color for transactions dated after today. */
@@ -1045,12 +1155,15 @@ public class MainFrame extends javax.swing.JFrame {
         rightSplit.setDividerLocation(80);
         rightSplit.setOrientation(javax.swing.JSplitPane.VERTICAL_SPLIT);
 
+        summaryPanel.setBorder(javax.swing.BorderFactory.createEmptyBorder(8, 10, 8, 10));
+        summaryPanel.setLayout(new java.awt.BorderLayout());
+
         accountNameLabel.setFont(new java.awt.Font("Liberation Sans", 1, 16)); // NOI18N
         accountNameLabel.setText("Account");
-        summaryPanel.add(accountNameLabel);
+        summaryPanel.add(accountNameLabel, java.awt.BorderLayout.WEST);
 
         balanceLabel.setText("Balance");
-        summaryPanel.add(balanceLabel);
+        summaryPanel.add(balanceLabel, java.awt.BorderLayout.EAST);
 
         rightSplit.setTopComponent(summaryPanel);
 

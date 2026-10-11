@@ -32,6 +32,10 @@ import javax.swing.table.AbstractTableModel;
  * Rows can be sorted by several columns at once (see sortBy). The blank row
  * always stays at the bottom, and Balance is always the running balance in
  * date order, whatever the sort.
+ *
+ * Rows can also be filtered (see setFilter): by text found in any column,
+ * and by hiding reconciled transactions. Filtering only hides rows; Balance
+ * is still the running balance over every transaction, shown or not.
  */
 public class LedgerTableModel extends AbstractTableModel {
 
@@ -74,7 +78,10 @@ public class LedgerTableModel extends AbstractTableModel {
     public record SortKey(int column, boolean ascending) {
     }
 
-    private final List<LedgerEntry> entries = new ArrayList<>();
+    private final List<LedgerEntry> all = new ArrayList<>();       // every transaction, with balances
+    private final List<LedgerEntry> entries = new ArrayList<>();   // the rows shown (filtered, sorted)
+    private String filterText = "";              // lower case; "" = no text filter
+    private boolean hideReconciled;
     /** The sort used whenever an account is selected: Status, then Date. */
     private static final List<SortKey> DEFAULT_SORT =
             List.of(new SortKey(STATUS, true), new SortKey(DATE, true));
@@ -118,6 +125,37 @@ public class LedgerTableModel extends AbstractTableModel {
         sortKeys.addAll(DEFAULT_SORT);
         load();
         fireTableDataChanged();
+    }
+
+    /**
+     * Shows only transactions with this text (ignoring case) in any column,
+     * and, if hideReconciled, only those not reconciled. Blank text matches
+     * everything. The blank new-transaction row is always shown.
+     */
+    public void setFilter(String text, boolean hideReconciled) {
+        String t = text == null ? "" : text.trim().toLowerCase();
+        if (t.equals(filterText) && hideReconciled == this.hideReconciled) {
+            return;
+        }
+        filterText = t;
+        this.hideReconciled = hideReconciled;
+        applyFilter();
+        fireTableDataChanged();
+    }
+
+    /** True if some transactions are hidden by the filter. */
+    public boolean isFiltered() {
+        return entries.size() < all.size();
+    }
+
+    /** How many transactions the account has, shown or not. */
+    public int transactionCount() {
+        return all.size();
+    }
+
+    /** How many transactions are shown (not counting the blank row). */
+    public int shownCount() {
+        return entries.size();
     }
 
     /** True for a saved transaction, false for the blank entry row. */
@@ -681,23 +719,61 @@ public class LedgerTableModel extends AbstractTableModel {
 
     // ---------------------------------------------------------------------
 
-    /** Re-reads the account's transactions, computes balances, and sorts. */
+    /** Re-reads the account's transactions, computes balances, filters and sorts. */
     private void load() {
+        all.clear();
+        if (account != null) {
+            try {
+                all.addAll(transactions.findByAccount(account.id()));   // date order
+            } catch (SQLException e) {
+                onError.accept("Could not load transactions:\n" + e.getMessage());
+            }
+            // Balances run over every transaction, before any are filtered out.
+            long balance = account.openingBalanceCents();
+            for (LedgerEntry e : all) {
+                balance += e.amountCents;
+                e.balanceCents = balance;
+            }
+        }
+        applyFilter();
+    }
+
+    /** Fills the shown rows from all transactions: the ones that pass the filter, sorted. */
+    private void applyFilter() {
         entries.clear();
-        if (account == null) {
-            return;
-        }
-        try {
-            entries.addAll(transactions.findByAccount(account.id()));   // date order
-        } catch (SQLException e) {
-            onError.accept("Could not load transactions:\n" + e.getMessage());
-        }
-        long balance = account.openingBalanceCents();
-        for (LedgerEntry e : entries) {
-            balance += e.amountCents;
-            e.balanceCents = balance;
+        for (LedgerEntry e : all) {
+            if (!(hideReconciled && e.status == TxnStatus.RECONCILED) && matchesText(e)) {
+                entries.add(e);
+            }
         }
         entries.sort(sortOrder());
+    }
+
+    /** True if the filter text appears in any column, as shown or (for amounts) as typed. */
+    private boolean matchesText(LedgerEntry e) {
+        if (filterText.isEmpty()) {
+            return true;
+        }
+        String[] fields = {
+            e.date == null ? "" : e.date.format(DISPLAY_DATE),
+            e.checkNumber, e.payee, e.category, e.tag, e.description, e.memo,
+            e.status == TxnStatus.NONE ? "" : e.status.label(),
+            Money.format(Math.abs(e.amountCents)),          // "$1,250.50"
+            plainAmount(Math.abs(e.amountCents)),            // "1250.50"
+            Money.format(e.balanceCents),
+            plainAmount(e.balanceCents)
+        };
+        for (String f : fields) {
+            if (f != null && f.toLowerCase().contains(filterText)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 125050 -> "1250.50", without "$" or commas, so typed amounts match too. */
+    private static String plainAmount(long cents) {
+        return java.math.BigDecimal.valueOf(cents, 2).toPlainString();
     }
 
     /**

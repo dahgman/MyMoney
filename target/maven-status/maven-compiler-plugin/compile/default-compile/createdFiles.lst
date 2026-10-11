@@ -10,6 +10,7 @@ com/martinsmayhem/mymoney/MainFrame$2.class
 com/martinsmayhem/mymoney/MainFrame$5.class
 com/martinsmayhem/mymoney/CalendarPanel$1.class
 com/martinsmayhem/mymoney/PasswordPrompt$1.class
+com/martinsmayhem/mymoney/MainFrame$8.class
 com/martinsmayhem/mymoney/MainFrame$1.class
 com/martinsmayhem/mymoney/PasswordPrompt.class
 com/martinsmayhem/mymoney/LedgerEntry.class
@@ -26,6 +27,7 @@ com/martinsmayhem/mymoney/MainFrame.class
 com/martinsmayhem/mymoney/MainFrame$4.class
 com/martinsmayhem/mymoney/UndoLog.class
 com/martinsmayhem/mymoney/TagDialog.class
+com/martinsmayhem/mymoney/MainFrame$7.class
 com/martinsmayhem/mymoney/AccountRepository$Balances.class
 com/martinsmayhem/mymoney/LedgerTableModel$SortKey.class
 com/martinsmayhem/mymoney/DateCellEditor$3.class
@@ -61,6 +63,7 @@ com/martinsmayhem/mymoney/QifParser$QifCategory.class
 com/martinsmayhem/mymoney/DateCellEditor$1.class
 com/martinsmayhem/mymoney/StartupDialog$1.class
 com/martinsmayhem/mymoney/AccountType.class
+com/martinsmayhem/mymoney/MainFrame$9.class
 com/martinsmayhem/mymoney/TagCell$1.class
 com/martinsmayhem/mymoney/TransactionRepository.class
 com/martinsmayhem/mymoney/TxnStatus$Dot.class
