@@ -11,26 +11,33 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
 /**
- * Imports a bank download (a QIF or QFX / OFX file of one account's
- * transactions) into an account, matching it against what is already there.
+ * The steps of importing a bank download (a QIF or QFX / OFX file of one
+ * account's transactions). Nothing happens automatically: the review window
+ * (DownloadReviewWindow) shows each downloaded transaction with its possible
+ * matches, and the user accepts a match or adds it as new.
  *
- * For each downloaded transaction:
- *  - If it was imported before (same download id), it is skipped.
- *  - Otherwise, if matching is on, it is matched with an existing transaction
- *    for the same amount, dated within the given number of days, that isn't
- *    reconciled, cleared or being reconciled, and wasn't matched before (if
- *    both have check numbers, they must agree; the closest date wins). The
- *    match keeps its payee, gets the downloaded description in its memo, and
- *    is marked Cleared.
- *  - If nothing matches, it is added as a new, Cleared transaction.
+ *  - Transactions imported before (same download id) are left out.
+ *  - A possible match is an existing transaction for the same amount, dated
+ *    within the allowed number of days, that wasn't matched to a download
+ *    before (if both have check numbers, they must agree). Open ones come
+ *    first, likeliest first: the payee most like the bank's description,
+ *    then the closest date. Ones already cleared (or reconciled, or being
+ *    reconciled) come after: the download may be one entered and cleared by
+ *    hand, and listing them keeps it from being added twice.
+ *  - Accepting a match keeps its payee, puts the bank's description in its
+ *    memo, and marks it Cleared. Linking to one already cleared does the
+ *    same but leaves its status alone (a reconciled one stays reconciled).
+ *  - Adding as new creates a Cleared transaction in the account's default
+ *    category, under the payee the user chose. If that isn't the bank's name,
+ *    the choice is remembered (payee_rename) and offered the next time that
+ *    bank name is downloaded, in any account.
  * Either way it is marked as downloaded (matched or new), which the ledger
  * shows in its download column.
- *
- * All of it is saved together, or none of it.
  */
 final class DownloadImporter {
 
@@ -45,12 +52,14 @@ final class DownloadImporter {
         }
     }
 
-    /** What an import did. */
-    static final class Result {
-        int matched;
-        int added;
-        int duplicates;
-        final List<String> warnings = new ArrayList<>();
+    /** An existing transaction a download could match. */
+    record Candidate(long id, LocalDate date, String payee, String memo, String checkNumber, long amountCents,
+                     TxnStatus status, long daysApart, int payeeWords) {
+
+        /** Cleared, reconciled or being reconciled: it can only be linked, not matched. */
+        boolean alreadyCleared() {
+            return status.isCleared();
+        }
     }
 
     static final String MATCHED = "M";
@@ -58,10 +67,12 @@ final class DownloadImporter {
 
     private final Connection conn;
     private final TransactionRepository transactions;
+    private final PayeeRenameRepository renames;
 
     DownloadImporter(Database db) {
         this.conn = db.getConnection();
         this.transactions = new TransactionRepository(db);
+        this.renames = new PayeeRenameRepository(db);
     }
 
     /**
@@ -84,154 +95,170 @@ final class DownloadImporter {
     }
 
     private static String norm(String s) {
-        return s == null ? "" : s.trim().toLowerCase();
+        return s == null ? "" : s.trim().toLowerCase(Locale.ROOT);
     }
 
-    /** An existing transaction that a download could match. */
-    private static final class Candidate {
-        long id;
-        LocalDate date;
-        String checkNumber;
-        String memo;
-        long amountCents;
-    }
-
-    Result run(Account account, List<Download> downloads, boolean match, int days) throws SQLException {
-        Result result = new Result();
-        List<Download> sorted = new ArrayList<>(downloads);
-        sorted.sort(Comparator.comparing(Download::date));
-        conn.setAutoCommit(false);
-        try {
-            Set<String> imported = importedIds(account.id());
-            List<Candidate> candidates = match ? candidates(account.id()) : new ArrayList<>();
-            TransactionRepository.Target category = transactions.target(account.defaultCategory());
-            for (Download d : sorted) {
-                if (d.id() != null && !imported.add(d.id())) {
-                    result.duplicates++;
-                    continue;
-                }
-                Candidate c = match ? bestMatch(candidates, d, days) : null;
-                if (c != null) {
-                    candidates.remove(c);
-                    markMatched(c, d);
-                    result.matched++;
-                } else {
-                    add(account.id(), d, category);
-                    result.added++;
+    /** The downloads not imported into this account before, in date order. */
+    List<Download> notYetImported(long accountId, List<Download> downloads) throws SQLException {
+        Set<String> imported = new HashSet<>();
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT download_id FROM txn WHERE account_id = ? AND download_id IS NOT NULL")) {
+            ps.setLong(1, accountId);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    imported.add(rs.getString(1));
                 }
             }
+        }
+        List<Download> fresh = new ArrayList<>();
+        for (Download d : downloads) {
+            if (d.id() == null || imported.add(d.id())) {   // add(): also drops repeats within the file
+                fresh.add(d);
+            }
+        }
+        fresh.sort(Comparator.comparing(Download::date));
+        return fresh;
+    }
+
+    /** The existing transactions this download could match, likeliest first. */
+    List<Candidate> candidates(long accountId, Download d, int days) throws SQLException {
+        List<Candidate> list = new ArrayList<>();
+        String remembered = rememberedPayee(d);          // a payee chosen for this bank name before also counts
+        try (PreparedStatement ps = conn.prepareStatement("""
+                SELECT t.id, t.txn_date, p.name, t.memo, t.check_number, t.status,
+                       (SELECT COALESCE(SUM(amount_cents), 0) FROM split WHERE txn_id = t.id) AS amount
+                FROM txn t LEFT JOIN payee p ON p.id = t.payee_id
+                WHERE t.account_id = ? AND t.download_status IS NULL
+                  AND t.txn_date BETWEEN ? AND ? AND amount = ?
+                ORDER BY t.id
+                """)) {
+            ps.setLong(1, accountId);
+            ps.setString(2, d.date().minusDays(days).toString());
+            ps.setString(3, d.date().plusDays(days).toString());
+            ps.setLong(4, d.amountCents());
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    String check = rs.getString(5);
+                    String a = norm(check);
+                    String b = norm(d.checkNumber());
+                    if (!a.isEmpty() && !b.isEmpty() && !a.equals(b)) {
+                        continue;                             // different checks
+                    }
+                    LocalDate date = LocalDate.parse(rs.getString(2));
+                    String payee = rs.getString(3);
+                    list.add(new Candidate(rs.getLong(1), date, payee, rs.getString(4), check,
+                            rs.getLong(7), TxnStatus.fromCode(rs.getString(6)),
+                            Math.abs(ChronoUnit.DAYS.between(date, d.date())),
+                            sharedWords(payee, d.description() + " " + text(remembered))));
+                }
+            }
+        }
+        // Open ones first; then likeliest first: payee most like the bank's description,
+        // then closest date, then entered first.
+        list.sort(Comparator.comparing(Candidate::alreadyCleared)
+                .thenComparing(Comparator.comparingInt(Candidate::payeeWords).reversed())
+                .thenComparingLong(Candidate::daysApart)
+                .thenComparingLong(Candidate::id));
+        return list;
+    }
+
+    /**
+     * How alike a payee and the bank's description are: how many words they
+     * share (ignoring case, punctuation and words under 3 letters), so
+     * "Electric Co" and "ELECTRIC CO ONLINE PMT" share 1 ("electric").
+     */
+    static int sharedWords(String payee, String description) {
+        Set<String> a = words(payee);
+        a.retainAll(words(description));
+        return a.size();
+    }
+
+    private static Set<String> words(String s) {
+        Set<String> set = new HashSet<>();
+        if (s != null) {
+            for (String w : s.toLowerCase(Locale.ROOT).split("[^a-z0-9]+")) {
+                if (w.length() >= 3) {
+                    set.add(w);
+                }
+            }
+        }
+        return set;
+    }
+
+    /**
+     * Accepts a match: keeps its payee; puts the bank's description in the memo;
+     * marks it matched, and Cleared (one already cleared or reconciled keeps
+     * its status: it is just linked to the download).
+     */
+    void accept(Download d, Candidate c) throws SQLException {
+        String description = d.description();
+        String memo = c.memo() == null ? "" : c.memo().trim();
+        if (memo.isEmpty()) {
+            memo = description;
+        } else if (!description.isEmpty()
+                && !memo.toLowerCase(Locale.ROOT).contains(description.toLowerCase(Locale.ROOT))) {
+            memo = memo + " - " + description;                // don't lose a memo typed by hand
+        }
+        try (PreparedStatement ps = conn.prepareStatement("UPDATE txn SET status = ?, memo = ?,"
+                + " download_status = ?, download_id = ? WHERE id = ?")) {
+            ps.setString(1, c.alreadyCleared() ? c.status().code() : TxnStatus.CLEARED.code());
+            TransactionRepository.setText(ps, 2, memo);
+            ps.setString(3, MATCHED);
+            TransactionRepository.setText(ps, 4, d.id());
+            ps.setLong(5, c.id());
+            ps.executeUpdate();
+        }
+    }
+
+    // ----- Remembered payee names --------------------------------------------
+
+    /** The payee chosen for this download's bank name before, or null. */
+    String rememberedPayee(Download d) throws SQLException {
+        return renames.find(d.payee());
+    }
+
+    private static String text(String s) {
+        return s == null ? "" : s;
+    }
+
+    /** Payee names already used, for choosing a new transaction's payee. */
+    List<String> payeeNames() throws SQLException {
+        return transactions.findPayeeNames();
+    }
+
+    /**
+     * Adds a download as a new, Cleared transaction in the account's default
+     * category, under the payee the user chose (blank: no payee). If that
+     * isn't the bank's name, the bank's description goes in the memo (as for
+     * a match), so it isn't lost. Returns its id.
+     */
+    long addNew(Account account, Download d, String payee) throws SQLException {
+        conn.setAutoCommit(false);
+        try {
+            TransactionRepository.Target category = transactions.target(account.defaultCategory());
+            try (PreparedStatement ps = conn.prepareStatement("INSERT INTO txn (account_id, txn_date, payee_id,"
+                    + " check_number, memo, status, download_status, download_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")) {
+                ps.setLong(1, account.id());
+                ps.setString(2, d.date().toString());
+                TransactionRepository.setId(ps, 3, transactions.payeeId(payee));
+                TransactionRepository.setText(ps, 4, d.checkNumber());
+                boolean renamed = !norm(payee).equals(norm(d.payee()));
+                TransactionRepository.setText(ps, 5, renamed ? d.description() : d.memo());
+                ps.setString(6, TxnStatus.CLEARED.code());
+                ps.setString(7, NEW);
+                TransactionRepository.setText(ps, 8, d.id());
+                ps.executeUpdate();
+            }
+            long id = transactions.lastInsertId();
+            transactions.insertSplit(id, d.amountCents(), category, null, null);
+            renames.remember(d.payee(), payee);
             conn.commit();
+            return id;
         } catch (SQLException e) {
             conn.rollback();
             throw e;
         } finally {
             conn.setAutoCommit(true);
         }
-        return result;
-    }
-
-    private Set<String> importedIds(long accountId) throws SQLException {
-        Set<String> ids = new HashSet<>();
-        try (PreparedStatement ps = conn.prepareStatement(
-                "SELECT download_id FROM txn WHERE account_id = ? AND download_id IS NOT NULL")) {
-            ps.setLong(1, accountId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    ids.add(rs.getString(1));
-                }
-            }
-        }
-        return ids;
-    }
-
-    /** Transactions a download may match: not reconciled, cleared or reconciling, and not downloaded. */
-    private List<Candidate> candidates(long accountId) throws SQLException {
-        List<Candidate> list = new ArrayList<>();
-        try (PreparedStatement ps = conn.prepareStatement("""
-                SELECT t.id, t.txn_date, t.check_number, t.memo,
-                       (SELECT COALESCE(SUM(amount_cents), 0) FROM split WHERE txn_id = t.id)
-                FROM txn t
-                WHERE t.account_id = ? AND t.status NOT IN (?, ?, ?) AND t.download_status IS NULL
-                ORDER BY t.id
-                """)) {
-            ps.setLong(1, accountId);
-            ps.setString(2, TxnStatus.RECONCILED.code());
-            ps.setString(3, TxnStatus.CLEARED.code());
-            ps.setString(4, TxnStatus.RECONCILING.code());
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    Candidate c = new Candidate();
-                    c.id = rs.getLong(1);
-                    c.date = LocalDate.parse(rs.getString(2));
-                    c.checkNumber = rs.getString(3);
-                    c.memo = rs.getString(4);
-                    c.amountCents = rs.getLong(5);
-                    list.add(c);
-                }
-            }
-        }
-        return list;
-    }
-
-    /** The same-amount candidate closest in date (within days), or null. */
-    private static Candidate bestMatch(List<Candidate> candidates, Download d, int days) {
-        Candidate best = null;
-        long bestGap = Long.MAX_VALUE;
-        for (Candidate c : candidates) {
-            if (c.amountCents != d.amountCents()) {
-                continue;
-            }
-            long gap = Math.abs(ChronoUnit.DAYS.between(c.date, d.date()));
-            if (gap > days) {
-                continue;
-            }
-            String a = norm(c.checkNumber);
-            String b = norm(d.checkNumber());
-            if (!a.isEmpty() && !b.isEmpty() && !a.equals(b)) {
-                continue;                                     // different checks
-            }
-            if (gap < bestGap) {                              // ties: the earlier-entered one (list is in id order)
-                best = c;
-                bestGap = gap;
-            }
-        }
-        return best;
-    }
-
-    /** Keeps the payee; puts the bank's description in the memo; marks it Cleared and matched. */
-    private void markMatched(Candidate c, Download d) throws SQLException {
-        String description = d.description();
-        String memo = c.memo == null ? "" : c.memo.trim();
-        if (memo.isEmpty()) {
-            memo = description;
-        } else if (!description.isEmpty() && !memo.toLowerCase().contains(description.toLowerCase())) {
-            memo = memo + " - " + description;                // don't lose a memo typed by hand
-        }
-        try (PreparedStatement ps = conn.prepareStatement("UPDATE txn SET status = ?, memo = ?,"
-                + " download_status = ?, download_id = ? WHERE id = ?")) {
-            ps.setString(1, TxnStatus.CLEARED.code());
-            TransactionRepository.setText(ps, 2, memo);
-            ps.setString(3, MATCHED);
-            TransactionRepository.setText(ps, 4, d.id());
-            ps.setLong(5, c.id);
-            ps.executeUpdate();
-        }
-    }
-
-    /** A new, Cleared transaction, in the account's default category (if it has one). */
-    private void add(long accountId, Download d, TransactionRepository.Target category) throws SQLException {
-        try (PreparedStatement ps = conn.prepareStatement("INSERT INTO txn (account_id, txn_date, payee_id,"
-                + " check_number, memo, status, download_status, download_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")) {
-            ps.setLong(1, accountId);
-            ps.setString(2, d.date().toString());
-            TransactionRepository.setId(ps, 3, transactions.payeeId(d.payee()));
-            TransactionRepository.setText(ps, 4, d.checkNumber());
-            TransactionRepository.setText(ps, 5, d.memo());
-            ps.setString(6, TxnStatus.CLEARED.code());
-            ps.setString(7, NEW);
-            TransactionRepository.setText(ps, 8, d.id());
-            ps.executeUpdate();
-        }
-        transactions.insertSplit(transactions.lastInsertId(), d.amountCents(), category, null, null);
     }
 }

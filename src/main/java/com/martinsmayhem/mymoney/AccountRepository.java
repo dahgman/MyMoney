@@ -169,6 +169,73 @@ public class AccountRepository {
         }
     }
 
+    /**
+     * The account an imported file's account number (and routing number, if
+     * known) most likely belongs to, or null if none clearly does. Only the
+     * digits are compared. An exact account number wins; failing that, the
+     * last four digits (banks often send or show them masked, like XXXX1234),
+     * but only if exactly one account fits. A matching routing number breaks ties.
+     */
+    public Account suggestForImport(String accountNumber, String routingNumber) throws SQLException {
+        String acct = digits(accountNumber);
+        if (acct.isEmpty()) {
+            return null;
+        }
+        String routing = digits(routingNumber);
+        java.util.Map<Long, Account> byId = new java.util.HashMap<>();
+        for (Account a : findAll()) {
+            byId.put(a.id(), a);
+        }
+        Account best = null;
+        int bestScore = 0;
+        boolean tie = false;
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT id, account_number, routing_number FROM account WHERE account_number IS NOT NULL");
+             ResultSet rs = ps.executeQuery()) {
+            while (rs.next()) {
+                String mine = digits(rs.getString(2));
+                if (mine.isEmpty()) {
+                    continue;
+                }
+                int score;
+                if (mine.equals(acct)) {
+                    score = 4;
+                } else if (mine.length() >= 4 && acct.length() >= 4
+                        && mine.substring(mine.length() - 4).equals(acct.substring(acct.length() - 4))) {
+                    score = 2;
+                } else {
+                    continue;
+                }
+                if (!routing.isEmpty() && routing.equals(digits(rs.getString(3)))) {
+                    score++;
+                }
+                if (score > bestScore) {
+                    best = byId.get(rs.getLong(1));
+                    bestScore = score;
+                    tie = false;
+                } else if (score == bestScore) {
+                    tie = true;
+                }
+            }
+        }
+        return tie ? null : best;
+    }
+
+    /** Saves just the account and routing numbers (remembered from an import). */
+    public void setNumbers(long id, String accountNumber, String routingNumber) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "UPDATE account SET account_number = ?, routing_number = COALESCE(?, routing_number) WHERE id = ?")) {
+            TransactionRepository.setText(ps, 1, accountNumber);
+            TransactionRepository.setText(ps, 2, routingNumber);
+            ps.setLong(3, id);
+            ps.executeUpdate();
+        }
+    }
+
+    private static String digits(String s) {
+        return s == null ? "" : s.replaceAll("\\D", "");
+    }
+
     /** What deleting an account would affect, for the confirmation message. */
     public record DeleteInfo(int transactions, int reconciled, int transfers, List<String> envelopes) {
     }

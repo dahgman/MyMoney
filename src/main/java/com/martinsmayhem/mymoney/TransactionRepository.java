@@ -146,6 +146,23 @@ public class TransactionRepository {
         inTransaction(() -> doUpdate(entry));
     }
 
+    /**
+     * Clears the downloaded flag (matched or new) on these transactions, and
+     * forgets which download they came from, so importing that file again
+     * offers the download again. Nothing else changes.
+     */
+    public void clearDownloaded(List<Long> txnIds) throws SQLException {
+        inTransaction(() -> {
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "UPDATE txn SET download_status = NULL, download_id = NULL WHERE id = ?")) {
+                for (long id : txnIds) {
+                    ps.setLong(1, id);
+                    ps.executeUpdate();
+                }
+            }
+        });
+    }
+
     /** Saves changes to several transactions at once: all of them, or none. */
     public void updateAll(List<LedgerEntry> entries) throws SQLException {
         inTransaction(() -> {

@@ -67,7 +67,7 @@ final class ManageAccountsDialog extends JDialog {
     private final JTextArea commentsArea = new JTextArea(4, 24);
 
     /** What the form starts as for a new account (id 0 = not saved yet). */
-    private static final AccountRepository.Details BLANK = new AccountRepository.Details(0, "",
+    static final AccountRepository.Details BLANK = new AccountRepository.Details(0, "",
             AccountType.CHECKING, null, null, null, 0, 0, null, null, null, null, null);
 
     private final JLabel formTitle = new JLabel(" ");
@@ -79,10 +79,12 @@ final class ManageAccountsDialog extends JDialog {
 
     /**
      * @param select   the account to show first (null: the first one)
-     * @param startNew true to start with the form empty for a new account
+     * @param startNew to start on a new account: what to fill in (BLANK for nothing,
+     *                 or, say, the account number from an imported file); null to not
      */
     ManageAccountsDialog(Window owner, AccountRepository accounts, AttachmentRepository attachments,
-                         List<String> categoryPaths, Path dataFile, Account select, boolean startNew) {
+                         List<String> categoryPaths, Path dataFile, Account select,
+                         AccountRepository.Details startNew) {
         super(owner, "Manage Accounts", ModalityType.APPLICATION_MODAL);
         this.accounts = accounts;
         this.attachments = attachments;
@@ -178,7 +180,7 @@ final class ManageAccountsDialog extends JDialog {
         right.add(formButtons, BorderLayout.SOUTH);
 
         JButton newButton = new JButton("New Account");
-        newButton.addActionListener(e -> startNewAccount());
+        newButton.addActionListener(e -> startNewAccount(BLANK));
         JPanel left = new JPanel(new BorderLayout(0, 4));
         left.add(new JScrollPane(list), BorderLayout.CENTER);
         JPanel leftButtons = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
@@ -198,8 +200,8 @@ final class ManageAccountsDialog extends JDialog {
         getRootPane().setDefaultButton(save);
 
         loadList(select == null ? null : select.id());
-        if (startNew) {
-            startNewAccount();
+        if (startNew != null) {
+            startNewAccount(startNew);
         }
         setSize(820, 600);
         setLocationRelativeTo(owner);
@@ -215,15 +217,15 @@ final class ManageAccountsDialog extends JDialog {
         return lastSavedId;
     }
 
-    /** Empties the form for a new account (after asking about unsaved changes). */
-    private void startNewAccount() {
+    /** Fills the form for a new account from a template (after asking about unsaved changes). */
+    private void startNewAccount(AccountRepository.Details template) {
         if (loaded != null && !resolveUnsaved()) {
             return;
         }
         switching = true;
         list.clearSelection();
         switching = false;
-        fill(BLANK);
+        fill(template);
         nameField.requestFocusInWindow();
     }
 
@@ -369,13 +371,18 @@ final class ManageAccountsDialog extends JDialog {
 
     /** The form's values as Details. @throws IllegalArgumentException with a message fit to show */
     private AccountRepository.Details formDetails() {
+        return formDetails(false);
+    }
+
+    /** As formDetails(), but a blank name is allowed if allowBlankName (to compare a new form to its template). */
+    private AccountRepository.Details formDetails(boolean allowBlankName) {
         String name = nameField.getText().trim();
-        if (name.isEmpty()) {
+        if (name.isEmpty() && !allowBlankName) {
             throw new IllegalArgumentException("Please enter an account name.");
         }
         Long parentId = parentCombo.getSelectedItem() instanceof Account p ? p.id() : null;
         AccountType type = (AccountType) typeCombo.getSelectedItem();
-        if (type == AccountType.ENVELOPE && parentId == null) {
+        if (type == AccountType.ENVELOPE && parentId == null && !allowBlankName) {
             throw new IllegalArgumentException("An envelope must belong to a parent account.");
         }
         long opening = amount(openingField, "Initial Balance");
@@ -417,18 +424,8 @@ final class ManageAccountsDialog extends JDialog {
 
     /** True if nothing has been typed into the form (for a new account). */
     private boolean formIsBlank() {
-        for (JTextField f : new JTextField[] {nameField, bankField, accountNumberField, routingNumberField,
-                websiteField}) {
-            if (!f.getText().isBlank()) {
-                return false;
-            }
-        }
         try {
-            return amount(openingField, "") == 0 && amount(adjustmentField, "") == 0
-                    && startDate.getDateOrNull() == null && commentsArea.getText().isBlank()
-                    && Objects.toString(categoryCombo.getEditor().getItem(), "").isBlank()
-                    && !(parentCombo.getSelectedItem() instanceof Account)
-                    && typeCombo.getSelectedItem() == BLANK.type();
+            return formDetails(true).equals(loaded);    // still just what the new form started with
         } catch (IllegalArgumentException e) {
             return false;
         }

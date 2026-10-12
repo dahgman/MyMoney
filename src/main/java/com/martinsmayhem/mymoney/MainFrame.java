@@ -569,6 +569,7 @@ public class MainFrame extends javax.swing.JFrame {
         accountMenu.add(reconcileItem);
         accountMenu.addSeparator();
         accountMenu.add(menuItem("Manage Tags...", this::manageTags));
+        accountMenu.add(menuItem("Manage Payee Renames...", this::managePayeeRenames));
 
         // Edit menu: changes to the selected transactions.
         javax.swing.JMenu editMenu = new javax.swing.JMenu("Edit");
@@ -580,6 +581,7 @@ public class MainFrame extends javax.swing.JFrame {
             menu.add(menuItem("Change Tag...", () -> bulkChange(LedgerTableModel.TAG)));
             menu.add(menuItem("Change Status...", () -> bulkChange(LedgerTableModel.STATUS)));
             menu.add(menuItem("Move Memo to Description", this::moveMemoToDescription));
+            menu.add(menuItem("Clear Downloaded Flag", this::clearDownloadedFlag));
             menu.add(new javax.swing.JSeparator());
             menu.add(menuItem("Attachments...", () -> showAttachments(ledgerTable.getSelectedRow())));
             menu.add(new javax.swing.JSeparator());
@@ -832,6 +834,18 @@ public class MainFrame extends javax.swing.JFrame {
         }
     }
 
+    /** Account > Manage Payee Renames...: the payee names remembered for bank names during imports. */
+    private void managePayeeRenames() {
+        if (ledgerTable.isEditing()) {
+            ledgerTable.getCellEditor().stopCellEditing();
+        }
+        PayeeRenameDialog dlg = new PayeeRenameDialog(this, new PayeeRenameRepository(db), this::payeeNames);
+        dlg.setVisible(true);
+        if (dlg.wasChanged()) {
+            checkpoint("Payee Renames");
+        }
+    }
+
     /** Account > Manage Accounts...: every account's full details, to view and edit. */
     private void manageAccounts() {
         openAccounts(false);
@@ -848,7 +862,8 @@ public class MainFrame extends javax.swing.JFrame {
         }
         resolveDraft(false);
         ManageAccountsDialog dlg = new ManageAccountsDialog(this, accounts, attachments,
-                ManageAccountsDialog.categoriesOnly(categoryPaths()), db.getFile(), selectedAccount(), newAccount);
+                ManageAccountsDialog.categoriesOnly(categoryPaths()), db.getFile(), selectedAccount(),
+                newAccount ? ManageAccountsDialog.BLANK : null);
         dlg.setVisible(true);
         if (dlg.wasChanged()) {
             checkpoint(newAccount ? "New Account" : "Manage Accounts");
@@ -1095,13 +1110,13 @@ public class MainFrame extends javax.swing.JFrame {
         try {
             if (name.endsWith(".qfx") || name.endsWith(".ofx")) {
                 OfxParser.OfxFile f = OfxParser.parse(file);
-                importBankDownload(file, f.transactions, f.warnings);
+                importBankDownload(file, f.transactions, f.warnings, BankImportDialog.FileAccount.of(f));
             } else if (name.endsWith(".qif")) {
                 QifParser.QifFile f = QifParser.parse(file);
                 if (f.isFullExport()) {
                     importQuicken(file, f);
                 } else {
-                    importBankDownload(file, DownloadImporter.fromQif(f), f.warnings);
+                    importBankDownload(file, DownloadImporter.fromQif(f), f.warnings, null);
                 }
             } else {
                 showError("MyMoney can import .qif, .qfx and .ofx files.");
@@ -1114,48 +1129,66 @@ public class MainFrame extends javax.swing.JFrame {
     /**
      * A bank download (QIF or QFX): one account's transactions from the bank,
      * matched against what is already entered (see DownloadImporter).
+     * fileAccount is the account the file names (QFX / OFX), or null.
      */
-    private void importBankDownload(Path file, List<DownloadImporter.Download> downloads, List<String> warnings) {
+    private void importBankDownload(Path file, List<DownloadImporter.Download> downloads, List<String> warnings,
+                                    BankImportDialog.FileAccount fileAccount) {
         if (downloads.isEmpty()) {
             showError("No transactions were found in this file."
                     + (warnings.isEmpty() ? "" : "\n\n" + String.join("\n", warnings)));
             return;
         }
 
-        List<Account> all;
-        try {
-            all = accounts.findAll();
-        } catch (SQLException e) {
-            showError("Could not read the accounts:\n" + e.getMessage());
-            return;
-        }
         BankImportDialog dlg = new BankImportDialog(this, file.getFileName().toString(), downloads,
-                all, selectedAccount(), config);
+                fileAccount, accounts, selectedAccount(), config, this::createAccountFrom);
         dlg.setVisible(true);
         if (!dlg.wasAccepted()) {
             return;
         }
         Account target = dlg.account();
-        DownloadImporter.Result r;
+        DownloadImporter importer = new DownloadImporter(db);
+        List<DownloadImporter.Download> fresh;
         try {
-            r = new DownloadImporter(db).run(target, downloads, dlg.match(), dlg.days());
+            fresh = importer.notYetImported(target.id(), downloads);
         } catch (SQLException e) {
-            showError("Could not import the file, so nothing was changed:\n" + e.getMessage());
+            showError("Could not read the account's transactions:\n" + e.getMessage());
             return;
         }
-        checkpoint("Import " + file.getFileName());
-        loadAccounts(target.id());                       // show the account it went into
-
-        StringBuilder msg = new StringBuilder("Imported into \"" + target.name() + "\":\n\n");
-        msg.append("Matched to existing transactions: ").append(r.matched).append('\n');
-        msg.append("Added as new transactions: ").append(r.added).append('\n');
-        if (r.duplicates > 0) {
-            msg.append("Skipped (already imported): ").append(r.duplicates).append('\n');
-        }
         if (!warnings.isEmpty()) {
-            msg.append("\n").append(String.join("\n", warnings));
+            JOptionPane.showMessageDialog(this, "Some of the file couldn't be read:\n\n" + String.join("\n", warnings),
+                    "Import", JOptionPane.WARNING_MESSAGE);
         }
-        JOptionPane.showMessageDialog(this, msg.toString(), "Import Complete", JOptionPane.INFORMATION_MESSAGE);
+        if (fresh.isEmpty()) {
+            checkpoint("Import " + file.getFileName());  // an account number may have been saved
+            JOptionPane.showMessageDialog(this, "Every transaction in this file was imported into \""
+                    + target.name() + "\" before. There is nothing new to review.",
+                    "Import", JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+        DownloadReviewWindow review = new DownloadReviewWindow(this, file.getFileName().toString(), target, fresh,
+                downloads.size() - fresh.size(), importer, dlg.match(), dlg.days());
+        review.setVisible(true);
+        checkpoint("Import " + file.getFileName());      // everything accepted or added is one undo step
+        if (review.wasChanged()) {
+            loadAccounts(target.id());                   // show the account it went into
+        }
+    }
+
+    /**
+     * Opens Manage Accounts on a new account filled in from a template (such
+     * as an imported file's account number). Returns the id of the account
+     * saved, or null if none was.
+     */
+    private Long createAccountFrom(AccountRepository.Details template) {
+        ManageAccountsDialog dlg = new ManageAccountsDialog(this, accounts, attachments,
+                ManageAccountsDialog.categoriesOnly(categoryPaths()), db.getFile(), selectedAccount(), template);
+        dlg.setVisible(true);
+        if (!dlg.wasChanged()) {
+            return null;
+        }
+        checkpoint("New Account");
+        loadAccounts(dlg.lastSavedId());
+        return dlg.lastSavedId();
     }
 
     /** A Quicken QIF export: every account in it, creating any that don't exist yet. */
@@ -1311,6 +1344,33 @@ public class MainFrame extends javax.swing.JFrame {
     }
 
     /** Edit menu / right-click: moves the selected transactions' memos into their descriptions. */
+    /**
+     * Edit > Clear Downloaded Flag: the selected transactions no longer show
+     * as downloaded (matched or new), and importing their file again offers
+     * those downloads again. Status, payee and memo stay as they are.
+     */
+    private void clearDownloadedFlag() {
+        int[] rows = selectedTransactionRows();
+        if (rows.length == 0) {
+            showError("Select one or more transactions first.\n"
+                    + "(Ctrl+click or Shift+click to select several.)");
+            return;
+        }
+        int n = ledgerModel.countDownloaded(rows);
+        if (n == 0) {
+            JOptionPane.showMessageDialog(this, rows.length == 1 ? "This transaction isn't marked as downloaded."
+                    : "None of the selected transactions is marked as downloaded.", "MyMoney",
+                    JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+        if (!confirm("Clear the downloaded flag on " + (n == 1 ? "this transaction" : n + " transactions") + "?\n\n"
+                + "Importing the bank file again will offer " + (n == 1 ? "its download" : "their downloads")
+                + " again. Status, payee and memo stay as they are.")) {
+            return;
+        }
+        ledgerModel.clearDownloaded(rows);
+    }
+
     private void moveMemoToDescription() {
         int[] rows = selectedTransactionRows();
         if (rows.length == 0) {

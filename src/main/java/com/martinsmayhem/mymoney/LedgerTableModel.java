@@ -342,6 +342,38 @@ public class LedgerTableModel extends AbstractTableModel {
         return n;
     }
 
+    /** How many of these rows came from a bank download (show the downloaded flag). */
+    public int countDownloaded(int[] rows) {
+        int n = 0;
+        for (int row : rows) {
+            if (isSavedRow(row) && entries.get(row).download != null) {
+                n++;
+            }
+        }
+        return n;
+    }
+
+    /** Clears the downloaded flag on these rows (see TransactionRepository.clearDownloaded). */
+    public void clearDownloaded(int[] rows) {
+        List<Long> ids = new ArrayList<>();
+        for (int row : rows) {
+            if (isSavedRow(row) && entries.get(row).download != null) {
+                ids.add(entries.get(row).id);
+            }
+        }
+        if (ids.isEmpty()) {
+            return;
+        }
+        lastAction = "Clear Downloaded Flag";
+        try {
+            transactions.clearDownloaded(ids);
+        } catch (SQLException ex) {
+            onError.accept("Could not clear the downloaded flag, so nothing was changed:\n" + ex.getMessage());
+        }
+        refresh();
+        onChanged.run();
+    }
+
     /** How many of these rows have both a memo and a description already. */
     public int countWithMemoAndDescription(int[] rows) {
         int n = 0;

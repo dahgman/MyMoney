@@ -13,7 +13,8 @@ import java.util.List;
  * no closing tag) and OFX 2.x (XML). Only what an import needs is read: each
  * <STMTTRN>'s date, amount, name, memo, check number and FITID (the bank's
  * id for the transaction, used to skip ones already imported), and the
- * account number the statement is for.
+ * account the statement is for: its number (ACCTID), the bank's routing
+ * number (BANKID), the bank's name (ORG) and what kind of account it is.
  */
 final class OfxParser {
 
@@ -22,6 +23,9 @@ final class OfxParser {
         final List<DownloadImporter.Download> transactions = new ArrayList<>();
         final List<String> warnings = new ArrayList<>();
         String accountNumber;     // ACCTID of the first statement, or null
+        String routingNumber;     // BANKID (bank accounts only), or null
+        String bankName;          // the bank's ORG name, or null
+        AccountType accountType;  // from ACCTTYPE, or CREDIT_CARD for a card statement; null if unknown
     }
 
     private OfxParser() {
@@ -59,6 +63,31 @@ final class OfxParser {
                 case "ACCTID" -> {
                     if (ofx.accountNumber == null && !value.isEmpty()) {
                         ofx.accountNumber = value;
+                    }
+                }
+                case "BANKID" -> {
+                    if (ofx.routingNumber == null && !value.isEmpty()) {
+                        ofx.routingNumber = value;
+                    }
+                }
+                case "ORG" -> {
+                    if (ofx.bankName == null && !value.isEmpty()) {
+                        ofx.bankName = value;
+                    }
+                }
+                case "CCACCTFROM" -> {
+                    if (ofx.accountType == null) {
+                        ofx.accountType = AccountType.CREDIT_CARD;
+                    }
+                }
+                case "ACCTTYPE" -> {
+                    if (ofx.accountType == null) {
+                        ofx.accountType = switch (value.toUpperCase()) {
+                            case "CHECKING" -> AccountType.CHECKING;
+                            case "SAVINGS", "MONEYMRKT", "CD" -> AccountType.SAVINGS;
+                            case "CREDITLINE" -> AccountType.LOAN;
+                            default -> null;
+                        };
                     }
                 }
                 default -> {

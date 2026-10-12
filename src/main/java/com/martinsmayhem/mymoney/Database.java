@@ -34,9 +34,10 @@ public class Database implements AutoCloseable {
      *   6 - txn.download_status and txn.download_id (bank downloads)
      *   7 - account details: bank name, start date, balance adjustment, account and
      *       routing numbers, default category, comments, website
+     *   8 - payee_rename (payee names chosen for bank names, remembered from imports)
      * When changing the schema: bump this, update createSchema(), and add a step to upgrade().
      */
-    public static final int SCHEMA_VERSION = 7;
+    public static final int SCHEMA_VERSION = 8;
 
     private final Path file;
     private final Connection conn;
@@ -213,7 +214,16 @@ public class Database implements AutoCloseable {
                     st.execute("ALTER TABLE account ADD COLUMN " + col);
                 }
             }
-            // Future: if (fromVersion < 8) { ... }
+            if (fromVersion < 8) {
+                st.execute("""
+                    CREATE TABLE payee_rename (
+                        id       INTEGER PRIMARY KEY,
+                        bank_key TEXT    NOT NULL UNIQUE,     -- the bank's payee name, simplified (see PayeeRenameRepository.bankKey)
+                        payee    TEXT    NOT NULL             -- the payee name the user chose for it
+                    )
+                    """);
+            }
+            // Future: if (fromVersion < 9) { ... }
 
             try (PreparedStatement ps = conn.prepareStatement(
                     "UPDATE meta SET value = ? WHERE key = 'schema_version'")) {
@@ -332,7 +342,14 @@ public class Database implements AutoCloseable {
             "CREATE INDEX idx_reconciliation_account ON reconciliation(account_id)",
             "CREATE INDEX idx_attachment_txn ON attachment(txn_id)",
             "CREATE INDEX idx_attachment_reconciliation ON attachment(reconciliation_id)",
-            "CREATE INDEX idx_txn_download ON txn(account_id, download_id)"
+            "CREATE INDEX idx_txn_download ON txn(account_id, download_id)",
+            """
+            CREATE TABLE payee_rename (
+                id       INTEGER PRIMARY KEY,
+                bank_key TEXT    NOT NULL UNIQUE,     -- the bank's payee name, simplified (see PayeeRenameRepository.bankKey)
+                payee    TEXT    NOT NULL             -- the payee name the user chose for it
+            )
+            """
         };
 
         conn.setAutoCommit(false);
