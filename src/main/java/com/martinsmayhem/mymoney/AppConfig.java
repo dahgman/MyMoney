@@ -142,6 +142,34 @@ public class AppConfig implements AutoCloseable {
         }
     }
 
+    // ----- Preferences ----------------------------------------------------
+
+    /** Show each account's cleared balance in the account tree. */
+    public static final String SHOW_TREE_BALANCES = "show_tree_balances";
+
+    /** A yes/no preference, or def if it was never set (or can't be read). */
+    public boolean getBoolean(String key, boolean def) {
+        try (PreparedStatement ps = conn.prepareStatement("SELECT value FROM setting WHERE key = ?")) {
+            ps.setString(1, key);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? Boolean.parseBoolean(rs.getString(1)) : def;
+            }
+        } catch (SQLException e) {
+            return def;
+        }
+    }
+
+    public void setBoolean(String key, boolean value) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement("""
+                INSERT INTO setting (key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """)) {
+            ps.setString(1, key);
+            ps.setString(2, String.valueOf(value));
+            ps.executeUpdate();
+        }
+    }
+
     @Override
     public void close() {
         try {

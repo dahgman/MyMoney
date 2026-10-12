@@ -39,9 +39,9 @@ public final class StatusCell {
         return new DefaultCellEditor(comboBox());
     }
 
-    /** The status drop-down on its own (also used by Edit > Change Status). */
+    /** The status drop-down on its own (also used by Edit > Change Status). Reconciling isn't offered. */
     public static JComboBox<TxnStatus> comboBox() {
-        JComboBox<TxnStatus> combo = new JComboBox<>(TxnStatus.values());
+        JComboBox<TxnStatus> combo = new JComboBox<>(TxnStatus.userChoices());
         combo.setRenderer(new DefaultListCellRenderer() {
             @Override
             public Component getListCellRendererComponent(JList<?> list, Object value,

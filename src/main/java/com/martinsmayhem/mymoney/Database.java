@@ -5,6 +5,7 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
@@ -29,9 +30,10 @@ public class Database implements AutoCloseable {
      *   2 - account.parent_id (envelopes / child accounts), txn.description
      *   3 - tag table (name + color), txn.tag_id
      *   4 - split.transfer_txn_id (links the two sides of a transfer)
+     *   5 - txn.pre_reconcile_status, reconciliation and attachment tables
      * When changing the schema: bump this, update createSchema(), and add a step to upgrade().
      */
-    public static final int SCHEMA_VERSION = 4;
+    public static final int SCHEMA_VERSION = 5;
 
     private final Path file;
     private final Connection conn;
@@ -94,6 +96,25 @@ public class Database implements AutoCloseable {
         return file;
     }
 
+    /**
+     * Copies the data file to target (replacing it if it exists). The copy is
+     * encrypted with the same password. Nothing can be written to the file
+     * while it is being copied, so the copy is never half-saved.
+     */
+    public void backupTo(Path target) throws SQLException, IOException {
+        try (Statement st = conn.createStatement()) {
+            st.execute("BEGIN IMMEDIATE");          // holds off writes during the copy
+            try {
+                Files.copy(file, target, StandardCopyOption.REPLACE_EXISTING);
+            } catch (IOException e) {
+                Files.deleteIfExists(target);       // don't leave a partial backup behind
+                throw e;
+            } finally {
+                st.execute("ROLLBACK");             // nothing was changed; just releases the lock
+            }
+        }
+    }
+
     /** For data-access classes in this package (AccountRepository, ...). */
     Connection getConnection() {
         return conn;
@@ -150,7 +171,34 @@ public class Database implements AutoCloseable {
                 st.execute("ALTER TABLE split ADD COLUMN transfer_txn_id INTEGER"
                         + " REFERENCES txn(id) ON DELETE SET NULL");
             }
-            // Future: if (fromVersion < 5) { ... }
+            if (fromVersion < 5) {
+                st.execute("ALTER TABLE txn ADD COLUMN pre_reconcile_status TEXT");
+                st.execute("""
+                    CREATE TABLE reconciliation (
+                        id                      INTEGER PRIMARY KEY,
+                        account_id              INTEGER NOT NULL REFERENCES account(id),
+                        statement_date          TEXT    NOT NULL,         -- ISO: YYYY-MM-DD
+                        ending_balance_cents    INTEGER NOT NULL,
+                        beginning_balance_cents INTEGER,                  -- set when finished
+                        completed_at            TEXT                      -- NULL = not finished yet
+                    )
+                    """);
+                st.execute("""
+                    CREATE TABLE attachment (
+                        id                INTEGER PRIMARY KEY,
+                        account_id        INTEGER NOT NULL REFERENCES account(id),
+                        txn_id            INTEGER REFERENCES txn(id) ON DELETE CASCADE,
+                        reconciliation_id INTEGER REFERENCES reconciliation(id) ON DELETE CASCADE,
+                        file_name         TEXT    NOT NULL,
+                        path              TEXT    NOT NULL,   -- relative to the data file's folder, '/' separated
+                        added_at          TEXT    NOT NULL
+                    )
+                    """);
+                st.execute("CREATE INDEX idx_reconciliation_account ON reconciliation(account_id)");
+                st.execute("CREATE INDEX idx_attachment_txn ON attachment(txn_id)");
+                st.execute("CREATE INDEX idx_attachment_reconciliation ON attachment(reconciliation_id)");
+            }
+            // Future: if (fromVersion < 6) { ... }
 
             try (PreparedStatement ps = conn.prepareStatement(
                     "UPDATE meta SET value = ? WHERE key = 'schema_version'")) {
@@ -214,9 +262,31 @@ public class Database implements AutoCloseable {
                 payee_id     INTEGER REFERENCES payee(id),
                 check_number TEXT,
                 memo         TEXT,
-                status       TEXT    NOT NULL DEFAULT 'U',       -- R=reconciled, C=cleared, P=pending, D=paid, S=scheduled, U=none
+                status       TEXT    NOT NULL DEFAULT 'U',       -- R=reconciled, C=cleared, I=reconciling, P=pending, D=paid, S=scheduled, U=none
                 description  TEXT,
-                tag_id       INTEGER REFERENCES tag(id)          -- one tag per transaction
+                tag_id       INTEGER REFERENCES tag(id),         -- one tag per transaction
+                pre_reconcile_status TEXT                        -- while status is I: the status to go back to
+            )
+            """,
+            """
+            CREATE TABLE reconciliation (
+                id                      INTEGER PRIMARY KEY,
+                account_id              INTEGER NOT NULL REFERENCES account(id),
+                statement_date          TEXT    NOT NULL,         -- ISO: YYYY-MM-DD
+                ending_balance_cents    INTEGER NOT NULL,
+                beginning_balance_cents INTEGER,                  -- set when finished
+                completed_at            TEXT                      -- NULL = not finished yet
+            )
+            """,
+            """
+            CREATE TABLE attachment (
+                id                INTEGER PRIMARY KEY,
+                account_id        INTEGER NOT NULL REFERENCES account(id),
+                txn_id            INTEGER REFERENCES txn(id) ON DELETE CASCADE,
+                reconciliation_id INTEGER REFERENCES reconciliation(id) ON DELETE CASCADE,
+                file_name         TEXT    NOT NULL,
+                path              TEXT    NOT NULL,   -- relative to the data file's folder, '/' separated
+                added_at          TEXT    NOT NULL
             )
             """,
             """
@@ -233,7 +303,10 @@ public class Database implements AutoCloseable {
             "CREATE INDEX idx_account_parent ON account(parent_id)",
             "CREATE INDEX idx_txn_account_date ON txn(account_id, txn_date)",
             "CREATE INDEX idx_split_txn ON split(txn_id)",
-            "CREATE INDEX idx_txn_tag ON txn(tag_id)"
+            "CREATE INDEX idx_txn_tag ON txn(tag_id)",
+            "CREATE INDEX idx_reconciliation_account ON reconciliation(account_id)",
+            "CREATE INDEX idx_attachment_txn ON attachment(txn_id)",
+            "CREATE INDEX idx_attachment_reconciliation ON attachment(reconciliation_id)"
         };
 
         conn.setAutoCommit(false);

@@ -26,7 +26,8 @@ import java.util.List;
 final class UndoLog {
 
     /** The tables whose changes can be undone. */
-    private static final String[] TABLES = {"account", "category", "payee", "tag", "txn", "split"};
+    private static final String[] TABLES = {"account", "category", "payee", "tag", "txn", "split",
+                                            "reconciliation", "attachment"};
     private static final int MAX_STEPS = 200;
 
     /** One undoable user action: the log rows first..last. */

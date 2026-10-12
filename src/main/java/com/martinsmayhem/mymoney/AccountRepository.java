@@ -174,9 +174,14 @@ public class AccountRepository {
                 ps.setLong(2, id);
                 ps.executeUpdate();
             }
-            try (PreparedStatement ps = conn.prepareStatement("DELETE FROM txn WHERE account_id = ?")) {
-                ps.setLong(1, id);
-                ps.executeUpdate();             // their splits go too (ON DELETE CASCADE)
+            for (String sql : new String[] {
+                    "DELETE FROM attachment WHERE account_id = ?",      // the files stay on disk
+                    "DELETE FROM reconciliation WHERE account_id = ?",
+                    "DELETE FROM txn WHERE account_id = ?"}) {         // their splits go too (ON DELETE CASCADE)
+                try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                    ps.setLong(1, id);
+                    ps.executeUpdate();
+                }
             }
             try (PreparedStatement ps = conn.prepareStatement("DELETE FROM account WHERE id = ?")) {
                 ps.setLong(1, id);
@@ -203,27 +208,55 @@ public class AccountRepository {
 
     /**
      * An account's balances.
-     * cleared: opening balance plus reconciled and cleared transactions.
+     * cleared: opening balance plus reconciled, cleared and reconciling transactions.
      * total:   opening balance plus every transaction, whatever its status or date.
      */
     public record Balances(long clearedCents, long totalCents) {
     }
 
     public Balances balances(Account account) throws SQLException {
-        String sql = "SELECT COALESCE(SUM(CASE WHEN t.status IN (?, ?) THEN s.amount_cents ELSE 0 END), 0),"
+        String sql = "SELECT COALESCE(SUM(CASE WHEN t.status IN (?, ?, ?) THEN s.amount_cents ELSE 0 END), 0),"
                 + " COALESCE(SUM(s.amount_cents), 0)"
                 + " FROM split s JOIN txn t ON s.txn_id = t.id"
                 + " WHERE t.account_id = ?";
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, TxnStatus.RECONCILED.code());
             ps.setString(2, TxnStatus.CLEARED.code());
-            ps.setLong(3, account.id());
+            ps.setString(3, TxnStatus.RECONCILING.code());
+            ps.setLong(4, account.id());
             try (ResultSet rs = ps.executeQuery()) {
                 rs.next();
                 long opening = account.openingBalanceCents();
                 return new Balances(opening + rs.getLong(1), opening + rs.getLong(2));
             }
         }
+    }
+
+    /**
+     * The balance shown next to each account in the account tree, by account id:
+     * the cleared balance (opening + reconciled, cleared and reconciling), except
+     * for envelopes, which show their current balance (opening + every
+     * transaction dated today or earlier).
+     */
+    public java.util.Map<Long, Long> treeBalances() throws SQLException {
+        String sql = "SELECT a.id, a.opening_balance_cents + COALESCE(SUM(CASE"
+                + " WHEN a.type = 'ENVELOPE' THEN CASE WHEN t.txn_date <= ? THEN s.amount_cents END"
+                + " WHEN t.status IN (?, ?, ?) THEN s.amount_cents END), 0)"
+                + " FROM account a LEFT JOIN txn t ON t.account_id = a.id LEFT JOIN split s ON s.txn_id = t.id"
+                + " GROUP BY a.id";
+        java.util.Map<Long, Long> map = new java.util.HashMap<>();
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, java.time.LocalDate.now().toString());
+            ps.setString(2, TxnStatus.RECONCILED.code());
+            ps.setString(3, TxnStatus.CLEARED.code());
+            ps.setString(4, TxnStatus.RECONCILING.code());
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    map.put(rs.getLong(1), rs.getLong(2));
+                }
+            }
+        }
+        return map;
     }
 
     // ---------------------------------------------------------------------

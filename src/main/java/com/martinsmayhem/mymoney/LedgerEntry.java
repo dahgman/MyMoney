@@ -22,6 +22,7 @@ public class LedgerEntry {
     long amountCents;         // negative = payment, positive = deposit
     long balanceCents;        // running balance in date order (calculated, not stored)
     boolean toEnvelope;       // a transfer whose other account is an envelope (read from the database)
+    int attachments;          // how many files are attached (read from the database)
 
     /** A separate copy, for trying out changes before saving them. */
     LedgerEntry copy() {
@@ -39,6 +40,7 @@ public class LedgerEntry {
         c.amountCents = amountCents;
         c.balanceCents = balanceCents;
         c.toEnvelope = toEnvelope;
+        c.attachments = attachments;
         return c;
     }
 

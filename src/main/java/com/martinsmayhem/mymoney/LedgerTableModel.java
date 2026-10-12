@@ -53,10 +53,17 @@ public class LedgerTableModel extends AbstractTableModel {
     public static final int PAYMENT = 8;
     public static final int DEPOSIT = 9;
     public static final int BALANCE = 10;
+    public static final int FILES = 11;          // how many attachments (double-click to open)
 
+    /** Column headers (Files shows as a paperclip icon, so it has no text). */
     private static final String[] COLUMNS = {
+        "Date", "Num", "Payee", "Category", "Tag", "Description", "Memo", "C",
+        "Payment", "Deposit", "Balance", ""
+    };
+    /** Column names for messages and Undo labels ("Undo Change Status"). */
+    private static final String[] NAMES = {
         "Date", "Num", "Payee", "Category", "Tag", "Description", "Memo", "Status",
-        "Payment", "Deposit", "Balance"
+        "Payment", "Deposit", "Balance", "Files"
     };
 
     /** How dates are shown in the ledger (also used by DateCellEditor). */
@@ -269,6 +276,16 @@ public class LedgerTableModel extends AbstractTableModel {
                 && !TransactionRepository.isTransfer(newText);
     }
 
+    /** A saved row's transaction id; 0 for the blank row. */
+    public long transactionId(int row) {
+        return isSavedRow(row) ? entries.get(row).id : 0;
+    }
+
+    /** A saved row's date; null for the blank row. */
+    public LocalDate transactionDate(int row) {
+        return isSavedRow(row) ? entries.get(row).date : null;
+    }
+
     /** True for a reconciled transaction: only its status, category and tag can be changed, and it can't be deleted. */
     public boolean isLocked(int row) {
         return isSavedRow(row) && entries.get(row).status == TxnStatus.RECONCILED;
@@ -374,6 +391,7 @@ public class LedgerTableModel extends AbstractTableModel {
         List<LedgerEntry> changes = new ArrayList<>();
         int reconciled = 0;
         int splits = 0;
+        int reconciling = 0;
         if (column == STATUS) {
             int unreconciling = 0;
             for (int row : rows) {
@@ -395,7 +413,9 @@ public class LedgerTableModel extends AbstractTableModel {
                     continue;
                 }
                 LedgerEntry e = entries.get(row);
-                if (e.status == TxnStatus.RECONCILED && column != STATUS && column != TAG
+                if (column == STATUS && e.status == TxnStatus.RECONCILING) {
+                    reconciling++;
+                } else if (e.status == TxnStatus.RECONCILED && column != STATUS && column != TAG
                         && !(column == CATEGORY && reconciledCategoryChangeOk(e.category, value))) {
                     reconciled++;
                 } else if (column == CATEGORY && TransactionRepository.SPLIT_LABEL.equals(e.category)) {
@@ -411,7 +431,7 @@ public class LedgerTableModel extends AbstractTableModel {
             return null;
         }
         if (!changes.isEmpty()) {
-            lastAction = "Change " + COLUMNS[column];
+            lastAction = "Change " + NAMES[column];
             try {
                 transactions.updateAll(changes);
             } catch (SQLException ex) {
@@ -422,11 +442,18 @@ public class LedgerTableModel extends AbstractTableModel {
             refresh();
             onChanged.run();
         }
-        if (reconciled == 0 && splits == 0) {
+        if (reconciled == 0 && splits == 0 && reconciling == 0) {
             return null;
         }
         StringBuilder note = new StringBuilder(changes.isEmpty() ? "Nothing was changed."
-                : "Changed " + changes.size() + " of " + (changes.size() + reconciled + splits) + " transactions.");
+                : "Changed " + changes.size() + " of " + (changes.size() + reconciled + splits + reconciling)
+                        + " transactions.");
+        if (reconciling > 0) {
+            note.append("\n").append(reconciling)
+                .append(reconciling == 1 ? " transaction is" : " transactions are")
+                .append(" part of an unfinished reconciliation; use Reconcile Account to change ")
+                .append(reconciling == 1 ? "it." : "them.");
+        }
         if (reconciled > 0) {
             note.append("\n").append(reconciled).append(" reconciled ")
                 .append(reconciled == 1 ? "transaction was" : "transactions were").append(" left alone")
@@ -464,8 +491,11 @@ public class LedgerTableModel extends AbstractTableModel {
 
     @Override
     public boolean isCellEditable(int row, int column) {
-        if (account == null || column == BALANCE) {
+        if (account == null || column == BALANCE || column == FILES) {
             return false;
+        }
+        if (column == STATUS && isSavedRow(row) && entries.get(row).status == TxnStatus.RECONCILING) {
+            return false;                       // only Reconcile Account changes these
         }
         if (isLocked(row)) {
             // Reconciled: status, tag and category only (a transfer's category stays put).
@@ -490,6 +520,7 @@ public class LedgerTableModel extends AbstractTableModel {
             case PAYMENT -> e.amountCents < 0 ? Money.format(-e.amountCents) : "";
             case DEPOSIT -> e.amountCents > 0 ? Money.format(e.amountCents) : "";
             case BALANCE -> isSavedRow(row) ? Money.format(e.balanceCents) : "";
+            case FILES -> e.attachments > 0 ? String.valueOf(e.attachments) : "";
             default -> "";
         };
     }
@@ -551,7 +582,7 @@ public class LedgerTableModel extends AbstractTableModel {
                 transactions.insert(account.id(), draft);
                 draft = newDraft(draft.date);           // next entry starts on the same date
             } else {
-                lastAction = column == STATUS ? "Change Status" : "Edit " + COLUMNS[column];
+                lastAction = column == STATUS ? "Change Status" : "Edit " + NAMES[column];
                 transactions.update(e);
             }
         } catch (SQLException ex) {
@@ -674,6 +705,7 @@ public class LedgerTableModel extends AbstractTableModel {
             case PAYMENT -> amountOrder(true, ascending);
             case DEPOSIT -> amountOrder(false, ascending);
             case BALANCE -> by(e -> e.balanceCents, Comparator.<Long>naturalOrder(), ascending);
+            case FILES -> by(e -> e.attachments == 0 ? null : e.attachments, Comparator.<Integer>naturalOrder(), ascending);
             default -> (a, b) -> 0;
         };
     }
@@ -690,6 +722,7 @@ public class LedgerTableModel extends AbstractTableModel {
         return switch (e.status) {
             case RECONCILED -> 0;
             case CLEARED -> 1;
+            case RECONCILING -> 1;              // being reconciled: with the cleared ones
             case PENDING -> 3;
             case PAID -> 4;
             case SCHEDULED -> 5;

@@ -185,15 +185,28 @@ public class NewDatabaseDialog extends javax.swing.JDialog {
             return;
         }
         String ext = "." + Database.EXTENSION;
-        Path file = dir.resolve(name.toLowerCase().endsWith(ext.toLowerCase()) ? name : name + ext);
-        if (Files.exists(file)) { showError("A file with that name already exists in this folder."); return; }
+        String base = name.toLowerCase().endsWith(ext.toLowerCase())
+                ? name.substring(0, name.length() - ext.length()) : name;
+        // The database gets a folder of its own (Folder/Name/Name.MyMoney); its
+        // attachments are kept in that folder too, one subfolder per account.
+        Path home = dir.resolve(base);
+        Path file = home.resolve(base + ext);
+        if (Files.exists(file)) { showError("A database with that name already exists in this folder."); return; }
+        if (Files.exists(home) && !Files.isDirectory(home)) {
+            showError("There is already a file named \"" + base + "\" in this folder.");
+            return;
+        }
 
         char[] pw1 = passwordField.getPassword();
         char[] pw2 = confirmField.getPassword();
         try {
             if (pw1.length < 8) { showError("Password must be at least 8 characters."); return; }
             if (!Arrays.equals(pw1, pw2)) { showError("Passwords don't match."); return; }
+            Files.createDirectories(home);
             database = Database.create(file, new String(pw1));
+        } catch (java.io.IOException e) {
+            showError("Could not create the folder \"" + home + "\":\n" + e.getMessage());
+            return;
         } catch (SQLException e) {
             showError("Could not create the database:\n" + e.getMessage());
             return;

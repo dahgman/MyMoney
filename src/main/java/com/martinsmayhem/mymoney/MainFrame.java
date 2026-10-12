@@ -12,8 +12,10 @@ import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.awt.event.WindowEvent;
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.SQLException;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -62,11 +64,15 @@ public class MainFrame extends javax.swing.JFrame {
     private final TagRepository tags;
     private final TransactionRepository transactionRepo;
     private final LedgerTableModel ledgerModel;
+    private final AttachmentRepository attachments;
+    private final ReconcileRepository reconciles;
 
     private UndoLog undoLog;                 // null if undo couldn't be set up
     private JMenuItem undoItem;
     private JMenuItem redoItem;
     private boolean reloadingTree;           // true while loadAccounts rebuilds the tree
+    private boolean showTreeBalances;        // preference: cleared balances in the account tree
+    private Map<Long, Long> treeBalances = new HashMap<>();   // account id -> cleared (envelopes: current) balance
 
     private int lastLedgerRow = -1;          // for noticing when the new-transaction row is left
     private boolean resolvingDraft;          // true while asking about an unsaved new transaction
@@ -86,6 +92,8 @@ public class MainFrame extends javax.swing.JFrame {
         this.categories = new CategoryRepository(db);
         this.tags = new TagRepository(db);
         this.transactionRepo = new TransactionRepository(db);
+        this.attachments = new AttachmentRepository(db);
+        this.reconciles = new ReconcileRepository(db);
         this.ledgerModel = new LedgerTableModel(transactionRepo,
                 this::showError, this::confirm, this::afterLedgerChange);
         initComponents();
@@ -99,6 +107,8 @@ public class MainFrame extends javax.swing.JFrame {
             showError("Undo is not available for this file:\n" + e.getMessage());
         }
         updateUndoMenu();
+        showTreeBalances = config.getBoolean(AppConfig.SHOW_TREE_BALANCES, false);
+        setupTreeRenderer();
         accountTree.addTreeSelectionListener(e -> {
             if (!reloadingTree) {
                 showAccount(selectedAccount());
@@ -132,7 +142,7 @@ public class MainFrame extends javax.swing.JFrame {
         ledgerTable.setSurrendersFocusOnKeystroke(true);                         // typing goes straight into the cell
 
         TableColumnModel cols = ledgerTable.getColumnModel();
-        int[] widths = {110, 60, 160, 160, 110, 150, 130, 100, 90, 90, 100};
+        int[] widths = {110, 60, 160, 160, 110, 150, 130, 30, 90, 90, 100, 30};
         for (int i = 0; i < widths.length; i++) {
             cols.getColumn(i).setPreferredWidth(widths[i]);
         }
@@ -153,6 +163,22 @@ public class MainFrame extends javax.swing.JFrame {
         cols.getColumn(LedgerTableModel.DEPOSIT).setCellRenderer(money);
         cols.getColumn(LedgerTableModel.BALANCE).setCellRenderer(money);
 
+        // Files: how many attachments; double-click to see them.
+        DefaultTableCellRenderer centered = new DefaultTableCellRenderer();
+        centered.setHorizontalAlignment(SwingConstants.CENTER);
+        cols.getColumn(LedgerTableModel.FILES).setCellRenderer(muted(centered));
+        ledgerTable.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mouseClicked(MouseEvent e) {
+                int row = ledgerTable.rowAtPoint(e.getPoint());
+                int col = ledgerTable.columnAtPoint(e.getPoint());
+                if (e.getClickCount() == 2 && SwingUtilities.isLeftMouseButton(e) && row >= 0 && col >= 0
+                        && ledgerTable.convertColumnIndexToModel(col) == LedgerTableModel.FILES) {
+                    showAttachments(row);
+                }
+            }
+        });
+
         // Text cells: Enter saves and moves down. Category also suggests as you type,
         // and Date also has a pop-out calendar.
         ledgerTable.setDefaultEditor(String.class, new AutoCompleteEditor(null, this::commitAndMoveDown));
@@ -170,6 +196,7 @@ public class MainFrame extends javax.swing.JFrame {
         cols.getColumn(LedgerTableModel.STATUS).setCellEditor(StatusCell.editor());
 
         setupSorting();
+        ColumnFit.install(ledgerTable);                  // double-click a header border to fit
         setupFilter();
 
         // Leaving the new-transaction row without an amount: ask what to do.
@@ -367,15 +394,23 @@ public class MainFrame extends javax.swing.JFrame {
         header.setDefaultRenderer((table, value, isSelected, hasFocus, row, column) -> {
             int modelColumn = table.convertColumnIndexToModel(column);
             String text = value + ledgerModel.sortIndicator(modelColumn);
-            return plain.getTableCellRendererComponent(table, text, isSelected, hasFocus, row, column);
+            java.awt.Component c = plain.getTableCellRendererComponent(table, text, isSelected, hasFocus, row, column);
+            if (c instanceof JLabel label) {       // Files: a paperclip instead of a name
+                boolean narrow = modelColumn == LedgerTableModel.STATUS || modelColumn == LedgerTableModel.FILES;
+                label.setHorizontalAlignment(narrow ? SwingConstants.CENTER : SwingConstants.LEADING);
+                label.setIcon(modelColumn == LedgerTableModel.FILES ? PaperclipIcon.INSTANCE : null);
+                label.setToolTipText(modelColumn == LedgerTableModel.FILES ? "Attachments"
+                        : modelColumn == LedgerTableModel.STATUS ? "Status" : null);
+            }
+            return c;
         });
 
         header.addMouseListener(new MouseAdapter() {
             @Override
             public void mouseClicked(MouseEvent e) {
                 int column = header.columnAtPoint(e.getPoint());
-                if (column < 0 || !SwingUtilities.isLeftMouseButton(e)) {
-                    return;
+                if (column < 0 || !SwingUtilities.isLeftMouseButton(e) || ColumnFit.onBorder(header, e)) {
+                    return;                             // a click on a border resizes, not sorts
                 }
                 if (ledgerTable.isEditing()) {
                     ledgerTable.getCellEditor().stopCellEditing();
@@ -496,9 +531,13 @@ public class MainFrame extends javax.swing.JFrame {
         manageTagsItem.addActionListener(e -> manageTags());
         fileMenu.insert(editAccountItem, 1);           // after New Account...
         fileMenu.insert(menuItem("Delete Account...", this::deleteAccount), 2);
-        fileMenu.insert(manageTagsItem, 3);
-        fileMenu.insertSeparator(4);
-        fileMenu.insert(importQifItem, 5);
+        JMenuItem reconcileItem = menuItem("Reconcile Account...", this::reconcileAccount);
+        reconcileItem.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_R, menuShortcut()));
+        fileMenu.insert(reconcileItem, 3);
+        fileMenu.insert(manageTagsItem, 4);
+        fileMenu.insertSeparator(5);
+        fileMenu.insert(importQifItem, 6);
+        fileMenu.insert(menuItem("Back Up File...", this::backupFile), 7);
 
         // Edit menu: changes to the selected transactions.
         javax.swing.JMenu editMenu = new javax.swing.JMenu("Edit");
@@ -510,6 +549,8 @@ public class MainFrame extends javax.swing.JFrame {
             menu.add(menuItem("Change Tag...", () -> bulkChange(LedgerTableModel.TAG)));
             menu.add(menuItem("Change Status...", () -> bulkChange(LedgerTableModel.STATUS)));
             menu.add(menuItem("Move Memo to Description", this::moveMemoToDescription));
+            menu.add(new javax.swing.JSeparator());
+            menu.add(menuItem("Attachments...", () -> showAttachments(ledgerTable.getSelectedRow())));
             menu.add(new javax.swing.JSeparator());
             menu.add(menuItem("Delete Transactions...", this::deleteSelectedTransaction));
         }
@@ -532,6 +573,8 @@ public class MainFrame extends javax.swing.JFrame {
         editMenu.insert(undoItem, 0);
         editMenu.insert(redoItem, 1);
         editMenu.insertSeparator(2);
+        editMenu.addSeparator();
+        editMenu.add(menuItem("Preferences...", this::editPreferences));
         menuBar.add(editMenu, 1);                       // after File
 
         // Right-click in the ledger: the same menu. A row outside the selection gets selected first.
@@ -563,6 +606,7 @@ public class MainFrame extends javax.swing.JFrame {
         editFromTree.addActionListener(e -> editAccount());
         treeMenu.add(editFromTree);
         treeMenu.add(menuItem("Delete Account...", this::deleteAccount));
+        treeMenu.add(menuItem("Reconcile Account...", this::reconcileAccount));
         accountTree.addMouseListener(new MouseAdapter() {
             @Override
             public void mousePressed(MouseEvent e) {
@@ -597,6 +641,7 @@ public class MainFrame extends javax.swing.JFrame {
     /** After each saved ledger change: new balances, and one undo step. */
     private void afterLedgerChange() {
         updateSummary(selectedAccount());
+        refreshTreeBalances();                          // a transfer changes another account too
         checkpoint(ledgerModel.lastAction());
     }
 
@@ -767,8 +812,129 @@ public class MainFrame extends javax.swing.JFrame {
         dlg.setVisible(true);
         Long id = dlg.getSavedAccountId();
         if (id != null) {
+            try {
+                Account saved = findAccount(id);
+                if (saved != null && !saved.name().equals(a.name())) {
+                    attachments.renameAccountFolder(a.name(), saved.name());   // keep the folder matching the name
+                }
+            } catch (SQLException | IOException e) {
+                showError("The account was renamed, but its attachments folder could not be:\n"
+                        + e.getMessage() + "\n\nIts attachments still open from the old folder.");
+            }
             checkpoint("Edit Account");
             loadAccounts(id);
+        }
+    }
+
+    /** The account with this id, or null. */
+    private Account findAccount(long id) throws SQLException {
+        for (Account a : accounts.findAll()) {
+            if (a.id() == id) {
+                return a;
+            }
+        }
+        return null;
+    }
+
+    /** Shows (and lets you change) a ledger row's attached files. */
+    private void showAttachments(int row) {
+        Account a = ledgerModel.currentAccount();
+        long txnId = ledgerModel.transactionId(row);
+        if (a == null || txnId == 0) {
+            showError("Select a saved transaction first.");
+            return;
+        }
+        if (ledgerTable.isEditing()) {
+            ledgerTable.getCellEditor().stopCellEditing();
+        }
+        if (AttachmentsDialog.show(this, a, txnId, ledgerModel.transactionDate(row), attachments)) {
+            checkpoint("Attachments");
+            ledgerModel.reload();
+        }
+    }
+
+    /**
+     * File > Reconcile Account...: asks for the statement (or picks up an
+     * unfinished reconciliation), then shows the reconcile window.
+     */
+    private void reconcileAccount() {
+        Account a = selectedAccount();
+        if (a == null) {
+            showError("Select an account to reconcile first.");
+            return;
+        }
+        if (ledgerTable.isEditing()) {
+            ledgerTable.getCellEditor().stopCellEditing();
+        }
+        resolveDraft(false);
+        try {
+            ReconcileRepository.Reconciliation r = reconciles.unfinished(a.id());
+            if (r == null) {
+                LocalDate last = reconciles.lastStatementDate(a.id());
+                ReconcileStartDialog start = new ReconcileStartDialog(this, a, reconciles.beginningBalance(a),
+                        null, last == null ? LocalDate.now() : last.plusMonths(1));
+                start.setVisible(true);
+                if (!start.wasAccepted()) {
+                    return;
+                }
+                r = reconciles.start(a, start.statementDate(), start.endingCents(), start.asOf());
+            }
+            ReconcileWindow w = new ReconcileWindow(this, a, r, reconciles, transactionRepo, attachments,
+                    this::payeeNames, this::categoryPaths, this::tagNames);
+            w.setVisible(true);
+            checkpoint(w.wasFinished() ? "Reconcile" : "Reconcile (unfinished)");
+        } catch (SQLException e) {
+            showError("Could not reconcile the account:\n" + e.getMessage());
+        }
+        ledgerModel.reload();
+        updateSummary(a);
+        refreshTreeBalances();
+    }
+
+    /**
+     * File > Back Up File...: saves a copy of the data file, suggesting the
+     * name filename_YYYYMMDD_hhmm.MyMoney in the same folder. The backup
+     * opens with the same password.
+     */
+    private void backupFile() {
+        if (ledgerTable.isEditing()) {
+            ledgerTable.getCellEditor().stopCellEditing();   // save a half-finished cell first
+        }
+        resolveDraft(false);
+
+        Path dbFile = db.getFile();
+        String name = dbFile.getFileName().toString();
+        String ext = "." + Database.EXTENSION;
+        String base = name.toLowerCase().endsWith(ext.toLowerCase())
+                ? name.substring(0, name.length() - ext.length()) : name;
+        String stamp = java.time.LocalDateTime.now()
+                .format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd_HHmm"));
+
+        JFileChooser fc = new JFileChooser(dbFile.getParent().toFile());
+        fc.setDialogTitle("Back Up File");
+        fc.setFileFilter(new FileNameExtensionFilter("MyMoney files (*" + ext + ")", Database.EXTENSION));
+        fc.setSelectedFile(dbFile.resolveSibling(base + "_" + stamp + ext).toFile());
+        if (fc.showSaveDialog(this) != JFileChooser.APPROVE_OPTION) {
+            return;
+        }
+        Path target = fc.getSelectedFile().toPath().toAbsolutePath();
+        if (!target.getFileName().toString().toLowerCase().endsWith(ext.toLowerCase())) {
+            target = target.resolveSibling(target.getFileName() + ext);
+        }
+        if (target.equals(dbFile)) {
+            showError("Choose a different name: that is the file you have open.");
+            return;
+        }
+        if (Files.exists(target) && !confirm("\"" + target.getFileName() + "\" already exists. Replace it?")) {
+            return;
+        }
+        try {
+            db.backupTo(target);
+            JOptionPane.showMessageDialog(this, "Backed up to:\n" + target
+                    + "\n\nIt opens with the same password as this file.",
+                    "Back Up File", JOptionPane.INFORMATION_MESSAGE);
+        } catch (SQLException | IOException e) {
+            showError("Could not back up the file:\n" + e.getMessage());
         }
     }
 
@@ -1069,6 +1235,7 @@ public class MainFrame extends javax.swing.JFrame {
             }
         }
 
+        readTreeBalances();
         reloadingTree = true;                      // don't react to the selection coming and going
         try {
             accountTree.setModel(new DefaultTreeModel(root));
@@ -1086,6 +1253,83 @@ public class MainFrame extends javax.swing.JFrame {
             reloadingTree = false;
         }
         showAccount(selectedAccount());
+    }
+
+    // ----- Account tree balances --------------------------------------------
+
+    /**
+     * Draws each account as its name, followed (if that preference is on) by
+     * its cleared balance, or for an envelope its current balance.
+     */
+    private void setupTreeRenderer() {
+        javax.swing.ToolTipManager.sharedInstance().registerComponent(accountTree);
+        accountTree.setCellRenderer(new javax.swing.tree.DefaultTreeCellRenderer() {
+            @Override
+            public java.awt.Component getTreeCellRendererComponent(javax.swing.JTree tree, Object value,
+                    boolean selected, boolean expanded, boolean leaf, int row, boolean hasFocus) {
+                super.getTreeCellRendererComponent(tree, value, selected, expanded, leaf, row, hasFocus);
+                setToolTipText(null);
+                if (showTreeBalances && value instanceof DefaultMutableTreeNode n
+                        && n.getUserObject() instanceof Account a && treeBalances.containsKey(a.id())) {
+                    long cents = treeBalances.get(a.id());
+                    String color = selected ? "" : cents < 0 ? " color='#c0392b'" : " color='gray'";
+                    setText("<html>" + escape(a.name()) + "&nbsp;&nbsp;<font" + color + ">"
+                            + Money.format(cents) + "</font></html>");
+                    setToolTipText(a.type() == AccountType.ENVELOPE
+                            ? "Current balance (transactions through today)" : "Cleared balance");
+                }
+                return this;
+            }
+        });
+    }
+
+    private static String escape(String s) {
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+    }
+
+    private void readTreeBalances() {
+        if (!showTreeBalances) {
+            return;
+        }
+        try {
+            treeBalances = accounts.treeBalances();
+        } catch (SQLException e) {
+            treeBalances = new HashMap<>();             // just names, then
+        }
+    }
+
+    /** Re-reads the balances and redraws the tree (row widths change with the numbers). */
+    private void refreshTreeBalances() {
+        if (!showTreeBalances) {
+            return;
+        }
+        readTreeBalances();
+        if (accountTree.getModel() instanceof DefaultTreeModel m
+                && m.getRoot() instanceof DefaultMutableTreeNode root) {
+            java.util.Enumeration<javax.swing.tree.TreeNode> e = root.depthFirstEnumeration();
+            while (e.hasMoreElements()) {
+                m.nodeChanged(e.nextElement());
+            }
+        }
+    }
+
+    /** Edit > Preferences...: application settings, saved for next time. */
+    private void editPreferences() {
+        javax.swing.JCheckBox balances = new javax.swing.JCheckBox(
+                "Show balances in the account tree (cleared; current for envelopes)", showTreeBalances);
+        int r = JOptionPane.showConfirmDialog(this, new Object[] {balances}, "Preferences",
+                JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+        if (r != JOptionPane.OK_OPTION || balances.isSelected() == showTreeBalances) {
+            return;
+        }
+        showTreeBalances = balances.isSelected();
+        try {
+            config.setBoolean(AppConfig.SHOW_TREE_BALANCES, showTreeBalances);
+        } catch (SQLException e) {
+            showError("The preference applies now, but could not be saved for next time:\n" + e.getMessage());
+        }
+        Account selected = selectedAccount();
+        loadAccounts(selected == null ? null : selected.id());   // redraws the tree and fits its width
     }
 
     /** Narrowest and widest the account tree pane is sized to automatically. */
