@@ -70,9 +70,9 @@ public class StartupDialog extends javax.swing.JDialog {
         clearDefaultButton = new javax.swing.JButton();
 
         setDefaultCloseOperation(javax.swing.WindowConstants.DISPOSE_ON_CLOSE);
-        setTitle("Open Database");
+        setTitle("Open File");
 
-        labelRecentDB.setText("Recent Databases");
+        labelRecentDB.setText("Recent Files");
 
         recentList.setModel(new javax.swing.AbstractListModel<String>() {
             String[] strings = { "Item 1", "Item 2", "Item 3", "Item 4", "Item 5" };
@@ -185,7 +185,7 @@ public class StartupDialog extends javax.swing.JDialog {
     private void openButtonActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_openButtonActionPerformed
         String sel = recentList.getSelectedValue();
         if (sel == null) {
-            JOptionPane.showMessageDialog(this, "Select a database from the list first.");
+            JOptionPane.showMessageDialog(this, "Select a file from the list first.");
             return;
         }
         openFile(Paths.get(sel));
@@ -203,9 +203,9 @@ public class StartupDialog extends javax.swing.JDialog {
 
     private void browseButtonActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_browseButtonActionPerformed
         JFileChooser fc = new JFileChooser(System.getProperty("user.home"));
-        fc.setDialogTitle("Open a MyMoney database");
+        fc.setDialogTitle("Open a MyMoney file");
         fc.setFileFilter(new FileNameExtensionFilter(
-                "MyMoney databases (*." + Database.EXTENSION + ")", Database.EXTENSION));
+                "MyMoney files (*." + Database.EXTENSION + ")", Database.EXTENSION));
         if (fc.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
             openFile(fc.getSelectedFile().toPath());
         }        
@@ -231,7 +231,7 @@ public class StartupDialog extends javax.swing.JDialog {
     private void defaultButtonActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_defaultButtonActionPerformed
         String sel = recentList.getSelectedValue();
         if (sel == null) {
-            JOptionPane.showMessageDialog(this, "Select a database from the list first.");
+            JOptionPane.showMessageDialog(this, "Select a file from the list first.");
             return;
         }
         try {
@@ -253,6 +253,14 @@ public class StartupDialog extends javax.swing.JDialog {
 
     public Database getDatabase() {
         return database;
+    }
+
+    /**
+     * When shown from File > Open..., the Exit button just closes the dialog,
+     * so it is labelled Cancel.
+     */
+    public void useCancelButton() {
+        exitButton.setText("Cancel");
     }
 
     private void loadRecent() {

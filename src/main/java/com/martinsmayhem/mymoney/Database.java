@@ -31,9 +31,12 @@ public class Database implements AutoCloseable {
      *   3 - tag table (name + color), txn.tag_id
      *   4 - split.transfer_txn_id (links the two sides of a transfer)
      *   5 - txn.pre_reconcile_status, reconciliation and attachment tables
+     *   6 - txn.download_status and txn.download_id (bank downloads)
+     *   7 - account details: bank name, start date, balance adjustment, account and
+     *       routing numbers, default category, comments, website
      * When changing the schema: bump this, update createSchema(), and add a step to upgrade().
      */
-    public static final int SCHEMA_VERSION = 5;
+    public static final int SCHEMA_VERSION = 7;
 
     private final Path file;
     private final Connection conn;
@@ -141,7 +144,7 @@ public class Database implements AutoCloseable {
         try (Statement st = conn.createStatement();
              ResultSet rs = st.executeQuery(sql)) {
             if (!rs.next()) {
-                throw new SQLException("Not a MyMoney database.");
+                throw new SQLException("Not a MyMoney file.");
             }
             return Integer.parseInt(rs.getString(1));
         }
@@ -198,7 +201,19 @@ public class Database implements AutoCloseable {
                 st.execute("CREATE INDEX idx_attachment_txn ON attachment(txn_id)");
                 st.execute("CREATE INDEX idx_attachment_reconciliation ON attachment(reconciliation_id)");
             }
-            // Future: if (fromVersion < 6) { ... }
+            if (fromVersion < 6) {
+                st.execute("ALTER TABLE txn ADD COLUMN download_status TEXT");
+                st.execute("ALTER TABLE txn ADD COLUMN download_id TEXT");
+                st.execute("CREATE INDEX idx_txn_download ON txn(account_id, download_id)");
+            }
+            if (fromVersion < 7) {
+                for (String col : new String[] {"bank_name TEXT", "start_date TEXT",
+                        "balance_adjustment_cents INTEGER NOT NULL DEFAULT 0", "account_number TEXT",
+                        "routing_number TEXT", "default_category TEXT", "comments TEXT", "website TEXT"}) {
+                    st.execute("ALTER TABLE account ADD COLUMN " + col);
+                }
+            }
+            // Future: if (fromVersion < 8) { ... }
 
             try (PreparedStatement ps = conn.prepareStatement(
                     "UPDATE meta SET value = ? WHERE key = 'schema_version'")) {
@@ -230,7 +245,15 @@ public class Database implements AutoCloseable {
                 opening_balance_cents INTEGER NOT NULL DEFAULT 0,
                 currency              TEXT    NOT NULL DEFAULT 'USD',
                 closed                INTEGER NOT NULL DEFAULT 0,
-                parent_id             INTEGER REFERENCES account(id)   -- set for envelopes / child accounts
+                parent_id             INTEGER REFERENCES account(id),  -- set for envelopes / child accounts
+                bank_name             TEXT,
+                start_date            TEXT,                      -- ISO: YYYY-MM-DD
+                balance_adjustment_cents INTEGER NOT NULL DEFAULT 0,   -- added to the opening balance
+                account_number        TEXT,
+                routing_number        TEXT,
+                default_category      TEXT,                      -- category path for new transactions
+                comments              TEXT,
+                website               TEXT
             )
             """,
             """
@@ -265,7 +288,9 @@ public class Database implements AutoCloseable {
                 status       TEXT    NOT NULL DEFAULT 'U',       -- R=reconciled, C=cleared, I=reconciling, P=pending, D=paid, S=scheduled, U=none
                 description  TEXT,
                 tag_id       INTEGER REFERENCES tag(id),         -- one tag per transaction
-                pre_reconcile_status TEXT                        -- while status is I: the status to go back to
+                pre_reconcile_status TEXT,                       -- while status is I: the status to go back to
+                download_status TEXT,                            -- from a bank download: M = matched, N = new
+                download_id     TEXT                             -- the download's id (OFX FITID, or made up for QIF)
             )
             """,
             """
@@ -306,7 +331,8 @@ public class Database implements AutoCloseable {
             "CREATE INDEX idx_txn_tag ON txn(tag_id)",
             "CREATE INDEX idx_reconciliation_account ON reconciliation(account_id)",
             "CREATE INDEX idx_attachment_txn ON attachment(txn_id)",
-            "CREATE INDEX idx_attachment_reconciliation ON attachment(reconciliation_id)"
+            "CREATE INDEX idx_attachment_reconciliation ON attachment(reconciliation_id)",
+            "CREATE INDEX idx_txn_download ON txn(account_id, download_id)"
         };
 
         conn.setAutoCommit(false);

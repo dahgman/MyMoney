@@ -53,8 +53,8 @@ public final class PasswordPrompt {
                 return Database.open(file, new String(pw));
             } catch (SQLException e) {
                 JOptionPane.showMessageDialog(parent,
-                        "Could not open the database. The password may be wrong,\n"
-                        + "or the file may not be a MyMoney database.\n\nPlease try again.",
+                        "Could not open the file. The password may be wrong,\n"
+                        + "or it may not be a MyMoney file.\n\nPlease try again.",
                         "Open Failed", JOptionPane.ERROR_MESSAGE);
             } finally {
                 Arrays.fill(pw, '\0');

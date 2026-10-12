@@ -34,7 +34,7 @@ final class ReconcileRepository {
         this.conn = db.getConnection();
     }
 
-    /** The opening balance plus every reconciled transaction: where this statement starts. */
+    /** The opening balance (with its adjustment) plus every reconciled transaction: where this statement starts. */
     long beginningBalance(Account account) throws SQLException {
         try (PreparedStatement ps = conn.prepareStatement("SELECT COALESCE(SUM(s.amount_cents), 0)"
                 + " FROM split s JOIN txn t ON t.id = s.txn_id WHERE t.account_id = ? AND t.status = ?")) {
@@ -42,7 +42,7 @@ final class ReconcileRepository {
             ps.setString(2, R);
             try (ResultSet rs = ps.executeQuery()) {
                 rs.next();
-                return account.openingBalanceCents() + rs.getLong(1);
+                return account.startingBalanceCents() + rs.getLong(1);
             }
         }
     }

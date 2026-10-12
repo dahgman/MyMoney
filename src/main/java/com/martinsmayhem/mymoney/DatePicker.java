@@ -32,6 +32,11 @@ final class DatePicker extends JPanel {
         return LedgerTableModel.parseDate(field.getText().trim());
     }
 
+    /** The date, or null if the field is blank. @throws IllegalArgumentException if it isn't a date */
+    LocalDate getDateOrNull() {
+        return field.getText().isBlank() ? null : getDate();
+    }
+
     void setDate(LocalDate date) {
         field.setText(date == null ? "" : date.format(LedgerTableModel.DISPLAY_DATE));
     }

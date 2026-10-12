@@ -23,6 +23,7 @@ public class LedgerEntry {
     long balanceCents;        // running balance in date order (calculated, not stored)
     boolean toEnvelope;       // a transfer whose other account is an envelope (read from the database)
     int attachments;          // how many files are attached (read from the database)
+    String download;          // from a bank download: "M" matched, "N" new; null = entered by hand
 
     /** A separate copy, for trying out changes before saving them. */
     LedgerEntry copy() {
@@ -41,6 +42,7 @@ public class LedgerEntry {
         c.balanceCents = balanceCents;
         c.toEnvelope = toEnvelope;
         c.attachments = attachments;
+        c.download = download;
         return c;
     }
 

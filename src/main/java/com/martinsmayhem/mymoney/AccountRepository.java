@@ -13,7 +13,8 @@ import java.util.List;
 public class AccountRepository {
 
     private static final String COLUMNS =
-            "id, name, type, opening_balance_cents, currency, closed, parent_id";
+            "id, name, type, opening_balance_cents, currency, closed, parent_id,"
+            + " balance_adjustment_cents, default_category";
 
     private final Connection conn;
 
@@ -114,6 +115,56 @@ public class AccountRepository {
                 ps.setLong(4, parentId);
             }
             ps.setLong(5, id);
+            ps.executeUpdate();
+        }
+    }
+
+    /** Everything about an account that Manage Accounts shows and edits. */
+    public record Details(long id, String name, AccountType type, Long parentId, String bankName,
+                          java.time.LocalDate startDate, long openingBalanceCents, long balanceAdjustmentCents,
+                          String accountNumber, String routingNumber, String defaultCategory,
+                          String comments, String website) {
+    }
+
+    public Details findDetails(long id) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement("SELECT id, name, type, parent_id, bank_name,"
+                + " start_date, opening_balance_cents, balance_adjustment_cents, account_number, routing_number,"
+                + " default_category, comments, website FROM account WHERE id = ?")) {
+            ps.setLong(1, id);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) {
+                    return null;
+                }
+                long parent = rs.getLong(4);
+                Long parentId = rs.wasNull() ? null : parent;
+                String start = rs.getString(6);
+                return new Details(rs.getLong(1), rs.getString(2), AccountType.valueOf(rs.getString(3)),
+                        parentId, rs.getString(5), start == null ? null : java.time.LocalDate.parse(start),
+                        rs.getLong(7), rs.getLong(8), rs.getString(9), rs.getString(10), rs.getString(11),
+                        rs.getString(12), rs.getString(13));
+            }
+        }
+    }
+
+    /** Saves everything Manage Accounts edits. Blank text is saved as nothing (NULL). */
+    public void saveDetails(Details d) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement("UPDATE account SET name = ?, type = ?, parent_id = ?,"
+                + " bank_name = ?, start_date = ?, opening_balance_cents = ?, balance_adjustment_cents = ?,"
+                + " account_number = ?, routing_number = ?, default_category = ?, comments = ?, website = ?"
+                + " WHERE id = ?")) {
+            ps.setString(1, d.name());
+            ps.setString(2, d.type().name());
+            TransactionRepository.setId(ps, 3, d.parentId());
+            TransactionRepository.setText(ps, 4, d.bankName());
+            TransactionRepository.setText(ps, 5, d.startDate() == null ? null : d.startDate().toString());
+            ps.setLong(6, d.openingBalanceCents());
+            ps.setLong(7, d.balanceAdjustmentCents());
+            TransactionRepository.setText(ps, 8, d.accountNumber());
+            TransactionRepository.setText(ps, 9, d.routingNumber());
+            TransactionRepository.setText(ps, 10, d.defaultCategory());
+            TransactionRepository.setText(ps, 11, d.comments());
+            TransactionRepository.setText(ps, 12, d.website());
+            ps.setLong(13, d.id());
             ps.executeUpdate();
         }
     }
@@ -226,7 +277,7 @@ public class AccountRepository {
             ps.setLong(4, account.id());
             try (ResultSet rs = ps.executeQuery()) {
                 rs.next();
-                long opening = account.openingBalanceCents();
+                long opening = account.startingBalanceCents();
                 return new Balances(opening + rs.getLong(1), opening + rs.getLong(2));
             }
         }
@@ -239,7 +290,7 @@ public class AccountRepository {
      * transaction dated today or earlier).
      */
     public java.util.Map<Long, Long> treeBalances() throws SQLException {
-        String sql = "SELECT a.id, a.opening_balance_cents + COALESCE(SUM(CASE"
+        String sql = "SELECT a.id, a.opening_balance_cents + a.balance_adjustment_cents + COALESCE(SUM(CASE"
                 + " WHEN a.type = 'ENVELOPE' THEN CASE WHEN t.txn_date <= ? THEN s.amount_cents END"
                 + " WHEN t.status IN (?, ?, ?) THEN s.amount_cents END), 0)"
                 + " FROM account a LEFT JOIN txn t ON t.account_id = a.id LEFT JOIN split s ON s.txn_id = t.id"
@@ -280,7 +331,9 @@ public class AccountRepository {
                         rs.getLong(4),
                         rs.getString(5),
                         rs.getInt(6) != 0,
-                        parentId));
+                        parentId,
+                        rs.getLong(8),
+                        rs.getString(9)));
             }
         }
         return list;

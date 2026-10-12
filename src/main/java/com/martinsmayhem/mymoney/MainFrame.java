@@ -81,6 +81,8 @@ public class MainFrame extends javax.swing.JFrame {
     private final JCheckBox hideReconciledBox = new JCheckBox("Hide reconciled");
     private final JLabel filterCountLabel = new JLabel(" ");
     private final JLabel selectionTotalLabel = new JLabel(" ");
+    private final JLabel websiteLabel = new JLabel();     // the account's website, under its name
+    private String websiteUrl;
 
     /**
      * Creates new form MainFrame
@@ -97,6 +99,7 @@ public class MainFrame extends javax.swing.JFrame {
         this.ledgerModel = new LedgerTableModel(transactionRepo,
                 this::showError, this::confirm, this::afterLedgerChange);
         initComponents();
+        setupWebsiteLink();
         setTitle("MyMoney - " + db.getFile().getFileName());
         setSize(1000, 650);
         setupLedger();
@@ -142,7 +145,7 @@ public class MainFrame extends javax.swing.JFrame {
         ledgerTable.setSurrendersFocusOnKeystroke(true);                         // typing goes straight into the cell
 
         TableColumnModel cols = ledgerTable.getColumnModel();
-        int[] widths = {110, 60, 160, 160, 110, 150, 130, 30, 90, 90, 100, 30};
+        int[] widths = {110, 60, 160, 160, 110, 150, 130, 30, 90, 90, 100, 30, 30};
         for (int i = 0; i < widths.length; i++) {
             cols.getColumn(i).setPreferredWidth(widths[i]);
         }
@@ -195,6 +198,21 @@ public class MainFrame extends javax.swing.JFrame {
         cols.getColumn(LedgerTableModel.STATUS).setCellRenderer(muted(StatusCell.renderer()));
         cols.getColumn(LedgerTableModel.STATUS).setCellEditor(StatusCell.editor());
 
+        // Downloaded: an empty blue circle if added new, crossed through if it matched one already there.
+        cols.getColumn(LedgerTableModel.DOWNLOAD).setCellRenderer(muted(new DefaultTableCellRenderer() {
+            @Override
+            public java.awt.Component getTableCellRendererComponent(javax.swing.JTable table, Object value,
+                    boolean isSelected, boolean hasFocus, int row, int column) {
+                super.getTableCellRendererComponent(table, "", isSelected, hasFocus, row, column);
+                DownloadIcon icon = DownloadIcon.of((String) value);
+                setIcon(icon);
+                setHorizontalAlignment(SwingConstants.CENTER);
+                setToolTipText(icon == DownloadIcon.MATCHED ? "Downloaded: matched a transaction already entered"
+                        : icon == DownloadIcon.NEW ? "Downloaded: added as a new transaction" : null);
+                return this;
+            }
+        }));
+
         setupSorting();
         ColumnFit.install(ledgerTable);                  // double-click a header border to fit
         setupFilter();
@@ -225,6 +243,10 @@ public class MainFrame extends javax.swing.JFrame {
                 deleteSelectedTransaction();
             }
         });
+
+        // Show the download column right after C. (Done last: everything above
+        // finds columns by their model number, which is also their place until now.)
+        ledgerTable.getColumnModel().moveColumn(LedgerTableModel.DOWNLOAD, LedgerTableModel.STATUS + 1);
     }
 
     /**
@@ -396,11 +418,13 @@ public class MainFrame extends javax.swing.JFrame {
             String text = value + ledgerModel.sortIndicator(modelColumn);
             java.awt.Component c = plain.getTableCellRendererComponent(table, text, isSelected, hasFocus, row, column);
             if (c instanceof JLabel label) {       // Files: a paperclip instead of a name
-                boolean narrow = modelColumn == LedgerTableModel.STATUS || modelColumn == LedgerTableModel.FILES;
+                boolean narrow = modelColumn == LedgerTableModel.STATUS || modelColumn == LedgerTableModel.FILES
+                        || modelColumn == LedgerTableModel.DOWNLOAD;
                 label.setHorizontalAlignment(narrow ? SwingConstants.CENTER : SwingConstants.LEADING);
                 label.setIcon(modelColumn == LedgerTableModel.FILES ? PaperclipIcon.INSTANCE : null);
                 label.setToolTipText(modelColumn == LedgerTableModel.FILES ? "Attachments"
-                        : modelColumn == LedgerTableModel.STATUS ? "Status" : null);
+                        : modelColumn == LedgerTableModel.STATUS ? "Status"
+                        : modelColumn == LedgerTableModel.DOWNLOAD ? "Downloaded" : null);
             }
             return c;
         });
@@ -487,7 +511,8 @@ public class MainFrame extends javax.swing.JFrame {
         if (draftRow >= 0) {
             resolvingDraft = true;
             try {
-                ledgerTable.changeSelection(draftRow, LedgerTableModel.PAYMENT, false, false);
+                ledgerTable.changeSelection(draftRow,
+                        ledgerTable.convertColumnIndexToView(LedgerTableModel.PAYMENT), false, false);
                 lastLedgerRow = draftRow;
             } finally {
                 resolvingDraft = false;
@@ -519,25 +544,31 @@ public class MainFrame extends javax.swing.JFrame {
         }
     }
 
-    // ----- File menu additions --------------------------------------------
+    // ----- Menus ------------------------------------------------------------
 
-    /** Adds Edit Account and Import QIF to the File menu, and a right-click menu to the tree. */
+    /** Builds the File, Edit and Account menus, and the right-click menus on the ledger and tree. */
     private void setupMenus() {
-        JMenuItem editAccountItem = new JMenuItem("Edit Account...");
-        editAccountItem.addActionListener(e -> editAccount());
-        JMenuItem importQifItem = new JMenuItem("Import QIF...");
-        importQifItem.addActionListener(e -> importQif());
-        JMenuItem manageTagsItem = new JMenuItem("Manage Tags...");
-        manageTagsItem.addActionListener(e -> manageTags());
-        fileMenu.insert(editAccountItem, 1);           // after New Account...
-        fileMenu.insert(menuItem("Delete Account...", this::deleteAccount), 2);
+        // File menu: the data file itself. New Account (from the form) moves to Account.
+        fileMenu.remove(newAccountItem);
+        JMenuItem openItem = menuItem("Open...", this::openFile);
+        openItem.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_O, menuShortcut()));
+        fileMenu.insert(openItem, 0);
+        fileMenu.insertSeparator(1);
+        fileMenu.insert(menuItem("Import...", this::importFile), 2);
+        fileMenu.insert(menuItem("Back Up File...", this::backupFile), 3);
+
+        // Account menu: the selected account, and tags.
+        javax.swing.JMenu accountMenu = new javax.swing.JMenu("Account");
+        accountMenu.add(newAccountItem);
+        accountMenu.add(menuItem("Edit Account...", this::editAccount));
+        accountMenu.add(menuItem("Delete Account...", this::deleteAccount));
+        accountMenu.add(menuItem("Manage Accounts...", this::manageAccounts));
+        accountMenu.addSeparator();
         JMenuItem reconcileItem = menuItem("Reconcile Account...", this::reconcileAccount);
         reconcileItem.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_R, menuShortcut()));
-        fileMenu.insert(reconcileItem, 3);
-        fileMenu.insert(manageTagsItem, 4);
-        fileMenu.insertSeparator(5);
-        fileMenu.insert(importQifItem, 6);
-        fileMenu.insert(menuItem("Back Up File...", this::backupFile), 7);
+        accountMenu.add(reconcileItem);
+        accountMenu.addSeparator();
+        accountMenu.add(menuItem("Manage Tags...", this::manageTags));
 
         // Edit menu: changes to the selected transactions.
         javax.swing.JMenu editMenu = new javax.swing.JMenu("Edit");
@@ -576,6 +607,7 @@ public class MainFrame extends javax.swing.JFrame {
         editMenu.addSeparator();
         editMenu.add(menuItem("Preferences...", this::editPreferences));
         menuBar.add(editMenu, 1);                       // after File
+        menuBar.add(accountMenu, 2);                    // after Edit
 
         // Right-click in the ledger: the same menu. A row outside the selection gets selected first.
         ledgerTable.addMouseListener(new MouseAdapter() {
@@ -800,40 +832,105 @@ public class MainFrame extends javax.swing.JFrame {
         }
     }
 
-    /** Edits the selected account (name, type, opening balance, parent). */
-    private void editAccount() {
-        Account a = selectedAccount();
-        if (a == null) {
-            showError("Select an account to edit first.");
-            return;
+    /** Account > Manage Accounts...: every account's full details, to view and edit. */
+    private void manageAccounts() {
+        openAccounts(false);
+    }
+
+    /**
+     * Manage Accounts, starting on the selected account, or (newAccount) with
+     * the form empty for a new one. Afterwards the tree is rebuilt; after a
+     * new account is created, it is selected.
+     */
+    private void openAccounts(boolean newAccount) {
+        if (ledgerTable.isEditing()) {
+            ledgerTable.getCellEditor().stopCellEditing();
         }
-        AccountDialog dlg = new AccountDialog(this, true, accounts, a);
-        dlg.setLocationRelativeTo(this);
+        resolveDraft(false);
+        ManageAccountsDialog dlg = new ManageAccountsDialog(this, accounts, attachments,
+                ManageAccountsDialog.categoriesOnly(categoryPaths()), db.getFile(), selectedAccount(), newAccount);
         dlg.setVisible(true);
-        Long id = dlg.getSavedAccountId();
-        if (id != null) {
-            try {
-                Account saved = findAccount(id);
-                if (saved != null && !saved.name().equals(a.name())) {
-                    attachments.renameAccountFolder(a.name(), saved.name());   // keep the folder matching the name
-                }
-            } catch (SQLException | IOException e) {
-                showError("The account was renamed, but its attachments folder could not be:\n"
-                        + e.getMessage() + "\n\nIts attachments still open from the old folder.");
-            }
-            checkpoint("Edit Account");
-            loadAccounts(id);
+        if (dlg.wasChanged()) {
+            checkpoint(newAccount ? "New Account" : "Manage Accounts");
+            Account selected = selectedAccount();
+            Long select = newAccount && dlg.lastSavedId() != null ? dlg.lastSavedId()
+                    : selected == null ? null : selected.id();
+            loadAccounts(select);                       // names, parents, balances may have changed
         }
     }
 
-    /** The account with this id, or null. */
-    private Account findAccount(long id) throws SQLException {
-        for (Account a : accounts.findAll()) {
-            if (a.id() == id) {
-                return a;
+    /**
+     * Puts a second line under the account name in the top panel: the
+     * account's website as a link (hidden when it has none).
+     */
+    private void setupWebsiteLink() {
+        summaryPanel.remove(accountNameLabel);
+        JPanel names = new JPanel();
+        names.setOpaque(false);
+        names.setLayout(new BoxLayout(names, BoxLayout.PAGE_AXIS));
+        names.add(accountNameLabel);
+        names.add(websiteLabel);
+        summaryPanel.add(names, java.awt.BorderLayout.WEST);
+        websiteLabel.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        websiteLabel.setVisible(false);
+        websiteLabel.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mouseClicked(MouseEvent e) {
+                if (websiteUrl != null && SwingUtilities.isLeftMouseButton(e)) {
+                    openWebsite(websiteUrl);
+                }
+            }
+        });
+    }
+
+    private void showWebsite(Account a) {
+        String site = null;
+        if (a != null) {
+            try {
+                AccountRepository.Details d = accounts.findDetails(a.id());
+                site = d == null ? null : d.website();
+            } catch (SQLException e) {
+                // no link, then
             }
         }
-        return null;
+        websiteUrl = site == null || site.isBlank() ? null
+                : site.contains("://") ? site.trim() : "https://" + site.trim();
+        websiteLabel.setVisible(websiteUrl != null);
+        if (websiteUrl != null) {
+            websiteLabel.setText("<html><a href=''>" + escape(site.trim()) + "</a></html>");
+            websiteLabel.setToolTipText("Open " + websiteUrl + " in your browser");
+        }
+    }
+
+    /** Opens a web page in the system's browser (in the background). */
+    private void openWebsite(String url) {
+        new Thread(() -> {
+            try {
+                java.net.URI uri = new java.net.URI(url);
+                if (java.awt.Desktop.isDesktopSupported()
+                        && java.awt.Desktop.getDesktop().isSupported(java.awt.Desktop.Action.BROWSE)) {
+                    java.awt.Desktop.getDesktop().browse(uri);
+                } else {
+                    String os = System.getProperty("os.name").toLowerCase();
+                    String cmd = os.contains("win") ? "explorer" : os.contains("mac") ? "open" : "xdg-open";
+                    new ProcessBuilder(cmd, uri.toString()).start();
+                }
+            } catch (Exception e) {
+                SwingUtilities.invokeLater(() -> showError("Could not open the website:\n" + e.getMessage()));
+            }
+        }, "open-website").start();
+    }
+
+    /**
+     * Account > Edit Account... (and the tree's right-click Edit Account):
+     * the same account details as Manage Accounts, opened on the selected account.
+     */
+    private void editAccount() {
+        if (selectedAccount() == null) {
+            showError("Select an account to edit first.");
+            return;
+        }
+        manageAccounts();                               // it starts on the selected account
     }
 
     /** Shows (and lets you change) a ledger row's attached files. */
@@ -938,29 +1035,131 @@ public class MainFrame extends javax.swing.JFrame {
         }
     }
 
-    /** Imports a QIF file, creating any accounts it names that don't exist yet. */
-    private void importQif() {
+    /**
+     * File > Open...: picks another MyMoney file (or makes a new one) with the
+     * same Open File dialog used at startup, then closes this file and shows
+     * the other in a new window in the same place.
+     */
+    private void openFile() {
+        if (ledgerTable.isEditing()) {
+            ledgerTable.getCellEditor().stopCellEditing();   // save a half-finished cell first
+        }
+        resolveDraft(false);
+
+        StartupDialog sd = new StartupDialog(this, true, config);
+        sd.useCancelButton();
+        sd.setLocationRelativeTo(this);
+        sd.setVisible(true);                            // modal: waits here until closed
+        Database opened = sd.getDatabase();
+        if (opened == null) {
+            return;                                     // cancelled
+        }
+        if (opened.getFile().equals(db.getFile())) {
+            opened.close();                             // already open here
+            return;
+        }
+        db.close();
+        MainFrame frame = new MainFrame(opened, config);
+        frame.setBounds(getBounds());
+        frame.setExtendedState(getExtendedState());
+        dispose();                                      // not a window close: config stays open
+        frame.setVisible(true);
+    }
+
+    /**
+     * File > Import...: what kind of import is decided by the file:
+     *  - .qfx / .ofx: a bank download, matched against existing transactions.
+     *  - .qif from Quicken (it names accounts or lists categories): the full
+     *    import, every account and opening balance.
+     *  - any other .qif (one account's transactions): a bank download.
+     */
+    private void importFile() {
         if (ledgerTable.isEditing()) {
             ledgerTable.getCellEditor().stopCellEditing();
         }
         resolveDraft(false);
 
         JFileChooser fc = new JFileChooser();
-        fc.setDialogTitle("Import QIF File");
-        fc.setFileFilter(new FileNameExtensionFilter("QIF files (*.qif)", "qif"));
+        fc.setDialogTitle("Import");
+        FileNameExtensionFilter all = new FileNameExtensionFilter(
+                "QIF, QFX and OFX files (*.qif, *.qfx, *.ofx)", "qif", "qfx", "ofx");
+        fc.addChoosableFileFilter(all);
+        fc.addChoosableFileFilter(new FileNameExtensionFilter("QIF files (*.qif)", "qif"));
+        fc.addChoosableFileFilter(new FileNameExtensionFilter("QFX / OFX files (*.qfx, *.ofx)", "qfx", "ofx"));
+        fc.setFileFilter(all);
         if (fc.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) {
             return;
         }
         Path file = fc.getSelectedFile().toPath();
-
-        QifParser.QifFile qif;
+        String name = file.getFileName().toString().toLowerCase();
         try {
-            qif = QifParser.parse(file);
+            if (name.endsWith(".qfx") || name.endsWith(".ofx")) {
+                OfxParser.OfxFile f = OfxParser.parse(file);
+                importBankDownload(file, f.transactions, f.warnings);
+            } else if (name.endsWith(".qif")) {
+                QifParser.QifFile f = QifParser.parse(file);
+                if (f.isFullExport()) {
+                    importQuicken(file, f);
+                } else {
+                    importBankDownload(file, DownloadImporter.fromQif(f), f.warnings);
+                }
+            } else {
+                showError("MyMoney can import .qif, .qfx and .ofx files.");
+            }
         } catch (IOException e) {
             showError("Could not read the file:\n" + e.getMessage());
+        }
+    }
+
+    /**
+     * A bank download (QIF or QFX): one account's transactions from the bank,
+     * matched against what is already entered (see DownloadImporter).
+     */
+    private void importBankDownload(Path file, List<DownloadImporter.Download> downloads, List<String> warnings) {
+        if (downloads.isEmpty()) {
+            showError("No transactions were found in this file."
+                    + (warnings.isEmpty() ? "" : "\n\n" + String.join("\n", warnings)));
             return;
         }
 
+        List<Account> all;
+        try {
+            all = accounts.findAll();
+        } catch (SQLException e) {
+            showError("Could not read the accounts:\n" + e.getMessage());
+            return;
+        }
+        BankImportDialog dlg = new BankImportDialog(this, file.getFileName().toString(), downloads,
+                all, selectedAccount(), config);
+        dlg.setVisible(true);
+        if (!dlg.wasAccepted()) {
+            return;
+        }
+        Account target = dlg.account();
+        DownloadImporter.Result r;
+        try {
+            r = new DownloadImporter(db).run(target, downloads, dlg.match(), dlg.days());
+        } catch (SQLException e) {
+            showError("Could not import the file, so nothing was changed:\n" + e.getMessage());
+            return;
+        }
+        checkpoint("Import " + file.getFileName());
+        loadAccounts(target.id());                       // show the account it went into
+
+        StringBuilder msg = new StringBuilder("Imported into \"" + target.name() + "\":\n\n");
+        msg.append("Matched to existing transactions: ").append(r.matched).append('\n');
+        msg.append("Added as new transactions: ").append(r.added).append('\n');
+        if (r.duplicates > 0) {
+            msg.append("Skipped (already imported): ").append(r.duplicates).append('\n');
+        }
+        if (!warnings.isEmpty()) {
+            msg.append("\n").append(String.join("\n", warnings));
+        }
+        JOptionPane.showMessageDialog(this, msg.toString(), "Import Complete", JOptionPane.INFORMATION_MESSAGE);
+    }
+
+    /** A Quicken QIF export: every account in it, creating any that don't exist yet. */
+    private void importQuicken(Path file, QifParser.QifFile qif) {
         String unnamedAccount = null;
         if (qif.hasUnnamedTransactions()) {
             unnamedAccount = askImportAccount(file);
@@ -1269,6 +1468,9 @@ public class MainFrame extends javax.swing.JFrame {
                     boolean selected, boolean expanded, boolean leaf, int row, boolean hasFocus) {
                 super.getTreeCellRendererComponent(tree, value, selected, expanded, leaf, row, hasFocus);
                 setToolTipText(null);
+                if (value instanceof DefaultMutableTreeNode n && n.getUserObject() instanceof Account a) {
+                    setIcon(AccountIcon.of(a));         // its type's icon; stacked for a sub-account
+                }
                 if (showTreeBalances && value instanceof DefaultMutableTreeNode n
                         && n.getUserObject() instanceof Account a && treeBalances.containsKey(a.id())) {
                     long cents = treeBalances.get(a.id());
@@ -1317,17 +1519,35 @@ public class MainFrame extends javax.swing.JFrame {
     private void editPreferences() {
         javax.swing.JCheckBox balances = new javax.swing.JCheckBox(
                 "Show balances in the account tree (cleared; current for envelopes)", showTreeBalances);
-        int r = JOptionPane.showConfirmDialog(this, new Object[] {balances}, "Preferences",
-                JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
-        if (r != JOptionPane.OK_OPTION || balances.isSelected() == showTreeBalances) {
+        javax.swing.JCheckBox match = new javax.swing.JCheckBox("Match existing transactions",
+                config.getBoolean(AppConfig.MATCH_DOWNLOADS, true));
+        javax.swing.JSpinner days = new javax.swing.JSpinner(new javax.swing.SpinnerNumberModel(
+                config.getInt(AppConfig.MATCH_DAYS, AppConfig.DEFAULT_MATCH_DAYS), 0, 60, 1));
+        days.setEnabled(match.isSelected());
+        match.addActionListener(e -> days.setEnabled(match.isSelected()));
+        JPanel matchRow = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 4, 0));
+        matchRow.add(match);
+        matchRow.add(new JLabel("within"));
+        matchRow.add(days);
+        matchRow.add(new JLabel("days"));
+        JLabel importHeading = new JLabel("Bank download imports:");
+        importHeading.setBorder(BorderFactory.createEmptyBorder(10, 0, 0, 0));
+        int r = JOptionPane.showConfirmDialog(this, new Object[] {balances, importHeading, matchRow},
+                "Preferences", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+        if (r != JOptionPane.OK_OPTION) {
+            return;
+        }
+        try {
+            config.setBoolean(AppConfig.MATCH_DOWNLOADS, match.isSelected());
+            config.setInt(AppConfig.MATCH_DAYS, (Integer) days.getValue());
+            config.setBoolean(AppConfig.SHOW_TREE_BALANCES, balances.isSelected());
+        } catch (SQLException e) {
+            showError("The preferences apply now, but could not be saved for next time:\n" + e.getMessage());
+        }
+        if (balances.isSelected() == showTreeBalances) {
             return;
         }
         showTreeBalances = balances.isSelected();
-        try {
-            config.setBoolean(AppConfig.SHOW_TREE_BALANCES, showTreeBalances);
-        } catch (SQLException e) {
-            showError("The preference applies now, but could not be saved for next time:\n" + e.getMessage());
-        }
         Account selected = selectedAccount();
         loadAccounts(selected == null ? null : selected.id());   // redraws the tree and fits its width
     }
@@ -1382,11 +1602,13 @@ public class MainFrame extends javax.swing.JFrame {
      */
     private void updateSummary(Account a) {
         if (a == null) {
+            showWebsite(null);
             accountNameLabel.setText("No account selected");
             balanceLabel.setText(" ");
             return;
         }
         accountNameLabel.setText(a.name() + "  (" + a.type() + ")");
+        showWebsite(a);
         try {
             AccountRepository.Balances b = accounts.balances(a);
             balanceLabel.setText("<html><div align='right'><b><font size='+1'>Cleared Balance: "
@@ -1490,14 +1712,7 @@ public class MainFrame extends javax.swing.JFrame {
     }//GEN-LAST:event_formWindowClosing
 
     private void newAccountItemActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_newAccountItemActionPerformed
-        AccountDialog dlg = new AccountDialog(this, true, accounts);
-        dlg.setLocationRelativeTo(this);
-        dlg.setVisible(true);                      // modal: waits here until closed
-        Long id = dlg.getSavedAccountId();
-        if (id != null) {
-            checkpoint("New Account");
-            loadAccounts(id);                      // rebuild the tree and select the new account
-        }
+        openAccounts(true);                        // Manage Accounts, with the form empty for a new account
     }//GEN-LAST:event_newAccountItemActionPerformed
 
     private void exitItemActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_exitItemActionPerformed

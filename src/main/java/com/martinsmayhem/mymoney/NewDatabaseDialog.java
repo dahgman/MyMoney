@@ -41,7 +41,7 @@ public class NewDatabaseDialog extends javax.swing.JDialog {
     }
 
     private void showError(String message) {
-        JOptionPane.showMessageDialog(this, message, "Create Database", JOptionPane.ERROR_MESSAGE);
+        JOptionPane.showMessageDialog(this, message, "Create File", JOptionPane.ERROR_MESSAGE);
     }
     
     /**
@@ -67,10 +67,10 @@ public class NewDatabaseDialog extends javax.swing.JDialog {
         confirmField = new javax.swing.JPasswordField();
 
         setDefaultCloseOperation(javax.swing.WindowConstants.DISPOSE_ON_CLOSE);
-        setTitle("Create New Database");
+        setTitle("Create New File");
 
         nameLabel.setHorizontalAlignment(javax.swing.SwingConstants.LEFT);
-        nameLabel.setText("Database Name:");
+        nameLabel.setText("File Name:");
 
         folderLabel.setHorizontalAlignment(javax.swing.SwingConstants.LEFT);
         folderLabel.setText("Folder:");
@@ -162,7 +162,7 @@ public class NewDatabaseDialog extends javax.swing.JDialog {
 
     private void browseButtonActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_browseButtonActionPerformed
         JFileChooser fc = new JFileChooser(folderField.getText());
-        fc.setDialogTitle("Choose a folder for the database");
+        fc.setDialogTitle("Choose a folder for the file");
         fc.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
         fc.setApproveButtonText("Select Folder");
         if (fc.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
@@ -174,7 +174,7 @@ public class NewDatabaseDialog extends javax.swing.JDialog {
 
     private void createButtonActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_createButtonActionPerformed
         String name = nameField.getText().trim();
-        if (name.isEmpty()) { showError("Please enter a database name."); return; }
+        if (name.isEmpty()) { showError("Please enter a file name."); return; }
         if (!name.matches("[A-Za-z0-9 _.-]+")) {
             showError("Use only letters, numbers, spaces, dashes, underscores, and periods.");
             return;
@@ -191,7 +191,7 @@ public class NewDatabaseDialog extends javax.swing.JDialog {
         // attachments are kept in that folder too, one subfolder per account.
         Path home = dir.resolve(base);
         Path file = home.resolve(base + ext);
-        if (Files.exists(file)) { showError("A database with that name already exists in this folder."); return; }
+        if (Files.exists(file)) { showError("A MyMoney file with that name already exists in this folder."); return; }
         if (Files.exists(home) && !Files.isDirectory(home)) {
             showError("There is already a file named \"" + base + "\" in this folder.");
             return;
@@ -208,7 +208,7 @@ public class NewDatabaseDialog extends javax.swing.JDialog {
             showError("Could not create the folder \"" + home + "\":\n" + e.getMessage());
             return;
         } catch (SQLException e) {
-            showError("Could not create the database:\n" + e.getMessage());
+            showError("Could not create the file:\n" + e.getMessage());
             return;
         } finally {
             Arrays.fill(pw1, '\0');   // wipe passwords from memory

@@ -87,6 +87,15 @@ final class QifParser {
             return blocks.stream().anyMatch(b -> b.account == null && !b.transactions.isEmpty());
         }
 
+        /**
+         * True for a Quicken export (it names accounts, or lists categories or
+         * classes); false for a bank download, which is just one account's
+         * transactions under a "!Type:" header.
+         */
+        boolean isFullExport() {
+            return !accounts.isEmpty() || !categories.isEmpty() || !tags.isEmpty();
+        }
+
         /** The QIF type of the first unnamed block (used for a new account's type). */
         String unnamedType() {
             return blocks.stream().filter(b -> b.account == null && !b.transactions.isEmpty())
@@ -428,7 +437,7 @@ final class QifParser {
     // ----- Reading the file -----------------------------------------------
 
     /** UTF-8 if the file is valid UTF-8, otherwise Windows-1252 (older Quicken files). */
-    private static String readText(Path file) throws IOException {
+    static String readText(Path file) throws IOException {
         byte[] bytes = Files.readAllBytes(file);
         try {
             return StandardCharsets.UTF_8.newDecoder()

@@ -147,6 +147,28 @@ public class AppConfig implements AutoCloseable {
     /** Show each account's cleared balance in the account tree. */
     public static final String SHOW_TREE_BALANCES = "show_tree_balances";
 
+    /** Bank imports: match downloaded transactions with existing ones. */
+    public static final String MATCH_DOWNLOADS = "match_downloads";
+    /** Bank imports: how many days apart a download and an existing transaction may be to match. */
+    public static final String MATCH_DAYS = "match_days";
+    public static final int DEFAULT_MATCH_DAYS = 5;
+
+    /** A whole-number preference, or def if it was never set (or can't be read). */
+    public int getInt(String key, int def) {
+        try (PreparedStatement ps = conn.prepareStatement("SELECT value FROM setting WHERE key = ?")) {
+            ps.setString(1, key);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? Integer.parseInt(rs.getString(1)) : def;
+            }
+        } catch (SQLException | NumberFormatException e) {
+            return def;
+        }
+    }
+
+    public void setInt(String key, int value) throws SQLException {
+        setValue(key, String.valueOf(value));
+    }
+
     /** A yes/no preference, or def if it was never set (or can't be read). */
     public boolean getBoolean(String key, boolean def) {
         try (PreparedStatement ps = conn.prepareStatement("SELECT value FROM setting WHERE key = ?")) {
@@ -160,12 +182,16 @@ public class AppConfig implements AutoCloseable {
     }
 
     public void setBoolean(String key, boolean value) throws SQLException {
+        setValue(key, String.valueOf(value));
+    }
+
+    private void setValue(String key, String value) throws SQLException {
         try (PreparedStatement ps = conn.prepareStatement("""
                 INSERT INTO setting (key, value) VALUES (?, ?)
                 ON CONFLICT(key) DO UPDATE SET value = excluded.value
                 """)) {
             ps.setString(1, key);
-            ps.setString(2, String.valueOf(value));
+            ps.setString(2, value);
             ps.executeUpdate();
         }
     }

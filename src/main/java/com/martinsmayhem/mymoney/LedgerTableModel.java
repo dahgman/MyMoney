@@ -54,16 +54,17 @@ public class LedgerTableModel extends AbstractTableModel {
     public static final int DEPOSIT = 9;
     public static final int BALANCE = 10;
     public static final int FILES = 11;          // how many attachments (double-click to open)
+    public static final int DOWNLOAD = 12;       // from a bank download: matched or new (shown next to C)
 
     /** Column headers (Files shows as a paperclip icon, so it has no text). */
     private static final String[] COLUMNS = {
         "Date", "Num", "Payee", "Category", "Tag", "Description", "Memo", "C",
-        "Payment", "Deposit", "Balance", ""
+        "Payment", "Deposit", "Balance", "", "D"
     };
     /** Column names for messages and Undo labels ("Undo Change Status"). */
     private static final String[] NAMES = {
         "Date", "Num", "Payee", "Category", "Tag", "Description", "Memo", "Status",
-        "Payment", "Deposit", "Balance", "Files"
+        "Payment", "Deposit", "Balance", "Files", "Downloaded"
     };
 
     /** How dates are shown in the ledger (also used by DateCellEditor). */
@@ -118,8 +119,17 @@ public class LedgerTableModel extends AbstractTableModel {
      * transactions (after Undo): reloads it, keeping the sort and the blank row.
      */
     public void updateAccount(Account account) {
+        String oldDefault = defaultCategory();
         this.account = account;
+        if (java.util.Objects.equals(draft.category, oldDefault)) {
+            draft.category = defaultCategory();         // the default changed: an untouched blank row follows
+        }
         refresh();
+    }
+
+    /** The account's default category for new transactions, or null. */
+    private String defaultCategory() {
+        return account == null ? null : account.defaultCategory();
     }
 
     /** A short name for the last change saved, like "Edit Payee" (shown as "Undo Edit Payee"). */
@@ -131,6 +141,7 @@ public class LedgerTableModel extends AbstractTableModel {
     public void setAccount(Account account) {
         this.account = account;
         this.draft = newDraft(LocalDate.now());
+        draft.category = defaultCategory();
         sortKeys.clear();
         sortKeys.addAll(DEFAULT_SORT);
         load();
@@ -183,11 +194,11 @@ public class LedgerTableModel extends AbstractTableModel {
         return account != null && row == entries.size();
     }
 
-    /** True if something besides the date has been typed into the new-transaction row. */
+    /** True if something besides the date (and the default category) has been typed into the new-transaction row. */
     public boolean draftHasData() {
         return account != null
                 && (!text(draft.checkNumber).isBlank() || !text(draft.payee).isBlank()
-                    || !text(draft.category).isBlank() || !text(draft.tag).isBlank()
+                    || !text(draft.category).equals(text(defaultCategory())) || !text(draft.tag).isBlank()
                     || !text(draft.description).isBlank()
                     || !text(draft.memo).isBlank() || draft.status != TxnStatus.NONE);
     }
@@ -200,7 +211,7 @@ public class LedgerTableModel extends AbstractTableModel {
         lastAction = "New Transaction";
         try {
             transactions.insert(account.id(), draft);
-            draft = newDraft(draft.date);
+            draft = nextDraft(draft.date);
         } catch (SQLException ex) {
             onError.accept("Could not save the transaction:\n" + ex.getMessage());
         }
@@ -210,7 +221,7 @@ public class LedgerTableModel extends AbstractTableModel {
 
     /** Clears the new-transaction row (keeping its date). */
     public void discardDraft() {
-        draft = newDraft(draft.date);
+        draft = nextDraft(draft.date);
         if (account != null) {
             fireTableRowsUpdated(entries.size(), entries.size());
         }
@@ -491,7 +502,7 @@ public class LedgerTableModel extends AbstractTableModel {
 
     @Override
     public boolean isCellEditable(int row, int column) {
-        if (account == null || column == BALANCE || column == FILES) {
+        if (account == null || column == BALANCE || column == FILES || column == DOWNLOAD) {
             return false;
         }
         if (column == STATUS && isSavedRow(row) && entries.get(row).status == TxnStatus.RECONCILING) {
@@ -521,6 +532,7 @@ public class LedgerTableModel extends AbstractTableModel {
             case DEPOSIT -> e.amountCents > 0 ? Money.format(e.amountCents) : "";
             case BALANCE -> isSavedRow(row) ? Money.format(e.balanceCents) : "";
             case FILES -> e.attachments > 0 ? String.valueOf(e.attachments) : "";
+            case DOWNLOAD -> e.download == null ? "" : e.download;     // drawn as an icon
             default -> "";
         };
     }
@@ -580,7 +592,7 @@ public class LedgerTableModel extends AbstractTableModel {
                 }
                 lastAction = "New Transaction";
                 transactions.insert(account.id(), draft);
-                draft = newDraft(draft.date);           // next entry starts on the same date
+                draft = nextDraft(draft.date);           // next entry starts on the same date
             } else {
                 lastAction = column == STATUS ? "Change Status" : "Edit " + NAMES[column];
                 transactions.update(e);
@@ -706,6 +718,7 @@ public class LedgerTableModel extends AbstractTableModel {
             case DEPOSIT -> amountOrder(false, ascending);
             case BALANCE -> by(e -> e.balanceCents, Comparator.<Long>naturalOrder(), ascending);
             case FILES -> by(e -> e.attachments == 0 ? null : e.attachments, Comparator.<Integer>naturalOrder(), ascending);
+            case DOWNLOAD -> by(e -> e.download, Comparator.<String>naturalOrder(), ascending);
             default -> (a, b) -> 0;
         };
     }
@@ -816,7 +829,7 @@ public class LedgerTableModel extends AbstractTableModel {
         if (account == null) {
             return;
         }
-        long balance = account.openingBalanceCents();
+        long balance = account.startingBalanceCents();
         for (LedgerEntry e : all) {
             balance += e.amountCents;
             e.balanceCents = balance;
@@ -871,6 +884,13 @@ public class LedgerTableModel extends AbstractTableModel {
     private static LedgerEntry newDraft(LocalDate date) {
         LedgerEntry e = new LedgerEntry();
         e.date = date;
+        return e;
+    }
+
+    /** A fresh blank row on this date, with the account's default category filled in. */
+    private LedgerEntry nextDraft(LocalDate date) {
+        LedgerEntry e = newDraft(date);
+        e.category = defaultCategory();
         return e;
     }
 

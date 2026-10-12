@@ -63,6 +63,7 @@ final class TransactionDialog extends JDialog {
         if (existing == null) {
             entry = new LedgerEntry();
             entry.date = LocalDate.now();
+            entry.category = account.defaultCategory();     // the user can change or clear it
         } else {
             entry = existing.copy();
         }
