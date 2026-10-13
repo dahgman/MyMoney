@@ -123,13 +123,75 @@ public class AccountRepository {
     public record Details(long id, String name, AccountType type, Long parentId, String bankName,
                           java.time.LocalDate startDate, long openingBalanceCents, long balanceAdjustmentCents,
                           String accountNumber, String routingNumber, String defaultCategory,
-                          String comments, String website) {
+                          String comments, String website, LoanTerms loan, CardTerms card) {
+    }
+
+    /**
+     * A credit card's terms (all zero for other accounts). For a card,
+     * Details.bankName is the issuer, accountNumber the card number and
+     * startDate the date it was opened.
+     */
+    public record CardTerms(int aprMilli, long limitCents, int statementDay, int dueDay, int minPercentMilli,
+                            long minFloorCents) {
+        public static final CardTerms NONE = new CardTerms(0, 0, 0, 0, 0, 0);
+    }
+
+    /** A credit card account's terms as a CreditCard, or null if the account isn't a card. */
+    public CreditCard findCard(long accountId) throws SQLException {
+        Details d = findDetails(accountId);
+        if (d == null || d.type() != AccountType.CREDIT_CARD) {
+            return null;
+        }
+        CardTerms t = d.card();
+        return new CreditCard(accountId, t.aprMilli(), t.limitCents(), t.statementDay(), t.dueDay(),
+                t.minPercentMilli(), t.minFloorCents());
+    }
+
+    /**
+     * A loan account's terms (all zero / null for other accounts). For a loan,
+     * Details.bankName is the lender, accountNumber the loan number and
+     * startDate the origination date.
+     */
+    public record LoanTerms(int rateMilli, long originalCents, int termMonths, String interestCategory) {
+        public static final LoanTerms NONE = new LoanTerms(0, 0, 0, null);
+    }
+
+    /**
+     * An account's balance on a date: its opening balance and adjustment plus
+     * every transaction dated on or before it, whatever its status.
+     */
+    public long balanceThrough(long accountId, java.time.LocalDate date) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement("""
+                SELECT a.opening_balance_cents + a.balance_adjustment_cents
+                       + COALESCE((SELECT SUM(s.amount_cents) FROM split s JOIN txn t ON t.id = s.txn_id
+                                   WHERE t.account_id = a.id AND t.txn_date <= ?), 0)
+                FROM account a WHERE a.id = ?
+                """)) {
+            ps.setString(1, date.toString());
+            ps.setLong(2, accountId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getLong(1) : 0;
+            }
+        }
+    }
+
+    /** A loan account's terms as a Loan, or null if the account isn't a loan. */
+    public Loan findLoan(long accountId) throws SQLException {
+        Details d = findDetails(accountId);
+        if (d == null || d.type() != AccountType.LOAN) {
+            return null;
+        }
+        LoanTerms t = d.loan();
+        return new Loan(accountId, t.rateMilli(), t.originalCents(), t.termMonths(), d.startDate(),
+                t.interestCategory());
     }
 
     public Details findDetails(long id) throws SQLException {
         try (PreparedStatement ps = conn.prepareStatement("SELECT id, name, type, parent_id, bank_name,"
                 + " start_date, opening_balance_cents, balance_adjustment_cents, account_number, routing_number,"
-                + " default_category, comments, website FROM account WHERE id = ?")) {
+                + " default_category, comments, website, interest_rate_milli, original_amount_cents, term_months,"
+                + " interest_category, credit_limit_cents, statement_day, due_day, min_payment_percent_milli,"
+                + " min_payment_floor_cents FROM account WHERE id = ?")) {
             ps.setLong(1, id);
             try (ResultSet rs = ps.executeQuery()) {
                 if (!rs.next()) {
@@ -138,10 +200,16 @@ public class AccountRepository {
                 long parent = rs.getLong(4);
                 Long parentId = rs.wasNull() ? null : parent;
                 String start = rs.getString(6);
-                return new Details(rs.getLong(1), rs.getString(2), AccountType.valueOf(rs.getString(3)),
+                AccountType type = AccountType.valueOf(rs.getString(3));
+                return new Details(rs.getLong(1), rs.getString(2), type,
                         parentId, rs.getString(5), start == null ? null : java.time.LocalDate.parse(start),
                         rs.getLong(7), rs.getLong(8), rs.getString(9), rs.getString(10), rs.getString(11),
-                        rs.getString(12), rs.getString(13));
+                        rs.getString(12), rs.getString(13),
+                        type != AccountType.LOAN ? LoanTerms.NONE      // only the terms for its type
+                                : new LoanTerms(rs.getInt(14), rs.getLong(15), rs.getInt(16), rs.getString(17)),
+                        type != AccountType.CREDIT_CARD ? CardTerms.NONE
+                                : new CardTerms(rs.getInt(14), rs.getLong(18), rs.getInt(19), rs.getInt(20),
+                                        rs.getInt(21), rs.getLong(22)));
             }
         }
     }
@@ -150,8 +218,10 @@ public class AccountRepository {
     public void saveDetails(Details d) throws SQLException {
         try (PreparedStatement ps = conn.prepareStatement("UPDATE account SET name = ?, type = ?, parent_id = ?,"
                 + " bank_name = ?, start_date = ?, opening_balance_cents = ?, balance_adjustment_cents = ?,"
-                + " account_number = ?, routing_number = ?, default_category = ?, comments = ?, website = ?"
-                + " WHERE id = ?")) {
+                + " account_number = ?, routing_number = ?, default_category = ?, comments = ?, website = ?,"
+                + " interest_rate_milli = ?, original_amount_cents = ?, term_months = ?, interest_category = ?,"
+                + " credit_limit_cents = ?, statement_day = ?, due_day = ?, min_payment_percent_milli = ?,"
+                + " min_payment_floor_cents = ? WHERE id = ?")) {
             ps.setString(1, d.name());
             ps.setString(2, d.type().name());
             TransactionRepository.setId(ps, 3, d.parentId());
@@ -164,7 +234,19 @@ public class AccountRepository {
             TransactionRepository.setText(ps, 10, d.defaultCategory());
             TransactionRepository.setText(ps, 11, d.comments());
             TransactionRepository.setText(ps, 12, d.website());
-            ps.setLong(13, d.id());
+            // Only the terms for the account's type are kept (the rate column is the loan's rate or the card's APR).
+            LoanTerms t = d.type() == AccountType.LOAN && d.loan() != null ? d.loan() : LoanTerms.NONE;
+            CardTerms c = d.type() == AccountType.CREDIT_CARD && d.card() != null ? d.card() : CardTerms.NONE;
+            ps.setInt(13, d.type() == AccountType.CREDIT_CARD ? c.aprMilli() : t.rateMilli());
+            ps.setLong(14, t.originalCents());
+            ps.setInt(15, t.termMonths());
+            TransactionRepository.setText(ps, 16, t.interestCategory());
+            ps.setLong(17, c.limitCents());
+            ps.setInt(18, c.statementDay());
+            ps.setInt(19, c.dueDay());
+            ps.setInt(20, c.minPercentMilli());
+            ps.setLong(21, c.minFloorCents());
+            ps.setLong(22, d.id());
             ps.executeUpdate();
         }
     }

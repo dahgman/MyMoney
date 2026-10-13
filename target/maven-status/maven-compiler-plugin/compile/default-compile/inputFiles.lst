@@ -20,6 +20,8 @@
 /mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/DownloadReviewWindow.java
 /mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/LedgerEntry.java
 /mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/LedgerTableModel.java
+/mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/Loan.java
+/mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/LoanScheduleDialog.java
 /mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/MainFrame.java
 /mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/ManageAccountsDialog.java
 /mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/Money.java
@@ -36,7 +38,9 @@
 /mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/ReconcileStartDialog.java
 /mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/ReconcileWindow.java
 /mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/Recurrence.java
+/mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/ScheduleCsv.java
 /mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/ScheduleDialog.java
+/mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/ScheduleImportDialog.java
 /mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/ScheduleListDialog.java
 /mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/ScheduleRepository.java
 /mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/StartupDialog.java

@@ -130,11 +130,50 @@ public class TransactionRepository {
             ps.executeUpdate();
         }
         long id = lastInsertId();
-        long splitId = insertSplit(id, entry.amountCents, target, null, null);
-        if (target.transferAccountId() != null) {
-            createMirror(splitId);
+        Loan loan = target.transferAccountId() != null && entry.amountCents < 0
+                ? accounts.findLoan(target.transferAccountId()) : null;
+        long interest = loan == null ? 0 : loanInterest(loan, entry.date, -entry.amountCents);
+        if (interest > 0) {
+            // A payment into a loan: the month's interest goes to the interest category,
+            // the rest (including any extra) is principal, transferred to the loan.
+            long principal = entry.amountCents + interest;
+            if (principal != 0) {
+                createMirror(insertSplit(id, principal, target, "Principal", null));
+            }
+            insertSplit(id, -interest, new Target(categories.findOrCreate(loan.interestCategoryOrDefault()), null),
+                    "Interest", null);
+        } else {
+            long splitId = insertSplit(id, entry.amountCents, target, null, null);
+            if (target.transferAccountId() != null) {
+                createMirror(splitId);
+            }
         }
         entry.id = id;
+    }
+
+    /**
+     * The interest part of a payment into a loan on a date: a month's interest
+     * on what is owed then (at most the whole payment). A payment in a month
+     * that already had one is all principal (extra principal), as is any
+     * payment into a loan with no interest rate or nothing owed.
+     */
+    private long loanInterest(Loan loan, LocalDate date, long paymentCents) throws SQLException {
+        if (loan.rateMilli() <= 0) {
+            return 0;
+        }
+        try (PreparedStatement ps = conn.prepareStatement("SELECT 1 FROM txn t JOIN split s ON s.txn_id = t.id"
+                + " WHERE t.account_id = ? AND t.txn_date BETWEEN ? AND ? AND s.amount_cents > 0 LIMIT 1")) {
+            ps.setLong(1, loan.accountId());
+            ps.setString(2, date.withDayOfMonth(1).toString());
+            ps.setString(3, date.toString());
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    return 0;                           // this month's interest is already paid
+                }
+            }
+        }
+        long owed = -accounts.balanceThrough(loan.accountId(), date);
+        return Math.min(loan.monthlyInterest(owed), paymentCents);
     }
 
     /** As delete(), for a caller that already has a database transaction open: doesn't commit or roll back. */

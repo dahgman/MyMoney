@@ -221,7 +221,8 @@ final class BankImportDialog extends JDialog {
             AccountRepository.Details b = ManageAccountsDialog.BLANK;
             template = new AccountRepository.Details(0, "",
                     fileAccount.type() != null ? fileAccount.type() : b.type(), null, fileAccount.bankName(),
-                    null, 0, 0, fileAccount.accountNumber(), fileAccount.routingNumber(), null, null, null);
+                    null, 0, 0, fileAccount.accountNumber(), fileAccount.routingNumber(), null, null, null,
+                    AccountRepository.LoanTerms.NONE, AccountRepository.CardTerms.NONE);
         }
         Long id = createAccount.apply(template);
         if (id != null) {

@@ -28,6 +28,7 @@ import javax.swing.JList;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
+import javax.swing.JSpinner;
 import javax.swing.JSplitPane;
 import javax.swing.JTextArea;
 import javax.swing.JTextField;
@@ -66,9 +67,31 @@ final class ManageAccountsDialog extends JDialog {
     private final JTextField websiteField = new JTextField(24);
     private final JTextArea commentsArea = new JTextArea(4, 24);
 
+    // Loan accounts only:
+    private final JTextField rateField = new JTextField(8);
+    private final JTextField originalField = new JTextField(12);
+    private final JSpinner termSpinner = new JSpinner(new javax.swing.SpinnerNumberModel(0, 0, 1200, 1));
+    private final JComboBox<String> interestCategoryCombo = new JComboBox<>();
+    private final JLabel loanSummary = new JLabel(" ");
+    private final JButton scheduleButton = new JButton("Amortization Schedule...");
+    private final List<JComponent> loanOnly = new ArrayList<>();
+
+    // Credit card accounts only:
+    private final JTextField aprField = new JTextField(8);
+    private final JTextField limitField = new JTextField(12);
+    private final JSpinner statementDaySpinner = new JSpinner(new javax.swing.SpinnerNumberModel(0, 0, 31, 1));
+    private final JSpinner dueDaySpinner = new JSpinner(new javax.swing.SpinnerNumberModel(0, 0, 31, 1));
+    private final JTextField minPercentField = new JTextField(5);
+    private final JTextField minFloorField = new JTextField(8);
+    private final JLabel cardSummary = new JLabel(" ");
+    private final JButton payoffButton = new JButton("Payoff Schedule...");
+    private final List<JComponent> cardOnly = new ArrayList<>();
+    private final java.util.Map<JComponent, JLabel> labels = new java.util.HashMap<>();
+
     /** What the form starts as for a new account (id 0 = not saved yet). */
     static final AccountRepository.Details BLANK = new AccountRepository.Details(0, "",
-            AccountType.CHECKING, null, null, null, 0, 0, null, null, null, null, null);
+            AccountType.CHECKING, null, null, null, 0, 0, null, null, null, null, null,
+            AccountRepository.LoanTerms.NONE, AccountRepository.CardTerms.NONE);
 
     private final JLabel formTitle = new JLabel(" ");
     private AccountRepository.Details loaded;     // as saved (or BLANK), to notice unsaved changes
@@ -153,6 +176,52 @@ final class ManageAccountsDialog extends JDialog {
         row = addRow(form, row, "Balance Adjustment:", adjustmentField);
         row = addRow(form, row, "Account Number:", accountNumberField);
         row = addRow(form, row, "Routing Number:", routingNumberField);
+        JPanel rateRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+        rateRow.add(rateField);
+        rateRow.add(new JLabel("% a year"));
+        row = addRow(form, row, "Interest Rate:", rateRow);
+        row = addRow(form, row, "Original Amount:", originalField);
+        JPanel termRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+        termRow.add(termSpinner);
+        termRow.add(new JLabel("monthly payments"));
+        row = addRow(form, row, "Term:", termRow);
+        row = addRow(form, row, "Interest Category:", interestCategoryCombo);
+        // Summary above the button, so a long summary doesn't widen the form.
+        JPanel summaryRow = new JPanel();
+        summaryRow.setLayout(new javax.swing.BoxLayout(summaryRow, javax.swing.BoxLayout.PAGE_AXIS));
+        loanSummary.setAlignmentX(Component.LEFT_ALIGNMENT);
+        scheduleButton.setAlignmentX(Component.LEFT_ALIGNMENT);
+        summaryRow.add(loanSummary);
+        summaryRow.add(javax.swing.Box.createVerticalStrut(4));
+        summaryRow.add(scheduleButton);
+        row = addRow(form, row, "", summaryRow);
+        loanOnly.addAll(List.of(rateRow, originalField, termRow, interestCategoryCombo, summaryRow));
+
+        JPanel aprRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+        aprRow.add(aprField);
+        aprRow.add(new JLabel("% a year"));
+        row = addRow(form, row, "APR:", aprRow);
+        row = addRow(form, row, "Credit Limit:", limitField);
+        JPanel daysRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+        daysRow.add(new JLabel("closes on day"));
+        daysRow.add(statementDaySpinner);
+        daysRow.add(new JLabel("   due on day"));
+        daysRow.add(dueDaySpinner);
+        row = addRow(form, row, "Statement:", daysRow);
+        JPanel minRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+        minRow.add(minPercentField);
+        minRow.add(new JLabel("% or $"));
+        minRow.add(minFloorField);
+        row = addRow(form, row, "Minimum Payment:", minRow);
+        JPanel cardSummaryRow = new JPanel();
+        cardSummaryRow.setLayout(new javax.swing.BoxLayout(cardSummaryRow, javax.swing.BoxLayout.PAGE_AXIS));
+        cardSummary.setAlignmentX(Component.LEFT_ALIGNMENT);
+        payoffButton.setAlignmentX(Component.LEFT_ALIGNMENT);
+        cardSummaryRow.add(cardSummary);
+        cardSummaryRow.add(javax.swing.Box.createVerticalStrut(4));
+        cardSummaryRow.add(payoffButton);
+        row = addRow(form, row, "", cardSummaryRow);
+        cardOnly.addAll(List.of(aprRow, limitField, daysRow, minRow, cardSummaryRow));
         row = addRow(form, row, "Default Category:", categoryCombo);
         row = addRow(form, row, "Website:", websiteField);
         JScrollPane comments = new JScrollPane(commentsArea);
@@ -163,6 +232,84 @@ final class ManageAccountsDialog extends JDialog {
         form.add(new JPanel(), filler);
 
         adjustmentField.setToolTipText("Added to the initial balance, without a transaction");
+        originalField.setHorizontalAlignment(JTextField.RIGHT);
+        rateField.setHorizontalAlignment(JTextField.RIGHT);
+        interestCategoryCombo.setEditable(true);
+        interestCategoryCombo.addItem("");
+        for (String c : categoryPaths) {
+            interestCategoryCombo.addItem(c);
+        }
+        interestCategoryCombo.setToolTipText("Where the interest part of each payment goes (blank: "
+                + Loan.DEFAULT_INTEREST_CATEGORY + ")");
+        rateField.setToolTipText("The annual interest rate, like 6.375");
+        originalField.setToolTipText("The amount borrowed");
+        termSpinner.setToolTipText("How many monthly payments, from the origination date");
+        typeCombo.addActionListener(e -> typeChanged());
+        for (JTextField f : new JTextField[] {rateField, originalField}) {
+            f.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
+                @Override
+                public void insertUpdate(javax.swing.event.DocumentEvent e) {
+                    updateLoanSummary();
+                }
+
+                @Override
+                public void removeUpdate(javax.swing.event.DocumentEvent e) {
+                    updateLoanSummary();
+                }
+
+                @Override
+                public void changedUpdate(javax.swing.event.DocumentEvent e) {
+                }
+            });
+        }
+        termSpinner.addChangeListener(e -> updateLoanSummary());
+        startDate.onChange(this::updateLoanSummary);
+        // A new loan with no initial balance yet owes the original amount.
+        originalField.addFocusListener(new java.awt.event.FocusAdapter() {
+            @Override
+            public void focusLost(java.awt.event.FocusEvent e) {
+                try {
+                    if (amount(openingField, "") == 0 && amount(originalField, "") > 0) {
+                        openingField.setText(Money.format(-amount(originalField, "")));
+                    }
+                } catch (IllegalArgumentException ignored) {
+                    // left for Save to report
+                }
+            }
+        });
+        scheduleButton.addActionListener(e -> showSchedule());
+
+        limitField.setHorizontalAlignment(JTextField.RIGHT);
+        aprField.setHorizontalAlignment(JTextField.RIGHT);
+        minPercentField.setHorizontalAlignment(JTextField.RIGHT);
+        minFloorField.setHorizontalAlignment(JTextField.RIGHT);
+        aprField.setToolTipText("The annual percentage rate on purchases, like 19.99");
+        limitField.setToolTipText("The credit limit");
+        statementDaySpinner.setToolTipText("The day of the month the statement closes (0 = not set; 31 = the last day)");
+        dueDaySpinner.setToolTipText("The day of the month the payment is due (0 = not set; 31 = the last day)");
+        minPercentField.setToolTipText("The minimum payment as a percent of the balance, like 2"
+                + " (whichever of the two is more is due)");
+        minFloorField.setToolTipText("The smallest minimum payment, like 35.00 (whichever of the two is more is due)");
+        for (JTextField f : new JTextField[] {aprField, limitField, minPercentField, minFloorField}) {
+            f.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
+                @Override
+                public void insertUpdate(javax.swing.event.DocumentEvent e) {
+                    updateCardSummary();
+                }
+
+                @Override
+                public void removeUpdate(javax.swing.event.DocumentEvent e) {
+                    updateCardSummary();
+                }
+
+                @Override
+                public void changedUpdate(javax.swing.event.DocumentEvent e) {
+                }
+            });
+        }
+        statementDaySpinner.addChangeListener(e -> updateCardSummary());
+        dueDaySpinner.addChangeListener(e -> updateCardSummary());
+        payoffButton.addActionListener(e -> showPayoff());
         categoryCombo.setToolTipText("Filled in on every new transaction in this account; it can still be changed");
 
         JButton save = new JButton("Save");
@@ -304,7 +451,10 @@ final class ManageAccountsDialog extends JDialog {
         boolean on = d != null;
         formTitle.setText(d == null ? " " : d.id() == 0 ? "New Account" : d.name());
         for (JComponent c : new JComponent[] {nameField, typeCombo, parentCombo, bankField, startDate, openingField,
-                adjustmentField, accountNumberField, routingNumberField, categoryCombo, websiteField, commentsArea}) {
+                adjustmentField, accountNumberField, routingNumberField, categoryCombo, websiteField, commentsArea,
+                rateField, originalField, termSpinner, interestCategoryCombo, scheduleButton,
+                aprField, limitField, statementDaySpinner, dueDaySpinner, minPercentField, minFloorField,
+                payoffButton}) {
             c.setEnabled(on);
         }
         if (d == null) {
@@ -328,7 +478,173 @@ final class ManageAccountsDialog extends JDialog {
         websiteField.setText(text(d.website()));
         commentsArea.setText(text(d.comments()));
         commentsArea.setCaretPosition(0);
+        AccountRepository.LoanTerms t = d.loan() == null ? AccountRepository.LoanTerms.NONE : d.loan();
+        rateField.setText(t.rateMilli() == 0 ? "" : Loan.formatRate(t.rateMilli()).replace("%", ""));
+        originalField.setText(t.originalCents() == 0 ? "" : Money.format(t.originalCents()));
+        termSpinner.setValue(t.termMonths());
+        interestCategoryCombo.setSelectedItem(text(t.interestCategory()));
+        AccountRepository.CardTerms ct = d.card() == null ? AccountRepository.CardTerms.NONE : d.card();
+        aprField.setText(ct.aprMilli() == 0 ? "" : Loan.formatRate(ct.aprMilli()).replace("%", ""));
+        limitField.setText(ct.limitCents() == 0 ? "" : Money.format(ct.limitCents()));
+        statementDaySpinner.setValue(ct.statementDay());
+        dueDaySpinner.setValue(ct.dueDay());
+        minPercentField.setText(ct.minPercentMilli() == 0 ? "" : Loan.formatRate(ct.minPercentMilli()).replace("%", ""));
+        minFloorField.setText(ct.minFloorCents() == 0 ? "" : Money.format(ct.minFloorCents()));
         parentChanged();
+        typeChanged();
+    }
+
+    /**
+     * A loan shows its loan fields, and calls Bank Name the lender, Account
+     * Number the loan number and Start Date the origination date. Other
+     * accounts don't show the loan fields (and a loan has no routing number).
+     */
+    private void typeChanged() {
+        boolean loan = typeCombo.getSelectedItem() == AccountType.LOAN;
+        boolean card = typeCombo.getSelectedItem() == AccountType.CREDIT_CARD;
+        labels.get(bankField).setText(loan ? "Lender:" : card ? "Issuer:" : "Bank Name:");
+        labels.get(accountNumberField).setText(loan ? "Loan Number:" : card ? "Card Number:" : "Account Number:");
+        labels.get(startDate).setText(loan ? "Origination Date:" : card ? "Open Date:" : "Start Date:");
+        labels.get(openingField).setText(loan || card ? "Initial Balance (owed):" : "Initial Balance:");
+        openingField.setToolTipText(loan ? "What was owed when you started tracking the loan, as a negative amount"
+                + " (a new loan: minus the original amount)"
+                : card ? "What was owed when you started tracking the card, as a negative amount" : null);
+        for (JComponent c : loanOnly) {
+            c.setVisible(loan);
+            labels.get(c).setVisible(loan);
+        }
+        for (JComponent c : cardOnly) {
+            c.setVisible(card);
+            labels.get(c).setVisible(card);
+        }
+        routingNumberField.setVisible(!loan && !card);
+        labels.get(routingNumberField).setVisible(!loan && !card);
+        updateLoanSummary();
+        updateCardSummary();
+        revalidate();
+        repaint();
+    }
+
+    /** "Monthly payment: $X · Matures MM/DD/YYYY", from the loan fields as typed. */
+    private void updateLoanSummary() {
+        try {
+            Loan l = formLoan();
+            long payment = l.regularPayment();
+            java.time.LocalDate maturity = l.maturity();
+            loanSummary.setText(payment == 0 ? "Enter the original amount and term."
+                    : "<html>Monthly payment: <b>" + Money.format(payment) + "</b>"
+                    + (maturity == null ? "" : "<br>Matures " + maturity.format(LedgerTableModel.DISPLAY_DATE))
+                    + "</html>");
+        } catch (IllegalArgumentException e) {
+            loanSummary.setText(" ");
+        }
+    }
+
+    /** The card as the form has it. @throws IllegalArgumentException with a message fit to show */
+    private CreditCard formCard() {
+        long limit = amount(limitField, "Credit Limit");
+        long floor = amount(minFloorField, "Minimum Payment");
+        if (limit < 0 || floor < 0) {
+            throw new IllegalArgumentException("Credit Limit and Minimum Payment are positive amounts.");
+        }
+        int minPercent;
+        try {
+            minPercent = Loan.parseRate(minPercentField.getText());
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("Minimum Payment: \"" + minPercentField.getText()
+                    + "\" isn't a percent (like 2).");
+        }
+        return new CreditCard(loaded == null ? 0 : loaded.id(), Loan.parseRate(aprField.getText()), limit,
+                (Integer) statementDaySpinner.getValue(), (Integer) dueDaySpinner.getValue(), minPercent, floor);
+    }
+
+    /** What's owed on the card being edited today (positive), or 0 for a new account. */
+    private long cardOwedNow() {
+        try {
+            return loaded != null && loaded.id() != 0
+                    ? -accounts.balanceThrough(loaded.id(), java.time.LocalDate.now()) : 0;
+        } catch (SQLException e) {
+            return 0;
+        }
+    }
+
+    /** "Owed $X · Available $Y of $Z (N% used) / Minimum payment $M · Next due MM/DD/YYYY". */
+    private void updateCardSummary() {
+        try {
+            CreditCard c = formCard();
+            long owed = cardOwedNow();
+            StringBuilder s = new StringBuilder("<html>Owed: <b>" + Money.format(Math.max(0, owed)) + "</b>");
+            if (c.limitCents() > 0) {
+                s.append("<br>Available: ").append(Money.format(c.available(owed)))
+                 .append(" of ").append(Money.format(c.limitCents()))
+                 .append(" (").append(c.utilizationPercent(owed)).append("% used)");
+            }
+            java.time.LocalDate due = CreditCard.nextDay(c.dueDay(), java.time.LocalDate.now());
+            if (c.hasMinimumRule() || due != null) {
+                s.append("<br>");
+                if (c.hasMinimumRule()) {
+                    s.append("Minimum payment: ").append(Money.format(c.minimumPayment(owed)));
+                }
+                if (due != null) {
+                    s.append(c.hasMinimumRule() ? " due " : "Next due: ").append(due.format(LedgerTableModel.DISPLAY_DATE));
+                }
+            }
+            cardSummary.setText(s.append("</html>").toString());
+        } catch (IllegalArgumentException e) {
+            cardSummary.setText(" ");
+        }
+    }
+
+    /** Shows the payoff schedule for the card as the form has it. */
+    private void showPayoff() {
+        CreditCard c;
+        try {
+            c = formCard();
+        } catch (IllegalArgumentException e) {
+            error(e.getMessage());
+            return;
+        }
+        long owed = cardOwedNow();
+        if (owed <= 0) {
+            error("Nothing is owed on this card" + (loaded != null && loaded.id() == 0 ? " yet (save it first)." : "."));
+            return;
+        }
+        new CardPayoffDialog(this, nameField.getText().trim(), c, owed).setVisible(true);
+    }
+
+    /** The loan as the form has it. @throws IllegalArgumentException with a message fit to show */
+    private Loan formLoan() {
+        long original = amount(originalField, "Original Amount");
+        if (original < 0) {
+            throw new IllegalArgumentException("Original Amount: enter the amount borrowed as a positive number.");
+        }
+        return new Loan(loaded == null ? 0 : loaded.id(), Loan.parseRate(rateField.getText()), original,
+                (Integer) termSpinner.getValue(), startDate.getDateOrNull(),
+                Objects.toString(interestCategoryCombo.getEditor().getItem(), "").trim());
+    }
+
+    /** Shows the amortization schedule for the loan as the form has it. */
+    private void showSchedule() {
+        Loan l;
+        try {
+            l = formLoan();
+        } catch (IllegalArgumentException e) {
+            error(e.getMessage());
+            return;
+        }
+        if (l.regularPayment() == 0) {
+            error("Enter the original amount and the term first.");
+            return;
+        }
+        long owedNow = 0;
+        try {
+            if (loaded != null && loaded.id() != 0) {
+                owedNow = -accounts.balanceThrough(loaded.id(), java.time.LocalDate.now());
+            }
+        } catch (SQLException e) {
+            owedNow = 0;
+        }
+        new LoanScheduleDialog(this, nameField.getText().trim(), l, owedNow).setVisible(true);
     }
 
     /** The file name first (top level), then every account this one could belong to. */
@@ -387,6 +703,19 @@ final class ManageAccountsDialog extends JDialog {
         }
         long opening = amount(openingField, "Initial Balance");
         long adjustment = amount(adjustmentField, "Balance Adjustment");
+        AccountRepository.LoanTerms terms = AccountRepository.LoanTerms.NONE;
+        AccountRepository.CardTerms cardTerms = AccountRepository.CardTerms.NONE;
+        if (type == AccountType.CREDIT_CARD) {
+            CreditCard c = formCard();
+            cardTerms = new AccountRepository.CardTerms(c.aprMilli(), c.limitCents(), c.statementDay(), c.dueDay(),
+                    c.minPercentMilli(), c.minFloorCents());
+        }
+        if (type == AccountType.LOAN) {
+            Loan l = formLoan();
+            String cat = l.interestCategory();
+            terms = new AccountRepository.LoanTerms(l.rateMilli(), l.originalCents(), l.termMonths(),
+                    cat == null || cat.isBlank() ? null : CategoryRepository.normalize(cat));
+        }
         String category = Objects.toString(categoryCombo.getEditor().getItem(), "").trim();
         if (!category.isEmpty()) {
             category = CategoryRepository.normalize(category);
@@ -395,7 +724,7 @@ final class ManageAccountsDialog extends JDialog {
                 startDate.getDateOrNull(), opening, adjustment, blankToNull(accountNumberField),
                 blankToNull(routingNumberField), category.isEmpty() ? null : category,
                 commentsArea.getText().isBlank() ? null : commentsArea.getText().strip(),
-                blankToNull(websiteField));
+                blankToNull(websiteField), terms, cardTerms);
     }
 
     private static long amount(JTextField f, String what) {
@@ -456,7 +785,7 @@ final class ManageAccountsDialog extends JDialog {
                 long id = accounts.insert(d.name(), d.type(), d.openingBalanceCents(), d.parentId());
                 d = new AccountRepository.Details(id, d.name(), d.type(), d.parentId(), d.bankName(),
                         d.startDate(), d.openingBalanceCents(), d.balanceAdjustmentCents(), d.accountNumber(),
-                        d.routingNumber(), d.defaultCategory(), d.comments(), d.website());
+                        d.routingNumber(), d.defaultCategory(), d.comments(), d.website(), d.loan(), d.card());
             }
             accounts.saveDetails(d);
         } catch (SQLException e) {
@@ -502,13 +831,15 @@ final class ManageAccountsDialog extends JDialog {
 
     // ----- Helpers -----------------------------------------------------------
 
-    private static int addRow(JPanel form, int row, String label, JComponent field) {
+    private int addRow(JPanel form, int row, String label, JComponent field) {
         GridBagConstraints c = new GridBagConstraints();
         c.gridx = 0;
         c.gridy = row;
         c.anchor = field instanceof JScrollPane ? GridBagConstraints.FIRST_LINE_END : GridBagConstraints.LINE_END;
         c.insets = new Insets(3, 0, 3, 8);
-        form.add(new JLabel(label), c);
+        JLabel l = new JLabel(label);
+        labels.put(field, l);                            // so the label can be renamed or hidden
+        form.add(l, c);
         c = new GridBagConstraints();
         c.gridx = 1;
         c.gridy = row;

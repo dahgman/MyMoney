@@ -31,6 +31,7 @@ public class AutoCompleteEditor extends DefaultCellEditor {
         super(new JTextField());
         this.field = (JTextField) getComponent();
         field.setBorder(new LineBorder(Color.BLACK));
+        editingColors(field);
         complete = source == null ? null : new AutoComplete(field, source);
 
         bind(KeyEvent.VK_ENTER, "enter", () -> {
@@ -83,6 +84,22 @@ public class AutoCompleteEditor extends DefaultCellEditor {
             complete.hidePopup();
         }
         super.cancelCellEditing();
+    }
+
+    /**
+     * A cell being edited is white with dark text, like the rest of its row
+     * (see MainFrame.muted). Some look-and-feels (GTK) paint text fields
+     * themselves and ignore the background color, so the field gets Swing's
+     * plain text-field painter, which uses it.
+     */
+    static void editingColors(JTextField f) {
+        f.setUI(new javax.swing.plaf.basic.BasicTextFieldUI());
+        f.setOpaque(true);
+        f.setBackground(Color.WHITE);
+        f.setForeground(Color.BLACK);
+        f.setCaretColor(Color.BLACK);
+        f.setSelectionColor(new Color(0xB3D7FF));
+        f.setSelectedTextColor(Color.BLACK);
     }
 
     private void bind(int keyCode, String name, Runnable action) {

@@ -159,6 +159,9 @@ public class MainFrame extends javax.swing.JFrame {
         cols.getColumn(LedgerTableModel.DEPOSIT).setMinWidth(80);
         cols.getColumn(LedgerTableModel.BALANCE).setMinWidth(90);
 
+        // The whole row being edited is drawn white (see muted): redraw it as editing starts and stops.
+        ledgerTable.addPropertyChangeListener("tableCellEditor", e -> ledgerTable.repaint());
+
         // Future-dated transactions are drawn with grey text, in every column.
         ledgerTable.setDefaultRenderer(Object.class, muted(ledgerTable.getDefaultRenderer(Object.class)));
 
@@ -167,7 +170,17 @@ public class MainFrame extends javax.swing.JFrame {
         TableCellRenderer money = muted(right);
         cols.getColumn(LedgerTableModel.PAYMENT).setCellRenderer(money);
         cols.getColumn(LedgerTableModel.DEPOSIT).setCellRenderer(money);
-        cols.getColumn(LedgerTableModel.BALANCE).setCellRenderer(money);
+        // Balance: red when negative, green when positive (selected rows keep the selection colors).
+        cols.getColumn(LedgerTableModel.BALANCE).setCellRenderer((table, value, isSelected, hasFocus, row, column) -> {
+            java.awt.Component c = money.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
+            if ((!isSelected || row == table.getEditingRow()) && ledgerModel.isSavedRow(row)) {
+                long cents = ledgerModel.balanceCents(row);
+                if (cents != 0) {
+                    c.setForeground(cents < 0 ? NEGATIVE : POSITIVE);
+                }
+            }
+            return c;
+        });
 
         // Files: how many attachments; double-click to see them.
         DefaultTableCellRenderer centered = new DefaultTableCellRenderer();
@@ -276,6 +289,11 @@ public class MainFrame extends javax.swing.JFrame {
         bar.add(clear);
         bar.add(Box.createHorizontalStrut(12));
         bar.add(hideReconciledBox);
+        bar.add(Box.createHorizontalStrut(12));
+        JButton goToNew = new JButton("New Transaction");
+        goToNew.setToolTipText("Jump to the blank row for entering a new transaction (Ctrl+N)");
+        goToNew.addActionListener(e -> goToNewTransaction());
+        bar.add(goToNew);
         bar.add(Box.createHorizontalGlue());
         bar.add(filterCountLabel);
         filterField.setMaximumSize(new java.awt.Dimension(300, filterField.getPreferredSize().height));
@@ -317,6 +335,16 @@ public class MainFrame extends javax.swing.JFrame {
         });
         // Enter in the filter goes to the ledger, keeping the filter.
         filterField.addActionListener(e -> ledgerTable.requestFocusInWindow());
+
+        // Ctrl+N from anywhere in the window jumps to the blank new-transaction row.
+        getRootPane().getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW)
+                .put(KeyStroke.getKeyStroke(KeyEvent.VK_N, menuShortcut()), "newTransaction");
+        getRootPane().getActionMap().put("newTransaction", new AbstractAction() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                goToNewTransaction();
+            }
+        });
 
         // Ctrl+F from anywhere in the window jumps to the filter.
         getRootPane().getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW)
@@ -373,6 +401,20 @@ public class MainFrame extends javax.swing.JFrame {
                         + "&nbsp;&nbsp;&nbsp;<b>Net: " + Money.format(deposits - payments) + "</b></html>");
     }
 
+    /** Selects (and scrolls to) the blank new-transaction row, ready to type its date. */
+    private void goToNewTransaction() {
+        if (ledgerTable.isEditing()) {
+            ledgerTable.getCellEditor().stopCellEditing();   // save a half-finished cell first
+        }
+        int row = ledgerModel.draftRow();
+        if (row < 0) {
+            showError("Select an account first.");
+            return;
+        }
+        ledgerTable.changeSelection(row, ledgerTable.convertColumnIndexToView(LedgerTableModel.DATE), false, false);
+        ledgerTable.requestFocusInWindow();
+    }
+
     /** Passes the filter bar's settings to the ledger. */
     private void applyFilter() {
         if (ledgerTable.isEditing()) {
@@ -388,18 +430,44 @@ public class MainFrame extends javax.swing.JFrame {
                 : " ");
     }
 
+    /**
+     * Grey for the blank new-transaction row: a shade lighter than the
+     * ledger's background on a dark theme, a shade darker on a light one.
+     */
+    private static Color newRowBackground(javax.swing.JTable table) {
+        Color bg = table.getBackground();
+        boolean dark = (bg.getRed() * 299 + bg.getGreen() * 587 + bg.getBlue() * 114) / 1000 < 128;
+        return dark ? new Color(0x4A, 0x4A, 0x4A) : new Color(0xD6, 0xD6, 0xD6);
+    }
+
+    /** Balances: red below zero, green above (readable on dark, light and white rows). */
+    static final Color NEGATIVE = new Color(0xE0, 0x3E, 0x2D);
+    static final Color POSITIVE = new Color(0x22, 0xA0, 0x55);
+
+    /** The row being edited: white, with dark text, in light and dark themes alike. */
+    static final Color EDITING_BACKGROUND = Color.WHITE;
+    static final Color EDITING_TEXT = Color.BLACK;
+
     /** Text color for transactions dated after today. */
     private static final Color FUTURE_TEXT = new Color(128, 128, 128);         // grey
 
     /**
      * Wraps a cell renderer so future-dated rows get grey text (on the normal
-     * background). Selected rows keep the normal selection colors.
+     * background). Selected rows keep the normal selection colors, the
+     * blank new-transaction row is always grey, and the row being edited is
+     * white (the blank row too, while it's being typed in).
      */
     private TableCellRenderer muted(TableCellRenderer base) {
         return (table, value, isSelected, hasFocus, row, column) -> {
             java.awt.Component c = base.getTableCellRendererComponent(
                     table, value, isSelected, hasFocus, row, column);
-            if (!isSelected) {
+            if (row == table.getEditingRow()) {
+                c.setBackground(EDITING_BACKGROUND);   // the row being edited stands out
+                c.setForeground(EDITING_TEXT);
+            } else if (ledgerModel.isDraftRow(row)) {
+                c.setBackground(newRowBackground(table)); // the blank new-transaction row: always grey
+                c.setForeground(table.getForeground());
+            } else if (!isSelected) {
                 c.setBackground(table.getBackground());
                 c.setForeground(ledgerModel.isFuture(row) ? FUTURE_TEXT : table.getForeground());
             }
@@ -468,8 +536,8 @@ public class MainFrame extends javax.swing.JFrame {
             return;
         }
         int rows = ledgerTable.getRowCount();
-        if (rows > rowsBefore) {
-            ledgerTable.changeSelection(rows - 1, LedgerTableModel.DATE, false, false);
+        if (rows > rowsBefore) {                        // a new transaction was saved: on to the next blank row
+            ledgerTable.changeSelection(ledgerModel.draftRow(), LedgerTableModel.DATE, false, false);
         } else if (row + 1 < rows) {
             ledgerTable.changeSelection(row + 1, column, false, false);
         }
@@ -510,7 +578,7 @@ public class MainFrame extends javax.swing.JFrame {
 
     /** Puts the cursor on the new-transaction row's Payment cell. */
     private void selectDraftAmount() {
-        int draftRow = ledgerModel.getRowCount() - 1;
+        int draftRow = ledgerModel.draftRow();
         if (draftRow >= 0) {
             resolvingDraft = true;
             try {
@@ -567,6 +635,8 @@ public class MainFrame extends javax.swing.JFrame {
         accountMenu.add(menuItem("Delete Account...", this::deleteAccount));
         accountMenu.add(menuItem("Manage Accounts...", this::manageAccounts));
         accountMenu.addSeparator();
+        accountMenu.add(menuItem("Amortization Schedule...", this::showLoanSchedule));
+        accountMenu.add(menuItem("Payoff Schedule...", this::showCardPayoff));
         JMenuItem reconcileItem = menuItem("Reconcile Account...", this::reconcileAccount);
         reconcileItem.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_R, menuShortcut()));
         accountMenu.add(reconcileItem);
@@ -647,6 +717,8 @@ public class MainFrame extends javax.swing.JFrame {
         treeMenu.add(editFromTree);
         treeMenu.add(menuItem("Delete Account...", this::deleteAccount));
         treeMenu.add(menuItem("Reconcile Account...", this::reconcileAccount));
+        treeMenu.add(menuItem("Amortization Schedule...", this::showLoanSchedule));
+        treeMenu.add(menuItem("Payoff Schedule...", this::showCardPayoff));
         accountTree.addMouseListener(new MouseAdapter() {
             @Override
             public void mousePressed(MouseEvent e) {
@@ -877,7 +949,7 @@ public class MainFrame extends javax.swing.JFrame {
         }
         resolveDraft(false);
         ScheduleListDialog dlg = new ScheduleListDialog(this, schedules, accounts,
-                s -> openScheduleForm(s != null ? s : blankSchedule()));
+                s -> openScheduleForm(s != null ? s : blankSchedule()), db.getFile().getParent());
         dlg.setVisible(true);
         if (dlg.wasChanged()) {
             checkpoint("Scheduled Transactions");
@@ -937,6 +1009,48 @@ public class MainFrame extends javax.swing.JFrame {
                 this::categoryPaths, this::tagNames, this::lastCategoryForPayee);
         dlg.setVisible(true);
         return dlg.savedId();
+    }
+
+    /** Account > Amortization Schedule...: the selected loan's payments, interest and principal. */
+    private void showLoanSchedule() {
+        Account a = selectedAccount();
+        Loan loan;
+        try {
+            loan = a == null ? null : accounts.findLoan(a.id());
+            if (loan == null) {
+                showError("Select a loan account first.");
+                return;
+            }
+            if (loan.regularPayment() == 0) {
+                showError("Enter the loan's original amount and term first (Account > Edit Account).");
+                return;
+            }
+            new LoanScheduleDialog(this, a.name(), loan, -accounts.balanceThrough(a.id(), LocalDate.now()))
+                    .setVisible(true);
+        } catch (SQLException e) {
+            showError("Could not read the loan:\n" + e.getMessage());
+        }
+    }
+
+    /** Account > Payoff Schedule...: paying off the selected credit card's balance. */
+    private void showCardPayoff() {
+        Account a = selectedAccount();
+        try {
+            CreditCard card = a == null ? null : accounts.findCard(a.id());
+            if (card == null) {
+                showError("Select a credit card account first.");
+                return;
+            }
+            long owed = -accounts.balanceThrough(a.id(), LocalDate.now());
+            if (owed <= 0) {
+                JOptionPane.showMessageDialog(this, "Nothing is owed on " + a.name() + ".", "Payoff Schedule",
+                        JOptionPane.INFORMATION_MESSAGE);
+                return;
+            }
+            new CardPayoffDialog(this, a.name(), card, owed).setVisible(true);
+        } catch (SQLException e) {
+            showError("Could not read the card:\n" + e.getMessage());
+        }
     }
 
     /** Account > Manage Payee Renames...: the payee names remembered for bank names during imports. */
@@ -1647,16 +1761,107 @@ public class MainFrame extends javax.swing.JFrame {
                 }
                 if (showTreeBalances && value instanceof DefaultMutableTreeNode n
                         && n.getUserObject() instanceof Account a && treeBalances.containsKey(a.id())) {
-                    long cents = treeBalances.get(a.id());
-                    String color = selected ? "" : cents < 0 ? " color='#c0392b'" : " color='gray'";
-                    setText("<html>" + escape(a.name()) + "&nbsp;&nbsp;<font" + color + ">"
-                            + Money.format(cents) + "</font></html>");
                     setToolTipText(a.type() == AccountType.ENVELOPE
                             ? "Current balance (transactions through today)" : "Cleared balance");
                 }
                 return this;
             }
         });
+
+        // The balances are drawn over the tree, right-aligned at its visible right edge
+        // (a tree row is only as wide as its text, so it can't right-align part of it).
+        accountScroll.setViewportView(new javax.swing.JLayer<>(accountTree, new javax.swing.plaf.LayerUI<>() {
+            @Override
+            public void paint(java.awt.Graphics g, JComponent c) {
+                super.paint(g, c);
+                if (showTreeBalances) {
+                    paintTreeBalances((java.awt.Graphics2D) g, c.getVisibleRect());
+                }
+            }
+        }));
+    }
+
+    /** Space between a balance and the tree's right edge. */
+    private static final int TREE_BALANCE_MARGIN = 6;
+
+    /** Draws each visible account's balance at the right edge of the visible part of the tree. */
+    private void paintTreeBalances(java.awt.Graphics2D g, java.awt.Rectangle visible) {
+        g.setFont(accountTree.getFont());
+        g.setRenderingHint(java.awt.RenderingHints.KEY_TEXT_ANTIALIASING,
+                java.awt.RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+        java.awt.FontMetrics fm = g.getFontMetrics();
+        int right = visible.x + visible.width - TREE_BALANCE_MARGIN;
+        for (int row = 0; row < accountTree.getRowCount(); row++) {
+            java.awt.Rectangle r = accountTree.getRowBounds(row);
+            if (r == null || r.y + r.height < visible.y || r.y > visible.y + visible.height) {
+                continue;
+            }
+            Object node = accountTree.getPathForRow(row).getLastPathComponent();
+            if (!(node instanceof DefaultMutableTreeNode n) || !(n.getUserObject() instanceof Account a)
+                    || !treeBalances.containsKey(a.id())) {
+                continue;
+            }
+            long cents = treeBalances.get(a.id());
+            String text = Money.format(cents);
+            if (accountTree.isRowSelected(row)) {          // on the selection highlight: its text color
+                java.awt.Color sel = javax.swing.UIManager.getColor("Tree.selectionForeground");
+                g.setColor(sel != null ? sel : java.awt.Color.WHITE);
+            } else {
+                g.setColor(cents < 0 ? NEGATIVE : java.awt.Color.GRAY);
+            }
+            int baseline = r.y + (r.height + fm.getAscent() - fm.getDescent()) / 2;
+            g.drawString(text, right - fm.stringWidth(text), baseline);
+        }
+    }
+
+    /** Space kept between an account's name and its balance. */
+    private static final int TREE_BALANCE_GAP = 12;
+
+    /**
+     * The narrowest the tree pane can be without a balance running into its
+     * account's name: for each row, where its name ends plus the gap and the
+     * balance, plus the pane's border and room for a scroll bar. With balances
+     * hidden, there is no limit beyond the usual minimum.
+     */
+    private int treeMinimumWidth() {
+        if (!showTreeBalances) {
+            return TREE_MIN_WIDTH;
+        }
+        java.awt.FontMetrics fm = accountTree.getFontMetrics(accountTree.getFont());
+        int need = 0;
+        for (int row = 0; row < accountTree.getRowCount(); row++) {
+            java.awt.Rectangle r = accountTree.getRowBounds(row);
+            Object node = accountTree.getPathForRow(row).getLastPathComponent();
+            if (r != null && node instanceof DefaultMutableTreeNode n && n.getUserObject() instanceof Account a
+                    && treeBalances.containsKey(a.id())) {
+                need = Math.max(need, r.x + r.width + TREE_BALANCE_GAP
+                        + fm.stringWidth(Money.format(treeBalances.get(a.id()))) + TREE_BALANCE_MARGIN);
+            }
+        }
+        java.awt.Insets in = accountScroll.getInsets();
+        return Math.max(TREE_MIN_WIDTH,
+                need + in.left + in.right + accountScroll.getVerticalScrollBar().getPreferredSize().width);
+    }
+
+    /** Stops the divider being dragged so far left that balances would cover account names. */
+    private void updateTreeMinimumWidth() {
+        accountScroll.setMinimumSize(new java.awt.Dimension(treeMinimumWidth(), 0));
+        if (mainSplit.getDividerLocation() < treeMinimumWidth()) {
+            mainSplit.setDividerLocation(treeMinimumWidth());   // e.g. a balance just got wider
+        }
+    }
+
+    /** The widest balance in the tree, in pixels (0 if balances aren't shown). */
+    private int widestTreeBalance() {
+        if (!showTreeBalances) {
+            return 0;
+        }
+        java.awt.FontMetrics fm = accountTree.getFontMetrics(accountTree.getFont());
+        int w = 0;
+        for (long cents : treeBalances.values()) {
+            w = Math.max(w, fm.stringWidth(Money.format(cents)));
+        }
+        return w;
     }
 
     private static String escape(String s) {
@@ -1680,13 +1885,8 @@ public class MainFrame extends javax.swing.JFrame {
             return;
         }
         readTreeBalances();
-        if (accountTree.getModel() instanceof DefaultTreeModel m
-                && m.getRoot() instanceof DefaultMutableTreeNode root) {
-            java.util.Enumeration<javax.swing.tree.TreeNode> e = root.depthFirstEnumeration();
-            while (e.hasMoreElements()) {
-                m.nodeChanged(e.nextElement());
-            }
-        }
+        updateTreeMinimumWidth();                        // a balance may have grown
+        accountScroll.getViewport().repaint();           // the balances are drawn over the tree
     }
 
     /** Edit > Preferences...: application settings, saved for next time. */
@@ -1752,10 +1952,12 @@ public class MainFrame extends javax.swing.JFrame {
     private void fitTreeWidth() {
         java.awt.Insets in = accountScroll.getInsets();
         int width = accountTree.getPreferredSize().width
+                + (showTreeBalances ? widestTreeBalance() + 16 + TREE_BALANCE_MARGIN : 0)   // room for the balances
                 + in.left + in.right
                 + accountScroll.getVerticalScrollBar().getPreferredSize().width   // room if it scrolls
                 + 10;                                                              // a little breathing room
-        mainSplit.setDividerLocation(Math.max(TREE_MIN_WIDTH, Math.min(TREE_MAX_WIDTH, width)));
+        mainSplit.setDividerLocation(Math.max(treeMinimumWidth(), Math.min(TREE_MAX_WIDTH, width)));
+        updateTreeMinimumWidth();
     }
 
     /** The account selected in the tree, or null if none. */
@@ -1785,6 +1987,40 @@ public class MainFrame extends javax.swing.JFrame {
     }
 
     /**
+     * For a credit card with its terms entered: a third summary line with the
+     * available credit and the minimum payment due ("" for other accounts).
+     */
+    private String cardLine(Account a) throws SQLException {
+        CreditCard c = a.type() == AccountType.CREDIT_CARD ? accounts.findCard(a.id()) : null;
+        if (c == null || (c.limitCents() <= 0 && !c.hasMinimumRule())) {
+            return "";
+        }
+        long owed = -accounts.balanceThrough(a.id(), LocalDate.now());
+        StringBuilder s = new StringBuilder("<br>");
+        if (c.limitCents() > 0) {
+            s.append("Available credit: ").append(colored(c.available(owed))).append(" of ")
+             .append(Money.format(c.limitCents())).append(" (").append(c.utilizationPercent(owed)).append("% used)");
+        }
+        if (c.hasMinimumRule() && owed > 0) {
+            LocalDate due = CreditCard.nextDay(c.dueDay(), LocalDate.now());
+            s.append(c.limitCents() > 0 ? "&nbsp;&nbsp; " : "").append("Minimum payment: ")
+             .append(Money.format(c.minimumPayment(owed)))
+             .append(due == null ? "" : " due " + due.format(LedgerTableModel.DISPLAY_DATE));
+        }
+        return s.toString();
+    }
+
+    /** An amount for an HTML label: red when negative, green when positive. */
+    private static String colored(long cents) {
+        String text = Money.format(cents);
+        if (cents == 0) {
+            return text;
+        }
+        Color c = cents < 0 ? NEGATIVE : POSITIVE;
+        return String.format("<font color='#%02x%02x%02x'>%s</font>", c.getRed(), c.getGreen(), c.getBlue(), text);
+    }
+
+    /**
      * Fills the summary pane: account name and type, the cleared balance
      * (reconciled + cleared), and the total balance (every transaction).
      */
@@ -1800,9 +2036,9 @@ public class MainFrame extends javax.swing.JFrame {
         try {
             AccountRepository.Balances b = accounts.balances(a);
             balanceLabel.setText("<html><div align='right'><b><font size='+1'>Cleared Balance: "
-                    + Money.format(b.clearedCents()) + "</font></b><br>"
-                    + "Total Balance (all transactions): " + Money.format(b.totalCents())
-                    + "</div></html>");
+                    + colored(b.clearedCents()) + "</font></b><br>"
+                    + "Total Balance (all transactions): " + colored(b.totalCents())
+                    + cardLine(a) + "</div></html>");
         } catch (SQLException e) {
             balanceLabel.setText("Balance: unavailable");
         }

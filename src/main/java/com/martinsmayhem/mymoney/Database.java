@@ -36,9 +36,11 @@ public class Database implements AutoCloseable {
      *       routing numbers, default category, comments, website
      *   8 - payee_rename (payee names chosen for bank names, remembered from imports)
      *   9 - schedule (scheduled transactions); txn.schedule_id and txn.schedule_date
+     *  10 - loan terms on account: interest rate, original amount, term, interest category
+     *  11 - credit card terms on account: credit limit, statement and due days, minimum payment
      * When changing the schema: bump this, update createSchema(), and add a step to upgrade().
      */
-    public static final int SCHEMA_VERSION = 9;
+    public static final int SCHEMA_VERSION = 11;
 
     private final Path file;
     private final Connection conn;
@@ -248,7 +250,22 @@ public class Database implements AutoCloseable {
                 st.execute("ALTER TABLE txn ADD COLUMN schedule_date TEXT");
                 st.execute("CREATE INDEX idx_txn_schedule ON txn(schedule_id, schedule_date)");
             }
-            // Future: if (fromVersion < 10) { ... }
+            if (fromVersion < 10) {
+                for (String col : new String[] {"interest_rate_milli INTEGER NOT NULL DEFAULT 0",
+                        "original_amount_cents INTEGER NOT NULL DEFAULT 0", "term_months INTEGER NOT NULL DEFAULT 0",
+                        "interest_category TEXT"}) {
+                    st.execute("ALTER TABLE account ADD COLUMN " + col);
+                }
+            }
+            if (fromVersion < 11) {
+                for (String col : new String[] {"credit_limit_cents INTEGER NOT NULL DEFAULT 0",
+                        "statement_day INTEGER NOT NULL DEFAULT 0", "due_day INTEGER NOT NULL DEFAULT 0",
+                        "min_payment_percent_milli INTEGER NOT NULL DEFAULT 0",
+                        "min_payment_floor_cents INTEGER NOT NULL DEFAULT 0"}) {
+                    st.execute("ALTER TABLE account ADD COLUMN " + col);
+                }
+            }
+            // Future: if (fromVersion < 12) { ... }
 
             try (PreparedStatement ps = conn.prepareStatement(
                     "UPDATE meta SET value = ? WHERE key = 'schema_version'")) {
@@ -288,7 +305,16 @@ public class Database implements AutoCloseable {
                 routing_number        TEXT,
                 default_category      TEXT,                      -- category path for new transactions
                 comments              TEXT,
-                website               TEXT
+                website               TEXT,
+                interest_rate_milli   INTEGER NOT NULL DEFAULT 0,   -- loans: annual rate, thousandths of a percent
+                original_amount_cents INTEGER NOT NULL DEFAULT 0,   -- loans: the amount borrowed
+                term_months           INTEGER NOT NULL DEFAULT 0,   -- loans: number of monthly payments
+                interest_category     TEXT,                         -- loans: where the interest part of payments goes
+                credit_limit_cents    INTEGER NOT NULL DEFAULT 0,   -- cards (interest_rate_milli is the APR)
+                statement_day         INTEGER NOT NULL DEFAULT 0,   -- cards: day the statement closes (0 = not set)
+                due_day               INTEGER NOT NULL DEFAULT 0,   -- cards: day the payment is due (0 = not set)
+                min_payment_percent_milli INTEGER NOT NULL DEFAULT 0,  -- cards: minimum payment, % of balance (thousandths)
+                min_payment_floor_cents   INTEGER NOT NULL DEFAULT 0   -- cards: smallest minimum payment
             )
             """,
             """

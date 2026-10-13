@@ -18,9 +18,10 @@ import javax.swing.table.AbstractTableModel;
 /**
  * The ledger for one account, edited in place.
  *
- * Every saved transaction is a row, followed by one blank row for entering a
- * new transaction. The blank row is saved as soon as it gets a Payment or
- * Deposit amount, and a fresh blank row appears below it. Edits to saved rows
+ * Every saved transaction is a row, plus one blank row for entering a new
+ * transaction, placed just below the last transaction dated today or earlier
+ * (so above any future-dated ones). The blank row is saved as soon as it gets
+ * a Payment or Deposit amount, and a fresh blank row takes its place. Edits to saved rows
  * are written to the database as soon as each cell is changed.
  *
  * A reconciled transaction is locked, except for its status, category and
@@ -29,8 +30,8 @@ import javax.swing.table.AbstractTableModel;
  * into a transfer or stop being one, since that would change another
  * account's balance.
  *
- * Rows can be sorted by several columns at once (see sortBy). The blank row
- * always stays at the bottom. Balance is the running balance in date order,
+ * Rows can be sorted by several columns at once (see sortBy); whatever the
+ * sort, future-dated transactions come after the current ones. Balance is the running balance in date order,
  * except when sorting by Status first: then it runs in the order shown, so
  * the last cleared row's balance is the cleared balance. Sorting by Status puts transfers to an
  * envelope (whatever their own status) after Reconciled and Cleared and
@@ -99,6 +100,7 @@ public class LedgerTableModel extends AbstractTableModel {
 
     private final List<SortKey> sortKeys = new ArrayList<>(DEFAULT_SORT);
     private LedgerEntry draft = newDraft(LocalDate.now());   // the blank row
+    private int draftIndex;                                   // its row: below the last current transaction
 
     public LedgerTableModel(TransactionRepository transactions,
                             Consumer<String> onError, Predicate<String> confirm,
@@ -181,17 +183,47 @@ public class LedgerTableModel extends AbstractTableModel {
 
     /** A saved row's amount in cents (negative = payment); 0 for the blank row. */
     public long amountCents(int row) {
-        return isSavedRow(row) ? entries.get(row).amountCents : 0;
+        return isSavedRow(row) ? entryAt(row).amountCents : 0;
+    }
+
+    /** A saved row's running balance in cents; 0 for the blank row. */
+    public long balanceCents(int row) {
+        return isSavedRow(row) ? entryAt(row).balanceCents : 0;
     }
 
     /** True for a saved transaction, false for the blank entry row. */
     public boolean isSavedRow(int row) {
-        return row >= 0 && row < entries.size();
+        return account != null && row >= 0 && row <= entries.size() && row != draftIndex;
     }
 
     /** True for the blank new-transaction row at the bottom. */
     public boolean isDraftRow(int row) {
-        return account != null && row == entries.size();
+        return account != null && row == draftIndex;
+    }
+
+    /** The row of the blank new-transaction row, or -1 if no account is shown. */
+    public int draftRow() {
+        return account == null ? -1 : draftIndex;
+    }
+
+    /** The saved transaction shown in a row (not the blank row: check isSavedRow first). */
+    private LedgerEntry entryAt(int row) {
+        return entries.get(row < draftIndex ? row : row - 1);
+    }
+
+    /**
+     * Puts the blank row just below the last transaction dated today or
+     * earlier, so it sits above the future-dated ones (at the top if every
+     * transaction is in the future, at the bottom if none is).
+     */
+    private void placeDraft() {
+        LocalDate today = LocalDate.now();
+        draftIndex = 0;
+        for (int i = 0; i < entries.size(); i++) {
+            if (!entries.get(i).date.isAfter(today)) {
+                draftIndex = i + 1;
+            }
+        }
     }
 
     /** True if something besides the date (and the default category) has been typed into the new-transaction row. */
@@ -223,7 +255,7 @@ public class LedgerTableModel extends AbstractTableModel {
     public void discardDraft() {
         draft = nextDraft(draft.date);
         if (account != null) {
-            fireTableRowsUpdated(entries.size(), entries.size());
+            fireTableRowsUpdated(draftIndex, draftIndex);
         }
     }
 
@@ -232,13 +264,13 @@ public class LedgerTableModel extends AbstractTableModel {
         if (!isSavedRow(row)) {
             return null;
         }
-        String c = entries.get(row).category;
+        String c = entryAt(row).category;
         return TransactionRepository.isTransfer(c) ? c.substring(1, c.length() - 1) : null;
     }
 
     /** The tag color for a row, or null if it has no (saved) tag. */
     public Color tagColor(int row) {
-        return isSavedRow(row) ? entries.get(row).tagColor : null;
+        return isSavedRow(row) ? entryAt(row).tagColor : null;
     }
 
     /** Re-reads the current account's transactions, keeping the sort (after tags change). */
@@ -254,26 +286,26 @@ public class LedgerTableModel extends AbstractTableModel {
     public int rowNearestToday() {
         LocalDate today = LocalDate.now();
         int best = -1;
-        for (int row = 0; row < entries.size(); row++) {
-            LedgerEntry e = entries.get(row);
+        for (int i = 0; i < entries.size(); i++) {
+            LedgerEntry e = entries.get(i);
             if (e.date.isAfter(today)) {
                 continue;
             }
             if (best < 0) {
-                best = row;
+                best = i;
                 continue;
             }
             LedgerEntry b = entries.get(best);
             if (e.date.isAfter(b.date) || (e.date.equals(b.date) && e.id > b.id)) {
-                best = row;
+                best = i;
             }
         }
-        return best;
+        return best < 0 || best < draftIndex ? best : best + 1;     // skip over the blank row
     }
 
     /** True for a saved transaction dated after today. */
     public boolean isFuture(int row) {
-        return isSavedRow(row) && entries.get(row).date.isAfter(LocalDate.now());
+        return isSavedRow(row) && entryAt(row).date.isAfter(LocalDate.now());
     }
 
     /**
@@ -289,22 +321,22 @@ public class LedgerTableModel extends AbstractTableModel {
 
     /** A saved row's transaction id; 0 for the blank row. */
     public long transactionId(int row) {
-        return isSavedRow(row) ? entries.get(row).id : 0;
+        return isSavedRow(row) ? entryAt(row).id : 0;
     }
 
     /** A copy of a saved row's transaction (null for the blank row), e.g. to schedule it. */
     public LedgerEntry entryCopy(int row) {
-        return isSavedRow(row) ? entries.get(row).copy() : null;
+        return isSavedRow(row) ? entryAt(row).copy() : null;
     }
 
     /** A saved row's date; null for the blank row. */
     public LocalDate transactionDate(int row) {
-        return isSavedRow(row) ? entries.get(row).date : null;
+        return isSavedRow(row) ? entryAt(row).date : null;
     }
 
     /** True for a reconciled transaction: only its status, category and tag can be changed, and it can't be deleted. */
     public boolean isLocked(int row) {
-        return isSavedRow(row) && entries.get(row).status == TxnStatus.RECONCILED;
+        return isSavedRow(row) && entryAt(row).status == TxnStatus.RECONCILED;
     }
 
     public void deleteRow(int row) {
@@ -319,7 +351,7 @@ public class LedgerTableModel extends AbstractTableModel {
         List<Long> ids = new ArrayList<>();
         for (int row : rows) {
             if (isSavedRow(row) && !isLocked(row)) {
-                ids.add(entries.get(row).id);
+                ids.add(entryAt(row).id);
             }
         }
         if (ids.isEmpty()) {
@@ -340,7 +372,7 @@ public class LedgerTableModel extends AbstractTableModel {
     public int countWithMemo(int[] rows) {
         int n = 0;
         for (int row : rows) {
-            if (isSavedRow(row) && !text(entries.get(row).memo).isBlank()) {
+            if (isSavedRow(row) && !text(entryAt(row).memo).isBlank()) {
                 n++;
             }
         }
@@ -351,7 +383,7 @@ public class LedgerTableModel extends AbstractTableModel {
     public int countDownloaded(int[] rows) {
         int n = 0;
         for (int row : rows) {
-            if (isSavedRow(row) && entries.get(row).download != null) {
+            if (isSavedRow(row) && entryAt(row).download != null) {
                 n++;
             }
         }
@@ -362,8 +394,8 @@ public class LedgerTableModel extends AbstractTableModel {
     public void clearDownloaded(int[] rows) {
         List<Long> ids = new ArrayList<>();
         for (int row : rows) {
-            if (isSavedRow(row) && entries.get(row).download != null) {
-                ids.add(entries.get(row).id);
+            if (isSavedRow(row) && entryAt(row).download != null) {
+                ids.add(entryAt(row).id);
             }
         }
         if (ids.isEmpty()) {
@@ -383,8 +415,8 @@ public class LedgerTableModel extends AbstractTableModel {
     public int countWithMemoAndDescription(int[] rows) {
         int n = 0;
         for (int row : rows) {
-            if (isSavedRow(row) && !text(entries.get(row).memo).isBlank()
-                    && !text(entries.get(row).description).isBlank()) {
+            if (isSavedRow(row) && !text(entryAt(row).memo).isBlank()
+                    && !text(entryAt(row).description).isBlank()) {
                 n++;
             }
         }
@@ -401,10 +433,10 @@ public class LedgerTableModel extends AbstractTableModel {
     public void moveMemoToDescription(int[] rows, boolean append) {
         List<LedgerEntry> changes = new ArrayList<>();
         for (int row : rows) {
-            if (!isSavedRow(row) || text(entries.get(row).memo).isBlank()) {
+            if (!isSavedRow(row) || text(entryAt(row).memo).isBlank()) {
                 continue;
             }
-            LedgerEntry e = entries.get(row).copy();
+            LedgerEntry e = entryAt(row).copy();
             String memo = e.memo.trim();
             String description = text(e.description).trim();
             e.description = append && !description.isEmpty() ? description + " - " + memo : memo;
@@ -460,7 +492,7 @@ public class LedgerTableModel extends AbstractTableModel {
                 if (!isSavedRow(row)) {
                     continue;
                 }
-                LedgerEntry e = entries.get(row);
+                LedgerEntry e = entryAt(row);
                 if (column == STATUS && e.status == TxnStatus.RECONCILING) {
                     reconciling++;
                 } else if (e.status == TxnStatus.RECONCILED && column != STATUS && column != TAG
@@ -542,20 +574,20 @@ public class LedgerTableModel extends AbstractTableModel {
         if (account == null || column == BALANCE || column == FILES || column == DOWNLOAD) {
             return false;
         }
-        if (column == STATUS && isSavedRow(row) && entries.get(row).status == TxnStatus.RECONCILING) {
+        if (column == STATUS && isSavedRow(row) && entryAt(row).status == TxnStatus.RECONCILING) {
             return false;                       // only Reconcile Account changes these
         }
         if (isLocked(row)) {
             // Reconciled: status, tag and category only (a transfer's category stays put).
             return column == STATUS || column == TAG
-                    || (column == CATEGORY && reconciledCategoryChangeOk(entries.get(row).category, null));
+                    || (column == CATEGORY && reconciledCategoryChangeOk(entryAt(row).category, null));
         }
         return true;
     }
 
     @Override
     public Object getValueAt(int row, int column) {
-        LedgerEntry e = isSavedRow(row) ? entries.get(row) : draft;
+        LedgerEntry e = isSavedRow(row) ? entryAt(row) : draft;
         return switch (column) {
             case DATE -> e.date == null ? "" : e.date.format(DISPLAY_DATE);
             case NUM -> text(e.checkNumber);
@@ -583,7 +615,7 @@ public class LedgerTableModel extends AbstractTableModel {
             return;
         }
         boolean isDraft = !isSavedRow(row);
-        LedgerEntry e = isDraft ? draft : entries.get(row);
+        LedgerEntry e = isDraft ? draft : entryAt(row);
 
         // Un-reconciling needs a yes from the user.
         if (column == STATUS && e.status == TxnStatus.RECONCILED && !isDraft) {
@@ -731,9 +763,12 @@ public class LedgerTableModel extends AbstractTableModel {
         sortKeys.set(level, new SortKey(k.column(), !k.ascending()));
     }
 
-    /** The sort levels in order, then date and entry order to break ties. */
+    /** Current before future; then the sort levels in order, then date and entry order to break ties. */
     private Comparator<LedgerEntry> sortOrder() {
-        Comparator<LedgerEntry> order = (a, b) -> 0;
+        // Future-dated transactions always come after the rest, whatever the sort,
+        // so the blank row (placed after the last current one) divides the two.
+        LocalDate today = LocalDate.now();
+        Comparator<LedgerEntry> order = Comparator.comparing(e -> e.date.isAfter(today));
         for (SortKey k : sortKeys) {
             order = order.thenComparing(columnOrder(k.column(), k.ascending()));
         }
@@ -750,7 +785,13 @@ public class LedgerTableModel extends AbstractTableModel {
             case TAG -> by(e -> blankToNull(e.tag), String.CASE_INSENSITIVE_ORDER, ascending);
             case DESCRIPTION -> by(e -> blankToNull(e.description), String.CASE_INSENSITIVE_ORDER, ascending);
             case MEMO -> by(e -> blankToNull(e.memo), String.CASE_INSENSITIVE_ORDER, ascending);
-            case STATUS -> by(LedgerTableModel::statusRank, Comparator.<Integer>naturalOrder(), ascending);
+            case STATUS -> {
+                // Future transactions are all simply upcoming: status doesn't separate them, so the
+                // next sort level (normally Date) keeps them in date order, Scheduled or not.
+                LocalDate today = LocalDate.now();
+                yield by(e -> e.date.isAfter(today) ? FUTURE_RANK : statusRank(e),
+                        Comparator.<Integer>naturalOrder(), ascending);
+            }
             case PAYMENT -> amountOrder(true, ascending);
             case DEPOSIT -> amountOrder(false, ascending);
             case BALANCE -> by(e -> e.balanceCents, Comparator.<Long>naturalOrder(), ascending);
@@ -760,8 +801,11 @@ public class LedgerTableModel extends AbstractTableModel {
         };
     }
 
+    /** Every future-dated transaction's place when sorting by Status (they are kept apart anyway). */
+    private static final Integer FUTURE_RANK = 0;
+
     /**
-     * Where a row goes when sorting by Status: Reconciled, Cleared, then
+     * Where a current row goes when sorting by Status: Reconciled, Cleared, then
      * transfers to an envelope (whatever their status), then Pending, Paid
      * and Scheduled. Null (no status) always goes last.
      */
@@ -859,6 +903,7 @@ public class LedgerTableModel extends AbstractTableModel {
             }
         }
         entries.sort(sortOrder());
+        placeDraft();
     }
 
     /** Running balance down the all list, in its current order. */

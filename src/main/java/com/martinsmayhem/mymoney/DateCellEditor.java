@@ -48,6 +48,7 @@ public class DateCellEditor extends DefaultCellEditor {
         super(new DateField());
         DateField dateField = (DateField) getComponent();
         this.field = dateField;
+        AutoCompleteEditor.editingColors(dateField);
         this.calendar = new CalendarPanel(date -> {
             setText(date);
             stopCellEditing();                      // a click picks and saves
