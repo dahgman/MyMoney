@@ -32,8 +32,10 @@ import java.util.Set;
  *  - Accepting a match keeps its payee, puts the bank's description in its
  *    memo, and marks it Cleared. Linking to one already cleared does the
  *    same but leaves its status alone (a reconciled one stays reconciled).
- *  - Adding as new creates a Cleared transaction in the account's default
- *    category, under the payee the user chose. If that isn't the bank's name,
+ *  - Adding as new creates a Cleared transaction under the payee the user
+ *    chose: a payment to a payee that pays a debt goes to that debt account
+ *    (see TransactionRepository.debtCategoryForPayee), anything else to the
+ *    account's default category. If that isn't the bank's name,
  *    the choice is remembered (payee_rename) and offered the next time that
  *    bank name is downloaded, in any account.
  * Either way it is marked as downloaded (matched or new), which the ledger
@@ -235,22 +237,30 @@ final class DownloadImporter {
     long addNew(Account account, Download d, String payee) throws SQLException {
         conn.setAutoCommit(false);
         try {
-            TransactionRepository.Target category = transactions.target(account.defaultCategory());
-            try (PreparedStatement ps = conn.prepareStatement("INSERT INTO txn (account_id, txn_date, payee_id,"
-                    + " check_number, memo, status, download_status, download_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")) {
-                ps.setLong(1, account.id());
-                ps.setString(2, d.date().toString());
-                TransactionRepository.setId(ps, 3, transactions.payeeId(payee));
-                TransactionRepository.setText(ps, 4, d.checkNumber());
-                boolean renamed = !norm(payee).equals(norm(d.payee()));
-                TransactionRepository.setText(ps, 5, renamed ? d.description() : d.memo());
-                ps.setString(6, TxnStatus.CLEARED.code());
-                ps.setString(7, NEW);
-                TransactionRepository.setText(ps, 8, d.id());
+            // A payee that pays a debt goes to that debt (a transfer, split for a loan);
+            // otherwise the account's default category.
+            String debt = d.amountCents() < 0 ? transactions.debtCategoryForPayee(payee) : null;
+            if (debt != null && debt.equalsIgnoreCase("[" + account.name() + "]")) {
+                debt = null;
+            }
+            LedgerEntry e = new LedgerEntry();
+            e.date = d.date();
+            e.payee = payee;
+            e.checkNumber = d.checkNumber();
+            boolean renamed = !norm(payee).equals(norm(d.payee()));
+            e.memo = renamed ? d.description() : d.memo();
+            e.category = debt != null ? debt : account.defaultCategory();
+            e.amountCents = d.amountCents();
+            e.status = TxnStatus.CLEARED;
+            transactions.insertInCurrentTransaction(account.id(), e);
+            long id = e.id;
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "UPDATE txn SET download_status = ?, download_id = ? WHERE id = ?")) {
+                ps.setString(1, NEW);
+                TransactionRepository.setText(ps, 2, d.id());
+                ps.setLong(3, id);
                 ps.executeUpdate();
             }
-            long id = transactions.lastInsertId();
-            transactions.insertSplit(id, d.amountCents(), category, null, null);
             renames.remember(d.payee(), payee);
             conn.commit();
             return id;

@@ -84,7 +84,7 @@ final class ScheduleDialog extends JDialog {
                 accountCombo.setSelectedItem(a);
             }
         }
-        suggest(payeeField, payees);
+        AutoComplete payeeComplete = suggest(payeeField, payees);
         // Typing or picking a payee already used fills in the category it had last time.
         payeeField.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
             @Override
@@ -102,10 +102,11 @@ final class ScheduleDialog extends JDialog {
             }
         });
         categoryComplete = suggest(categoryField, categories);
-        suggest(tagField, tags);
-        payeeField.setText(text(editing.payee()));
-        categoryField.setText(text(editing.category()));
-        tagField.setText(text(editing.tag()));
+        AutoComplete tagComplete = suggest(tagField, tags);
+        // The starting values are set quietly: they shouldn't open the suggestion lists.
+        payeeComplete.setTextQuietly(text(editing.payee()));
+        categoryComplete.setTextQuietly(text(editing.category()));
+        tagComplete.setTextQuietly(text(editing.tag()));
         descriptionField.setText(text(editing.description()));
         memoField.setText(text(editing.memo()));
         if (editing.amountCents() < 0) {

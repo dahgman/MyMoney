@@ -101,6 +101,13 @@ public class MainFrame extends javax.swing.JFrame {
         this.ledgerModel = new LedgerTableModel(transactionRepo,
                 this::showError, this::confirm, this::afterLedgerChange);
         initComponents();
+        ledgerModel.setPayeeDebtCategory(p -> {         // a payee that pays a debt: transfer to it
+            try {
+                return transactionRepo.debtCategoryForPayee(p);
+            } catch (SQLException e) {
+                return null;
+            }
+        });
         setupWebsiteLink();
         setTitle("MyMoney - " + db.getFile().getFileName());
         setSize(1000, 650);
@@ -136,7 +143,8 @@ public class MainFrame extends javax.swing.JFrame {
     private void selectTransactionNearToday() {
         int row = ledgerModel.rowNearestToday();
         if (row >= 0) {
-            ledgerTable.changeSelection(row, LedgerTableModel.DATE, false, false);   // also scrolls to it
+            ledgerTable.changeSelection(row, ledgerTable.convertColumnIndexToView(LedgerTableModel.DATE),
+                    false, false);                                                    // also scrolls to it
         }
         ledgerTable.requestFocusInWindow();
     }
@@ -263,6 +271,123 @@ public class MainFrame extends javax.swing.JFrame {
         // Show the download column right after C. (Done last: everything above
         // finds columns by their model number, which is also their place until now.)
         ledgerTable.getColumnModel().moveColumn(LedgerTableModel.DOWNLOAD, LedgerTableModel.STATUS + 1);
+        setupColumnChooser();
+    }
+
+    // ----- Choosing the columns ------------------------------------------------
+
+    /** Every ledger column by its number (hidden ones too), and their usual left-to-right order. */
+    private final Map<Integer, javax.swing.table.TableColumn> ledgerColumns = new HashMap<>();
+    private final List<Integer> defaultColumnOrder = new ArrayList<>();
+
+    /**
+     * Right-clicking the ledger's column headers lists every column with a
+     * checkmark: untick one to hide it, tick it to show it again (in its
+     * usual place). Date always stays. The choice is remembered.
+     */
+    private void setupColumnChooser() {
+        TableColumnModel cols = ledgerTable.getColumnModel();
+        for (int v = 0; v < cols.getColumnCount(); v++) {
+            javax.swing.table.TableColumn c = cols.getColumn(v);
+            ledgerColumns.put(c.getModelIndex(), c);
+            defaultColumnOrder.add(c.getModelIndex());
+        }
+        for (String part : config.getString(AppConfig.HIDDEN_LEDGER_COLUMNS, "").split(",")) {
+            try {
+                int column = Integer.parseInt(part.trim());
+                if (column != LedgerTableModel.DATE && ledgerColumns.containsKey(column)) {
+                    cols.removeColumn(ledgerColumns.get(column));
+                }
+            } catch (NumberFormatException ignored) {
+                // blank or damaged: nothing hidden
+            }
+        }
+        ledgerTable.getTableHeader().addMouseListener(new MouseAdapter() {
+            @Override
+            public void mousePressed(MouseEvent e) {
+                showMenu(e);
+            }
+
+            @Override
+            public void mouseReleased(MouseEvent e) {
+                showMenu(e);                            // Windows opens menus on release
+            }
+
+            private void showMenu(MouseEvent e) {
+                if (e.isPopupTrigger()) {
+                    columnMenu().show(ledgerTable.getTableHeader(), e.getX(), e.getY());
+                }
+            }
+        });
+    }
+
+    private JPopupMenu columnMenu() {
+        JPopupMenu menu = new JPopupMenu();
+        JMenuItem title = new JMenuItem("Show columns:");
+        title.setEnabled(false);
+        menu.add(title);
+        for (int column : defaultColumnOrder) {
+            javax.swing.JCheckBoxMenuItem item = new javax.swing.JCheckBoxMenuItem(
+                    LedgerTableModel.columnName(column), isColumnShown(column));
+            item.setEnabled(column != LedgerTableModel.DATE);   // Date always stays
+            item.addActionListener(e -> setColumnShown(column, item.isSelected()));
+            menu.add(item);
+        }
+        menu.addSeparator();
+        menu.add(menuItem("Show All Columns", () -> {
+            for (int column : defaultColumnOrder) {
+                setColumnShown(column, true);
+            }
+        }));
+        return menu;
+    }
+
+    private boolean isColumnShown(int column) {
+        return ledgerTable.convertColumnIndexToView(column) >= 0;
+    }
+
+    /** Hides or shows a ledger column (shown again just after the nearest shown column before it), and saves it. */
+    private void setColumnShown(int column, boolean show) {
+        if (show == isColumnShown(column) || column == LedgerTableModel.DATE) {
+            return;
+        }
+        if (ledgerTable.isEditing()) {
+            ledgerTable.getCellEditor().stopCellEditing();
+        }
+        TableColumnModel cols = ledgerTable.getColumnModel();
+        if (show) {
+            int place = 0;                              // after the shown columns that usually come before it
+            for (int c : defaultColumnOrder) {
+                if (c == column) {
+                    break;
+                }
+                int v = ledgerTable.convertColumnIndexToView(c);
+                if (v >= 0) {
+                    place = Math.max(place, v + 1);
+                }
+            }
+            cols.addColumn(ledgerColumns.get(column));
+            cols.moveColumn(cols.getColumnCount() - 1, place);
+        } else {
+            cols.removeColumn(ledgerColumns.get(column));
+        }
+        StringBuilder hidden = new StringBuilder();
+        for (int c : defaultColumnOrder) {
+            if (!isColumnShown(c)) {
+                hidden.append(hidden.length() == 0 ? "" : ",").append(c);
+            }
+        }
+        try {
+            config.setString(AppConfig.HIDDEN_LEDGER_COLUMNS, hidden.toString());
+        } catch (SQLException e) {
+            // it applies now, just not next time
+        }
+    }
+
+    /** A column's place on screen, or (if it's hidden) the fallback column's. */
+    private int visibleColumnOr(int column, int fallback) {
+        int v = ledgerTable.convertColumnIndexToView(column);
+        return v >= 0 ? v : ledgerTable.convertColumnIndexToView(fallback);
     }
 
     /**
@@ -537,7 +662,8 @@ public class MainFrame extends javax.swing.JFrame {
         }
         int rows = ledgerTable.getRowCount();
         if (rows > rowsBefore) {                        // a new transaction was saved: on to the next blank row
-            ledgerTable.changeSelection(ledgerModel.draftRow(), LedgerTableModel.DATE, false, false);
+            ledgerTable.changeSelection(ledgerModel.draftRow(),
+                    ledgerTable.convertColumnIndexToView(LedgerTableModel.DATE), false, false);
         } else if (row + 1 < rows) {
             ledgerTable.changeSelection(row + 1, column, false, false);
         }
@@ -583,7 +709,7 @@ public class MainFrame extends javax.swing.JFrame {
             resolvingDraft = true;
             try {
                 ledgerTable.changeSelection(draftRow,
-                        ledgerTable.convertColumnIndexToView(LedgerTableModel.PAYMENT), false, false);
+                        visibleColumnOr(LedgerTableModel.PAYMENT, LedgerTableModel.DATE), false, false);
                 lastLedgerRow = draftRow;
             } finally {
                 resolvingDraft = false;
@@ -645,6 +771,7 @@ public class MainFrame extends javax.swing.JFrame {
         accountMenu.add(menuItem("Manage Payee Renames...", this::managePayeeRenames));
         accountMenu.addSeparator();
         accountMenu.add(menuItem("Scheduled Transactions...", this::manageSchedules));
+        accountMenu.add(menuItem("Debt Snowball...", this::debtSnowball));
 
         // Edit menu: changes to the selected transactions.
         javax.swing.JMenu editMenu = new javax.swing.JMenu("Edit");
@@ -939,6 +1066,24 @@ public class MainFrame extends javax.swing.JFrame {
             ledgerModel.reload();
             updateSummary(selectedAccount());
             refreshTreeBalances();
+        }
+    }
+
+    /** Account > Debt Snowball...: the plan for paying off the loans and cards; it can update their schedules. */
+    private void debtSnowball() {
+        if (ledgerTable.isEditing()) {
+            ledgerTable.getCellEditor().stopCellEditing();
+        }
+        resolveDraft(false);
+        try {
+            DebtSnowballDialog dlg = new DebtSnowballDialog(this, db.getConnection(), accounts, schedules);
+            dlg.setVisible(true);
+            if (dlg.schedulesChanged()) {
+                checkpoint("Debt Snowball");
+                createScheduledTransactions(true);
+            }
+        } catch (SQLException e) {
+            showError("Could not open the debt snowball:\n" + e.getMessage());
         }
     }
 

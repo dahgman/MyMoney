@@ -144,7 +144,7 @@ final class AutoComplete {
 
     /** Fills the drop-down with entries that start with, then contain, the text. */
     private void showMatches(String text, boolean showAllIfBlank) {
-        if (!field.isShowing()) {
+        if (!field.isShowing() || !field.isFocusOwner()) {   // only while typing in this field
             hidePopup();
             return;
         }

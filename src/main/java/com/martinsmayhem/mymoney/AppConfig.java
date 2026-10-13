@@ -155,6 +155,24 @@ public class AppConfig implements AutoCloseable {
     /** Scheduled transactions: how many days ahead their occurrences are put in the ledger. */
     public static final String SCHEDULE_DAYS = "schedule_days";
     public static final int DEFAULT_SCHEDULE_DAYS = 14;
+    /** The ledger columns hidden from view: their numbers (LedgerTableModel), comma-separated. */
+    public static final String HIDDEN_LEDGER_COLUMNS = "hidden_ledger_columns";
+
+    /** A text preference, or def if it was never set (or can't be read). */
+    public String getString(String key, String def) {
+        try (PreparedStatement ps = conn.prepareStatement("SELECT value FROM setting WHERE key = ?")) {
+            ps.setString(1, key);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getString(1) : def;
+            }
+        } catch (SQLException e) {
+            return def;
+        }
+    }
+
+    public void setString(String key, String value) throws SQLException {
+        setValue(key, value);
+    }
 
     /** A whole-number preference, or def if it was never set (or can't be read). */
     public int getInt(String key, int def) {

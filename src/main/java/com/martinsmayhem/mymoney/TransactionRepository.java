@@ -334,6 +334,45 @@ public class TransactionRepository {
         }
     }
 
+    /**
+     * The debt (loan or credit card) a payee pays, as a transfer category like
+     * "[Honda Credit]", or null. Taken from a scheduled transaction for that
+     * payee that's linked to a debt account, or else from the payee's most
+     * recent transfer into one.
+     */
+    public String debtCategoryForPayee(String payee) throws SQLException {
+        if (payee == null || payee.isBlank()) {
+            return null;
+        }
+        String[] queries = {
+            """
+            SELECT s.category FROM schedule s
+            JOIN account a ON '[' || a.name || ']' = s.category COLLATE NOCASE
+            WHERE s.payee = ? COLLATE NOCASE AND a.type IN ('LOAN', 'CREDIT_CARD')
+            ORDER BY s.id DESC LIMIT 1
+            """,
+            """
+            SELECT '[' || xa.name || ']'
+            FROM txn t
+            JOIN payee p ON p.id = t.payee_id
+            JOIN split s ON s.txn_id = t.id
+            JOIN account xa ON xa.id = s.transfer_account_id
+            WHERE p.name = ? COLLATE NOCASE AND xa.type IN ('LOAN', 'CREDIT_CARD') AND s.amount_cents < 0
+            ORDER BY t.txn_date DESC, t.id DESC LIMIT 1
+            """};
+        for (String sql : queries) {
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setString(1, payee.trim());
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (rs.next()) {
+                        return rs.getString(1);
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
     public List<String> findPayeeNames() throws SQLException {
         List<String> names = new ArrayList<>();
         try (Statement st = conn.createStatement();

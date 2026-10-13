@@ -46,6 +46,7 @@ final class LoanScheduleDialog extends JDialog {
 
         JLabel terms = new JLabel(Money.format(loan.originalCents()) + " at " + Loan.formatRate(loan.rateMilli())
                 + " for " + loan.termMonths() + " months: " + Money.format(loan.regularPayment()) + " a month"
+                + (loan.paymentCents() > 0 ? " (lender's)" : "")
                 + (loan.maturity() == null ? "" : ", maturing " + loan.maturity().format(LedgerTableModel.DISPLAY_DATE))
                 + (owedNow > 0 ? ".    Owed today: " + Money.format(owedNow) : "."));
         ButtonGroup g = new ButtonGroup();
@@ -125,8 +126,7 @@ final class LoanScheduleDialog extends JDialog {
             first = nextPaymentDate();
         } else {
             owed = loan.originalCents();
-            LocalDate start = loan.origination() == null ? LocalDate.now() : loan.origination();
-            first = start.plusMonths(1);
+            first = loan.firstPaymentDate() == null ? LocalDate.now().plusMonths(1) : loan.firstPaymentDate();
         }
         List<Loan.Payment> plain = loan.schedule(owed, first, payment);
         rows = extra == 0 ? plain : loan.schedule(owed, first, payment + extra);
@@ -145,13 +145,13 @@ final class LoanScheduleDialog extends JDialog {
         summary.setText(text);
     }
 
-    /** The next monthly payment date after today, on the origination date's day of the month. */
+    /** The next monthly payment date after today, on the first payment's day of the month. */
     private LocalDate nextPaymentDate() {
         LocalDate today = LocalDate.now();
-        LocalDate start = loan.origination() == null ? today : loan.origination();
-        LocalDate d = start;
+        LocalDate first = loan.firstPaymentDate() == null ? today : loan.firstPaymentDate();
+        LocalDate d = first;
         for (int n = 1; !d.isAfter(today); n++) {
-            d = start.plusMonths(n);
+            d = first.plusMonths(n);
         }
         return d;
     }

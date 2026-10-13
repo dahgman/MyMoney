@@ -62,6 +62,11 @@ public class LedgerTableModel extends AbstractTableModel {
         "Date", "Num", "Payee", "Category", "Tag", "Description", "Memo", "C",
         "Payment", "Deposit", "Balance", "", "D"
     };
+    /** A column's full name (the header may be shorter, like "C" for Status). */
+    public static String columnName(int column) {
+        return NAMES[column];
+    }
+
     /** Column names for messages and Undo labels ("Undo Change Status"). */
     private static final String[] NAMES = {
         "Date", "Num", "Payee", "Category", "Tag", "Description", "Memo", "Status",
@@ -93,6 +98,7 @@ public class LedgerTableModel extends AbstractTableModel {
     private final List<LedgerEntry> all = new ArrayList<>();       // every transaction, with balances
     private final List<LedgerEntry> entries = new ArrayList<>();   // the rows shown (filtered, sorted)
     private String filterText = "";              // lower case; "" = no text filter
+    private Function<String, String> payeeDebtCategory = p -> null;   // payee -> "[Debt Account]" or null
     private boolean hideReconciled;
     /** The sort used whenever an account is selected: Status, then Date. */
     private static final List<SortKey> DEFAULT_SORT =
@@ -127,6 +133,15 @@ public class LedgerTableModel extends AbstractTableModel {
             draft.category = defaultCategory();         // the default changed: an untouched blank row follows
         }
         refresh();
+    }
+
+    /**
+     * How to find the debt a payee pays (a "[Loan]" or "[Card]" transfer
+     * category). Typing such a payee in the blank row fills in that category,
+     * so the payment reduces the debt's balance.
+     */
+    public void setPayeeDebtCategory(Function<String, String> lookup) {
+        payeeDebtCategory = lookup;
     }
 
     /** The account's default category for new transactions, or null. */
@@ -649,6 +664,13 @@ public class LedgerTableModel extends AbstractTableModel {
         }
         if (!isDraft && e.sameContent(before)) {
             return;                                     // nothing actually changed: no save, no undo step
+        }
+        if (isDraft && column == PAYEE && (text(e.category).isBlank()
+                || text(e.category).equals(text(defaultCategory())))) {
+            String debt = payeeDebtCategory.apply(e.payee);
+            if (debt != null && account != null && !debt.equalsIgnoreCase("[" + account.name() + "]")) {
+                e.category = debt;                      // a debt payment: transfer it to the debt account
+            }
         }
 
         // 2. Save it.

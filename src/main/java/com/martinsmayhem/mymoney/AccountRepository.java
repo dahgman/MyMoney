@@ -152,8 +152,9 @@ public class AccountRepository {
      * Details.bankName is the lender, accountNumber the loan number and
      * startDate the origination date.
      */
-    public record LoanTerms(int rateMilli, long originalCents, int termMonths, String interestCategory) {
-        public static final LoanTerms NONE = new LoanTerms(0, 0, 0, null);
+    public record LoanTerms(int rateMilli, long originalCents, int termMonths, String interestCategory,
+                            long paymentCents, java.time.LocalDate firstPayment) {
+        public static final LoanTerms NONE = new LoanTerms(0, 0, 0, null, 0, null);
     }
 
     /**
@@ -183,7 +184,7 @@ public class AccountRepository {
         }
         LoanTerms t = d.loan();
         return new Loan(accountId, t.rateMilli(), t.originalCents(), t.termMonths(), d.startDate(),
-                t.interestCategory());
+                t.interestCategory(), t.paymentCents(), t.firstPayment());
     }
 
     public Details findDetails(long id) throws SQLException {
@@ -191,7 +192,7 @@ public class AccountRepository {
                 + " start_date, opening_balance_cents, balance_adjustment_cents, account_number, routing_number,"
                 + " default_category, comments, website, interest_rate_milli, original_amount_cents, term_months,"
                 + " interest_category, credit_limit_cents, statement_day, due_day, min_payment_percent_milli,"
-                + " min_payment_floor_cents FROM account WHERE id = ?")) {
+                + " min_payment_floor_cents, loan_payment_cents, first_payment_date FROM account WHERE id = ?")) {
             ps.setLong(1, id);
             try (ResultSet rs = ps.executeQuery()) {
                 if (!rs.next()) {
@@ -206,7 +207,9 @@ public class AccountRepository {
                         rs.getLong(7), rs.getLong(8), rs.getString(9), rs.getString(10), rs.getString(11),
                         rs.getString(12), rs.getString(13),
                         type != AccountType.LOAN ? LoanTerms.NONE      // only the terms for its type
-                                : new LoanTerms(rs.getInt(14), rs.getLong(15), rs.getInt(16), rs.getString(17)),
+                                : new LoanTerms(rs.getInt(14), rs.getLong(15), rs.getInt(16), rs.getString(17),
+                                        rs.getLong(23), rs.getString(24) == null ? null
+                                                : java.time.LocalDate.parse(rs.getString(24))),
                         type != AccountType.CREDIT_CARD ? CardTerms.NONE
                                 : new CardTerms(rs.getInt(14), rs.getLong(18), rs.getInt(19), rs.getInt(20),
                                         rs.getInt(21), rs.getLong(22)));
@@ -221,7 +224,7 @@ public class AccountRepository {
                 + " account_number = ?, routing_number = ?, default_category = ?, comments = ?, website = ?,"
                 + " interest_rate_milli = ?, original_amount_cents = ?, term_months = ?, interest_category = ?,"
                 + " credit_limit_cents = ?, statement_day = ?, due_day = ?, min_payment_percent_milli = ?,"
-                + " min_payment_floor_cents = ? WHERE id = ?")) {
+                + " min_payment_floor_cents = ?, loan_payment_cents = ?, first_payment_date = ? WHERE id = ?")) {
             ps.setString(1, d.name());
             ps.setString(2, d.type().name());
             TransactionRepository.setId(ps, 3, d.parentId());
@@ -246,7 +249,9 @@ public class AccountRepository {
             ps.setInt(19, c.dueDay());
             ps.setInt(20, c.minPercentMilli());
             ps.setLong(21, c.minFloorCents());
-            ps.setLong(22, d.id());
+            ps.setLong(22, t.paymentCents());
+            TransactionRepository.setText(ps, 23, t.firstPayment() == null ? null : t.firstPayment().toString());
+            ps.setLong(24, d.id());
             ps.executeUpdate();
         }
     }

@@ -17,10 +17,24 @@ import java.util.List;
  * @param rateMilli      annual interest rate in thousandths of a percent; 0 = no interest
  * @param originalCents  the amount borrowed (positive)
  * @param termMonths     how many monthly payments, from the origination date
- * @param origination    when the loan was made (payments start a month later); may be null
+ * @param origination    when the loan was made; may be null
+ * @param paymentCents   the lender's monthly payment, if entered (0 = use the calculated one)
+ * @param firstPayment   when the first payment is due, if entered (null = a month after origination)
+ *
+ * Lenders' payments often differ a little from the standard calculation: many
+ * charge interest daily, and the first payment is often due ~45 days after
+ * signing, so that first stretch's extra interest is spread over every
+ * payment. Entering the lender's payment and first date makes the schedule
+ * follow the actual loan.
  */
 record Loan(long accountId, int rateMilli, long originalCents, int termMonths, LocalDate origination,
-            String interestCategory) {
+            String interestCategory, long paymentCents, LocalDate firstPayment) {
+
+    /** Without the lender's payment or first payment date (both calculated). */
+    Loan(long accountId, int rateMilli, long originalCents, int termMonths, LocalDate origination,
+         String interestCategory) {
+        this(accountId, rateMilli, originalCents, termMonths, origination, interestCategory, 0, null);
+    }
 
     /** The category interest goes to when a loan doesn't name one. */
     static final String DEFAULT_INTEREST_CATEGORY = "Interest:Loan";
@@ -63,9 +77,19 @@ record Loan(long accountId, int rateMilli, long originalCents, int termMonths, L
                 .setScale(0, RoundingMode.HALF_UP).longValue();
     }
 
-    /** The regular monthly payment that pays off the original amount over the term. */
+    /** The regular monthly payment: the lender's, if entered, else the calculated one. */
     long regularPayment() {
+        return paymentCents > 0 ? paymentCents : calculatedPayment();
+    }
+
+    /** The standard monthly payment that pays off the original amount over the term. */
+    long calculatedPayment() {
         return paymentFor(originalCents, termMonths);
+    }
+
+    /** When the first payment is due: as entered, else a month after origination (null if neither is known). */
+    LocalDate firstPaymentDate() {
+        return firstPayment != null ? firstPayment : origination == null ? null : origination.plusMonths(1);
     }
 
     /** The monthly payment that pays off owed over months payments (standard amortization). */
@@ -83,9 +107,10 @@ record Loan(long accountId, int rateMilli, long originalCents, int termMonths, L
         return payment.setScale(0, RoundingMode.UP).longValue();
     }
 
-    /** When the last payment is due under the original terms, or null if they aren't known. */
+    /** When the last payment is due under the original terms (the term's last payment), or null if unknown. */
     LocalDate maturity() {
-        return origination == null || termMonths <= 0 ? null : origination.plusMonths(termMonths);
+        LocalDate first = firstPaymentDate();
+        return first == null || termMonths <= 0 ? null : first.plusMonths(termMonths - 1L);
     }
 
     /** One row of an amortization schedule. */

@@ -38,9 +38,10 @@ public class Database implements AutoCloseable {
      *   9 - schedule (scheduled transactions); txn.schedule_id and txn.schedule_date
      *  10 - loan terms on account: interest rate, original amount, term, interest category
      *  11 - credit card terms on account: credit limit, statement and due days, minimum payment
+     *  12 - loans: the lender's monthly payment and first payment date
      * When changing the schema: bump this, update createSchema(), and add a step to upgrade().
      */
-    public static final int SCHEMA_VERSION = 11;
+    public static final int SCHEMA_VERSION = 12;
 
     private final Path file;
     private final Connection conn;
@@ -265,7 +266,11 @@ public class Database implements AutoCloseable {
                     st.execute("ALTER TABLE account ADD COLUMN " + col);
                 }
             }
-            // Future: if (fromVersion < 12) { ... }
+            if (fromVersion < 12) {
+                st.execute("ALTER TABLE account ADD COLUMN loan_payment_cents INTEGER NOT NULL DEFAULT 0");
+                st.execute("ALTER TABLE account ADD COLUMN first_payment_date TEXT");
+            }
+            // Future: if (fromVersion < 13) { ... }
 
             try (PreparedStatement ps = conn.prepareStatement(
                     "UPDATE meta SET value = ? WHERE key = 'schema_version'")) {
@@ -314,7 +319,9 @@ public class Database implements AutoCloseable {
                 statement_day         INTEGER NOT NULL DEFAULT 0,   -- cards: day the statement closes (0 = not set)
                 due_day               INTEGER NOT NULL DEFAULT 0,   -- cards: day the payment is due (0 = not set)
                 min_payment_percent_milli INTEGER NOT NULL DEFAULT 0,  -- cards: minimum payment, % of balance (thousandths)
-                min_payment_floor_cents   INTEGER NOT NULL DEFAULT 0   -- cards: smallest minimum payment
+                min_payment_floor_cents   INTEGER NOT NULL DEFAULT 0,  -- cards: smallest minimum payment
+                loan_payment_cents    INTEGER NOT NULL DEFAULT 0,   -- loans: the lender's payment (0 = calculated)
+                first_payment_date    TEXT                          -- loans: first payment due (NULL = a month in)
             )
             """,
             """
