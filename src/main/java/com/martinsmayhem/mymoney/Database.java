@@ -35,9 +35,10 @@ public class Database implements AutoCloseable {
      *   7 - account details: bank name, start date, balance adjustment, account and
      *       routing numbers, default category, comments, website
      *   8 - payee_rename (payee names chosen for bank names, remembered from imports)
+     *   9 - schedule (scheduled transactions); txn.schedule_id and txn.schedule_date
      * When changing the schema: bump this, update createSchema(), and add a step to upgrade().
      */
-    public static final int SCHEMA_VERSION = 8;
+    public static final int SCHEMA_VERSION = 9;
 
     private final Path file;
     private final Connection conn;
@@ -223,7 +224,31 @@ public class Database implements AutoCloseable {
                     )
                     """);
             }
-            // Future: if (fromVersion < 9) { ... }
+            if (fromVersion < 9) {
+                st.execute("""
+                    CREATE TABLE schedule (
+                        id                INTEGER PRIMARY KEY,
+                        account_id        INTEGER NOT NULL REFERENCES account(id),
+                        payee             TEXT,
+                        category          TEXT,                    -- category path, or "[Account]" for a transfer
+                        tag               TEXT,
+                        description       TEXT,
+                        memo              TEXT,
+                        amount_cents      INTEGER NOT NULL,        -- negative = payment, positive = deposit
+                        unit              TEXT    NOT NULL,        -- DAY, WEEK, MONTH, YEAR or SEMIMONTH
+                        interval          INTEGER NOT NULL DEFAULT 1,
+                        second_day        INTEGER,                 -- SEMIMONTH: the second day of the month (31 = last)
+                        start_date        TEXT    NOT NULL,        -- the first occurrence (ISO)
+                        end_date          TEXT,                    -- no occurrences after this; NULL = no end date
+                        max_count         INTEGER,                 -- no more than this many; NULL = no limit
+                        generated_through TEXT    NOT NULL         -- occurrences up to this date have been created
+                    )
+                    """);
+                st.execute("ALTER TABLE txn ADD COLUMN schedule_id INTEGER REFERENCES schedule(id) ON DELETE SET NULL");
+                st.execute("ALTER TABLE txn ADD COLUMN schedule_date TEXT");
+                st.execute("CREATE INDEX idx_txn_schedule ON txn(schedule_id, schedule_date)");
+            }
+            // Future: if (fromVersion < 10) { ... }
 
             try (PreparedStatement ps = conn.prepareStatement(
                     "UPDATE meta SET value = ? WHERE key = 'schema_version'")) {
@@ -300,7 +325,9 @@ public class Database implements AutoCloseable {
                 tag_id       INTEGER REFERENCES tag(id),         -- one tag per transaction
                 pre_reconcile_status TEXT,                       -- while status is I: the status to go back to
                 download_status TEXT,                            -- from a bank download: M = matched, N = new
-                download_id     TEXT                             -- the download's id (OFX FITID, or made up for QIF)
+                download_id     TEXT,                            -- the download's id (OFX FITID, or made up for QIF)
+                schedule_id     INTEGER REFERENCES schedule(id) ON DELETE SET NULL,  -- created by this schedule
+                schedule_date   TEXT                             -- the scheduled date it was created for
             )
             """,
             """
@@ -343,6 +370,26 @@ public class Database implements AutoCloseable {
             "CREATE INDEX idx_attachment_txn ON attachment(txn_id)",
             "CREATE INDEX idx_attachment_reconciliation ON attachment(reconciliation_id)",
             "CREATE INDEX idx_txn_download ON txn(account_id, download_id)",
+            "CREATE INDEX idx_txn_schedule ON txn(schedule_id, schedule_date)",
+            """
+            CREATE TABLE schedule (
+                id                INTEGER PRIMARY KEY,
+                account_id        INTEGER NOT NULL REFERENCES account(id),
+                payee             TEXT,
+                category          TEXT,                    -- category path, or "[Account]" for a transfer
+                tag               TEXT,
+                description       TEXT,
+                memo              TEXT,
+                amount_cents      INTEGER NOT NULL,        -- negative = payment, positive = deposit
+                unit              TEXT    NOT NULL,        -- DAY, WEEK, MONTH, YEAR or SEMIMONTH
+                interval          INTEGER NOT NULL DEFAULT 1,
+                second_day        INTEGER,                 -- SEMIMONTH: the second day of the month (31 = last)
+                start_date        TEXT    NOT NULL,        -- the first occurrence (ISO)
+                end_date          TEXT,                    -- no occurrences after this; NULL = no end date
+                max_count         INTEGER,                 -- no more than this many; NULL = no limit
+                generated_through TEXT    NOT NULL         -- occurrences up to this date have been created
+            )
+            """,
             """
             CREATE TABLE payee_rename (
                 id       INTEGER PRIMARY KEY,

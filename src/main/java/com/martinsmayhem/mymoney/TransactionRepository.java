@@ -107,36 +107,41 @@ public class TransactionRepository {
      * other account.
      */
     public void insert(long accountId, LedgerEntry entry) throws SQLException {
-        conn.setAutoCommit(false);
-        try {
-            Target target = target(entry.category);       // check the category first
-            String sql = "INSERT INTO txn (account_id, txn_date, payee_id, check_number,"
-                    + " memo, status, description, tag_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
-            try (PreparedStatement ps = conn.prepareStatement(sql)) {
-                ps.setLong(1, accountId);
-                ps.setString(2, entry.date.toString());     // ISO: YYYY-MM-DD
-                setId(ps, 3, payeeId(entry.payee));
-                setText(ps, 4, entry.checkNumber);
-                setText(ps, 5, entry.memo);
-                ps.setString(6, entry.status.code());
-                setText(ps, 7, entry.description);
-                setId(ps, 8, tagId(entry.tag));
-                ps.executeUpdate();
-            }
-            long id = lastInsertId();
-            long splitId = insertSplit(id, entry.amountCents, target, null, null);
-            if (target.transferAccountId() != null) {
-                createMirror(splitId);
-            }
-            conn.commit();
-            entry.id = id;
-        } catch (SQLException e) {
-            conn.rollback();
-            throw e;
-        } finally {
-            conn.setAutoCommit(true);
-        }
+        inTransaction(() -> insertInCurrentTransaction(accountId, entry));
     }
+
+    /**
+     * As insert(), for a caller that already has a database transaction open
+     * (ScheduleRepository): doesn't commit or roll back.
+     */
+    void insertInCurrentTransaction(long accountId, LedgerEntry entry) throws SQLException {
+        Target target = target(entry.category);       // check the category first
+        String sql = "INSERT INTO txn (account_id, txn_date, payee_id, check_number,"
+                + " memo, status, description, tag_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setLong(1, accountId);
+            ps.setString(2, entry.date.toString());     // ISO: YYYY-MM-DD
+            setId(ps, 3, payeeId(entry.payee));
+            setText(ps, 4, entry.checkNumber);
+            setText(ps, 5, entry.memo);
+            ps.setString(6, entry.status.code());
+            setText(ps, 7, entry.description);
+            setId(ps, 8, tagId(entry.tag));
+            ps.executeUpdate();
+        }
+        long id = lastInsertId();
+        long splitId = insertSplit(id, entry.amountCents, target, null, null);
+        if (target.transferAccountId() != null) {
+            createMirror(splitId);
+        }
+        entry.id = id;
+    }
+
+    /** As delete(), for a caller that already has a database transaction open: doesn't commit or roll back. */
+    void deleteInCurrentTransaction(long txnId) throws SQLException {
+        doDelete(txnId);
+    }
+
 
     /**
      * Saves changes to an existing transaction, keeping the matching side of
@@ -252,6 +257,44 @@ public class TransactionRepository {
     }
 
     /** Payee names, sorted, for the bulk Change Payee drop-down. */
+    /**
+     * The category most recently used with a payee (ignoring case), as the
+     * Category column shows it ("Food:Groceries", or "[Savings]" for a
+     * transfer); null if the payee has never had one. Split transactions are
+     * skipped. The payee's transactions in accountId come first (so the
+     * other side of a transfer, in another account, doesn't win).
+     */
+    public String lastCategoryForPayee(String payee, long accountId) throws SQLException {
+        if (payee == null || payee.isBlank()) {
+            return null;
+        }
+        String sql = """
+            SELECT CASE
+                       WHEN xa.id IS NOT NULL THEN '[' || xa.name || ']'
+                       WHEN cp.id IS NULL THEN c.name
+                       ELSE cp.name || ':' || c.name
+                   END
+            FROM txn t
+            JOIN payee p ON p.id = t.payee_id
+            JOIN split s ON s.txn_id = t.id
+            LEFT JOIN category c ON c.id = s.category_id
+            LEFT JOIN category cp ON cp.id = c.parent_id
+            LEFT JOIN account xa ON xa.id = s.transfer_account_id
+            WHERE p.name = ? COLLATE NOCASE
+              AND (c.id IS NOT NULL OR xa.id IS NOT NULL)
+              AND (SELECT COUNT(*) FROM split WHERE txn_id = t.id) = 1
+            ORDER BY t.account_id = ? DESC, t.txn_date DESC, t.id DESC
+            LIMIT 1
+            """;
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, payee.trim());
+            ps.setLong(2, accountId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getString(1) : null;
+            }
+        }
+    }
+
     public List<String> findPayeeNames() throws SQLException {
         List<String> names = new ArrayList<>();
         try (Statement st = conn.createStatement();

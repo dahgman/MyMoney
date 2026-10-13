@@ -66,6 +66,7 @@ public class MainFrame extends javax.swing.JFrame {
     private final LedgerTableModel ledgerModel;
     private final AttachmentRepository attachments;
     private final ReconcileRepository reconciles;
+    private final ScheduleRepository schedules;
 
     private UndoLog undoLog;                 // null if undo couldn't be set up
     private JMenuItem undoItem;
@@ -96,6 +97,7 @@ public class MainFrame extends javax.swing.JFrame {
         this.transactionRepo = new TransactionRepository(db);
         this.attachments = new AttachmentRepository(db);
         this.reconciles = new ReconcileRepository(db);
+        this.schedules = new ScheduleRepository(db);
         this.ledgerModel = new LedgerTableModel(transactionRepo,
                 this::showError, this::confirm, this::afterLedgerChange);
         initComponents();
@@ -110,6 +112,7 @@ public class MainFrame extends javax.swing.JFrame {
             showError("Undo is not available for this file:\n" + e.getMessage());
         }
         updateUndoMenu();
+        createScheduledTransactions(false);              // bring scheduled transactions up to date
         showTreeBalances = config.getBoolean(AppConfig.SHOW_TREE_BALANCES, false);
         setupTreeRenderer();
         accountTree.addTreeSelectionListener(e -> {
@@ -570,6 +573,8 @@ public class MainFrame extends javax.swing.JFrame {
         accountMenu.addSeparator();
         accountMenu.add(menuItem("Manage Tags...", this::manageTags));
         accountMenu.add(menuItem("Manage Payee Renames...", this::managePayeeRenames));
+        accountMenu.addSeparator();
+        accountMenu.add(menuItem("Scheduled Transactions...", this::manageSchedules));
 
         // Edit menu: changes to the selected transactions.
         javax.swing.JMenu editMenu = new javax.swing.JMenu("Edit");
@@ -582,6 +587,7 @@ public class MainFrame extends javax.swing.JFrame {
             menu.add(menuItem("Change Status...", () -> bulkChange(LedgerTableModel.STATUS)));
             menu.add(menuItem("Move Memo to Description", this::moveMemoToDescription));
             menu.add(menuItem("Clear Downloaded Flag", this::clearDownloadedFlag));
+            menu.add(menuItem("Add to Schedule...", this::addToSchedule));
             menu.add(new javax.swing.JSeparator());
             menu.add(menuItem("Attachments...", () -> showAttachments(ledgerTable.getSelectedRow())));
             menu.add(new javax.swing.JSeparator());
@@ -832,6 +838,105 @@ public class MainFrame extends javax.swing.JFrame {
             checkpoint("Tag Changes");
             ledgerModel.reload();
         }
+    }
+
+    // ----- Scheduled transactions ------------------------------------------------
+
+    /**
+     * Puts every schedule's occurrences in the ledger, up to the number of
+     * days ahead set in Preferences, as one undo step. Problems are shown; if
+     * refresh, the ledger and balances are redrawn.
+     */
+    private void createScheduledTransactions(boolean refresh) {
+        List<String> problems = new ArrayList<>();
+        int created;
+        try {
+            created = schedules.generate(
+                    config.getInt(AppConfig.SCHEDULE_DAYS, AppConfig.DEFAULT_SCHEDULE_DAYS), problems);
+        } catch (SQLException e) {
+            showError("Could not create the scheduled transactions:\n" + e.getMessage());
+            return;
+        }
+        if (!problems.isEmpty()) {
+            showError("Some scheduled transactions could not be created:\n\n" + String.join("\n", problems));
+        }
+        if (created > 0) {
+            checkpoint("Create Scheduled Transactions");
+        }
+        if (refresh) {
+            ledgerModel.reload();
+            updateSummary(selectedAccount());
+            refreshTreeBalances();
+        }
+    }
+
+    /** Account > Scheduled Transactions...: the list of schedules, to add, edit and delete. */
+    private void manageSchedules() {
+        if (ledgerTable.isEditing()) {
+            ledgerTable.getCellEditor().stopCellEditing();
+        }
+        resolveDraft(false);
+        ScheduleListDialog dlg = new ScheduleListDialog(this, schedules, accounts,
+                s -> openScheduleForm(s != null ? s : blankSchedule()));
+        dlg.setVisible(true);
+        if (dlg.wasChanged()) {
+            checkpoint("Scheduled Transactions");
+            createScheduledTransactions(true);
+        }
+    }
+
+    /**
+     * Edit > Add to Schedule... (and the ledger's right-click): the schedule
+     * form, filled in from the selected transaction, repeating monthly from a
+     * month after it.
+     */
+    private void addToSchedule() {
+        Account a = ledgerModel.currentAccount();
+        LedgerEntry e = ledgerModel.entryCopy(ledgerTable.getSelectedRow());
+        if (a == null || e == null) {
+            showError("Select a saved transaction to schedule first.");
+            return;
+        }
+        if (ledgerTable.isEditing()) {
+            ledgerTable.getCellEditor().stopCellEditing();
+        }
+        if (TransactionRepository.SPLIT_LABEL.equals(e.category)) {
+            showError("Split transactions can't be scheduled yet.");
+            return;
+        }
+        ScheduleRepository.Schedule template = new ScheduleRepository.Schedule(0, a.id(), e.payee, e.category,
+                e.tag, e.description, e.memo, e.amountCents,
+                new Recurrence(Recurrence.Unit.MONTH, 1, 15, e.date.plusMonths(1), null, null));
+        if (openScheduleForm(template) != null) {
+            checkpoint("Add to Schedule");
+            createScheduledTransactions(true);
+        }
+    }
+
+    /** A new, empty schedule: the selected account, monthly from today. */
+    private ScheduleRepository.Schedule blankSchedule() {
+        Account a = selectedAccount();
+        return new ScheduleRepository.Schedule(0, a == null ? 0 : a.id(), null, null, null, null, null, 0,
+                new Recurrence(Recurrence.Unit.MONTH, 1, 15, LocalDate.now(), null, null));
+    }
+
+    /** Opens the schedule form; returns the saved schedule's id, or null if it wasn't saved. */
+    private Long openScheduleForm(ScheduleRepository.Schedule s) {
+        List<Account> all;
+        try {
+            all = accounts.findAll();
+        } catch (SQLException e) {
+            showError("Could not read the accounts:\n" + e.getMessage());
+            return null;
+        }
+        if (all.isEmpty()) {
+            showError("Add an account first.");
+            return null;
+        }
+        ScheduleDialog dlg = new ScheduleDialog(this, schedules, s, all, this::payeeNames,
+                this::categoryPaths, this::tagNames, this::lastCategoryForPayee);
+        dlg.setVisible(true);
+        return dlg.savedId();
     }
 
     /** Account > Manage Payee Renames...: the payee names remembered for bank names during imports. */
@@ -1446,6 +1551,15 @@ public class MainFrame extends javax.swing.JFrame {
         return value == null ? "" : value.toString().trim();
     }
 
+    /** The category a payee had last time, or null. */
+    private String lastCategoryForPayee(String payee, long accountId) {
+        try {
+            return transactionRepo.lastCategoryForPayee(payee, accountId);
+        } catch (SQLException e) {
+            return null;
+        }
+    }
+
     private List<String> payeeNames() {
         try {
             return transactionRepo.findPayeeNames();
@@ -1592,7 +1706,17 @@ public class MainFrame extends javax.swing.JFrame {
         matchRow.add(new JLabel("days"));
         JLabel importHeading = new JLabel("Bank download imports:");
         importHeading.setBorder(BorderFactory.createEmptyBorder(10, 0, 0, 0));
-        int r = JOptionPane.showConfirmDialog(this, new Object[] {balances, importHeading, matchRow},
+        int oldScheduleDays = config.getInt(AppConfig.SCHEDULE_DAYS, AppConfig.DEFAULT_SCHEDULE_DAYS);
+        javax.swing.JSpinner scheduleDays = new javax.swing.JSpinner(
+                new javax.swing.SpinnerNumberModel(oldScheduleDays, 0, 365, 1));
+        JPanel scheduleRow = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 4, 0));
+        scheduleRow.add(new JLabel("Put them in the ledger"));
+        scheduleRow.add(scheduleDays);
+        scheduleRow.add(new JLabel("days ahead"));
+        JLabel scheduleHeading = new JLabel("Scheduled transactions:");
+        scheduleHeading.setBorder(BorderFactory.createEmptyBorder(10, 0, 0, 0));
+        int r = JOptionPane.showConfirmDialog(this,
+                new Object[] {balances, importHeading, matchRow, scheduleHeading, scheduleRow},
                 "Preferences", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
         if (r != JOptionPane.OK_OPTION) {
             return;
@@ -1601,8 +1725,12 @@ public class MainFrame extends javax.swing.JFrame {
             config.setBoolean(AppConfig.MATCH_DOWNLOADS, match.isSelected());
             config.setInt(AppConfig.MATCH_DAYS, (Integer) days.getValue());
             config.setBoolean(AppConfig.SHOW_TREE_BALANCES, balances.isSelected());
+            config.setInt(AppConfig.SCHEDULE_DAYS, (Integer) scheduleDays.getValue());
         } catch (SQLException e) {
             showError("The preferences apply now, but could not be saved for next time:\n" + e.getMessage());
+        }
+        if ((Integer) scheduleDays.getValue() > oldScheduleDays) {
+            createScheduledTransactions(true);           // further ahead: create the extra ones now
         }
         if (balances.isSelected() == showTreeBalances) {
             return;

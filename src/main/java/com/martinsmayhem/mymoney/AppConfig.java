@@ -152,6 +152,9 @@ public class AppConfig implements AutoCloseable {
     /** Bank imports: how many days apart a download and an existing transaction may be to match. */
     public static final String MATCH_DAYS = "match_days";
     public static final int DEFAULT_MATCH_DAYS = 5;
+    /** Scheduled transactions: how many days ahead their occurrences are put in the ledger. */
+    public static final String SCHEDULE_DAYS = "schedule_days";
+    public static final int DEFAULT_SCHEDULE_DAYS = 14;
 
     /** A whole-number preference, or def if it was never set (or can't be read). */
     public int getInt(String key, int def) {

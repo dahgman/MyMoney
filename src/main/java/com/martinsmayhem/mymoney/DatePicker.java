@@ -41,6 +41,25 @@ final class DatePicker extends JPanel {
         field.setText(date == null ? "" : date.format(LedgerTableModel.DISPLAY_DATE));
     }
 
+    /** Calls r whenever the date is typed or picked. */
+    void onChange(Runnable r) {
+        field.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
+            @Override
+            public void insertUpdate(javax.swing.event.DocumentEvent e) {
+                r.run();
+            }
+
+            @Override
+            public void removeUpdate(javax.swing.event.DocumentEvent e) {
+                r.run();
+            }
+
+            @Override
+            public void changedUpdate(javax.swing.event.DocumentEvent e) {
+            }
+        });
+    }
+
     @Override
     public void setEnabled(boolean enabled) {
         super.setEnabled(enabled);

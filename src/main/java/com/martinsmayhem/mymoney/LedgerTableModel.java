@@ -292,6 +292,11 @@ public class LedgerTableModel extends AbstractTableModel {
         return isSavedRow(row) ? entries.get(row).id : 0;
     }
 
+    /** A copy of a saved row's transaction (null for the blank row), e.g. to schedule it. */
+    public LedgerEntry entryCopy(int row) {
+        return isSavedRow(row) ? entries.get(row).copy() : null;
+    }
+
     /** A saved row's date; null for the blank row. */
     public LocalDate transactionDate(int row) {
         return isSavedRow(row) ? entries.get(row).date : null;

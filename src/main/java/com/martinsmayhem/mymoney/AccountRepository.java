@@ -295,6 +295,7 @@ public class AccountRepository {
             for (String sql : new String[] {
                     "DELETE FROM attachment WHERE account_id = ?",      // the files stay on disk
                     "DELETE FROM reconciliation WHERE account_id = ?",
+                    "DELETE FROM schedule WHERE account_id = ?",
                     "DELETE FROM txn WHERE account_id = ?"}) {         // their splits go too (ON DELETE CASCADE)
                 try (PreparedStatement ps = conn.prepareStatement(sql)) {
                     ps.setLong(1, id);
