@@ -16,7 +16,8 @@ import javax.swing.JComponent;
 import javax.swing.ToolTipManager;
 
 /**
- * An account's balance over the past 12 months, as a line: amount up the
+ * An account's balance over time (the past 12 months; for a loan, what's left
+ * to pay since it was made), as a line: amount up the
  * side, time along the bottom, on a light gray background whatever the theme.
  * The line is black where the balance is zero or more and red where it's
  * negative, changing color exactly where it crosses the black zero line.
@@ -113,9 +114,13 @@ final class BalanceChart extends JComponent {
         g2.setStroke(new BasicStroke(1f));
         g2.drawLine(left, y(0), right, y(0));
 
-        // Time along the bottom: month ticks (labeled) and half-height Sunday ticks.
+        // Time along the bottom: month ticks (labeled) and half-height Sunday ticks. Over a
+        // long stretch (a loan's whole life) the Sundays are left out once they'd crowd, and
+        // only the month labels with room for them are drawn.
         g2.setColor(TEXT);
         g2.drawLine(left, bottom, right, bottom);
+        boolean sundays = (right - left) * 7.0 / balances.length >= 3;
+        int labelEnd = Integer.MIN_VALUE;
         for (int i = 0; i < balances.length; i++) {
             LocalDate d = start.plusDays(i);
             int x = x(i);
@@ -123,8 +128,11 @@ final class BalanceChart extends JComponent {
                 g2.drawLine(x, bottom, x, bottom + MONTH_TICK);
                 String m = String.valueOf(d.getMonthValue());
                 int lx = Math.max(left, Math.min(right - fm.stringWidth(m), x - fm.stringWidth(m) / 2));
-                g2.drawString(m, lx, bottom + MONTH_TICK + fm.getAscent());
-            } else if (d.getDayOfWeek() == DayOfWeek.SUNDAY) {
+                if (lx > labelEnd + 4) {
+                    g2.drawString(m, lx, bottom + MONTH_TICK + fm.getAscent());
+                    labelEnd = lx + fm.stringWidth(m);
+                }
+            } else if (sundays && d.getDayOfWeek() == DayOfWeek.SUNDAY) {
                 g2.drawLine(x, bottom, x, bottom + SUNDAY_TICK);
             }
         }

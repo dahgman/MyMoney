@@ -2579,7 +2579,20 @@ public class MainFrame extends javax.swing.JFrame {
         try {
             LocalDate today = LocalDate.now();
             LocalDate from = today.minusYears(1);
-            balanceChart.setData(from, accounts.dailyBalances(a.id(), from, today));
+            if (a.type() == AccountType.LOAN) {
+                // A loan: what's left to pay, falling, from the day it was made.
+                AccountRepository.Details d = accounts.findDetails(a.id());
+                if (d != null && d.startDate() != null && d.startDate().isBefore(today)) {
+                    from = d.startDate();
+                }
+                long[] owed = accounts.dailyBalances(a.id(), from, today);
+                for (int i = 0; i < owed.length; i++) {
+                    owed[i] = -owed[i];
+                }
+                balanceChart.setData(from, owed);
+            } else {
+                balanceChart.setData(from, accounts.dailyBalances(a.id(), from, today));
+            }
         } catch (SQLException e) {
             balanceChart.setData(null, null);
         }
