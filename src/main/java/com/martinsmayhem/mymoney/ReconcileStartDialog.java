@@ -126,7 +126,7 @@ final class ReconcileStartDialog extends JDialog {
             if (endingField.getText().isBlank()) {
                 throw new IllegalArgumentException("Enter the ending balance from your statement.");
             }
-            endingCents = Money.parse(endingField.getText());
+            endingCents = Money.parseTyped(endingField.getText());
             statementDate = datePicker.getDate();
         } catch (IllegalArgumentException e) {
             JOptionPane.showMessageDialog(this, e.getMessage(), getTitle(), JOptionPane.ERROR_MESSAGE);

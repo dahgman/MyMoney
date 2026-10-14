@@ -10,8 +10,9 @@ import java.util.List;
 /**
  * A loan account's terms, and the arithmetic of paying it off.
  *
- * Payments are monthly. Each month's interest is the balance owed times the
- * annual rate / 12; the rest of a payment is principal. The interest rate is
+ * Payments are monthly. Each payment's interest is for the month before it
+ * (see InterestMethod); the rest of a payment is principal. The interest in payments actually made is worked out by
+ * LoanInterest, monthly or daily as the lender charges it. The interest rate is
  * kept in thousandths of a percent (6.375% = 6375) so it is exact.
  *
  * @param rateMilli      annual interest rate in thousandths of a percent; 0 = no interest
@@ -20,6 +21,7 @@ import java.util.List;
  * @param origination    when the loan was made; may be null
  * @param paymentCents   the lender's monthly payment, if entered (0 = use the calculated one)
  * @param firstPayment   when the first payment is due, if entered (null = a month after origination)
+ * @param interestMethod how the lender works out the interest in each payment
  *
  * Lenders' payments often differ a little from the standard calculation: many
  * charge interest daily, and the first payment is often due ~45 days after
@@ -28,7 +30,48 @@ import java.util.List;
  * follow the actual loan.
  */
 record Loan(long accountId, int rateMilli, long originalCents, int termMonths, LocalDate origination,
-            String interestCategory, long paymentCents, LocalDate firstPayment) {
+            String interestCategory, long paymentCents, LocalDate firstPayment, InterestMethod interestMethod) {
+
+    /** How a lender works out the interest in each payment. */
+    enum InterestMethod {
+        /** Rate / 12 on what's owed, once a month, however many days the month has. */
+        MONTHLY("M"),
+        /** Rate / 365 on what's owed, for each day since the last payment (when it was actually paid). */
+        DAILY("D"),
+        /**
+         * Rate / 365 on what's owed, for each day of the lender's schedule: from one due
+         * date to the next, whenever the payment is actually made (Affirm and other
+         * pay-over-time lenders). The daily rate is cut to 8 decimal places, as they do.
+         */
+        DUE_DATES("S");
+
+        private final String code;
+
+        InterestMethod(String code) {
+            this.code = code;
+        }
+
+        /** As stored in the file (account.interest_method). */
+        String code() {
+            return code;
+        }
+
+        static InterestMethod fromCode(String code) {
+            for (InterestMethod m : values()) {
+                if (m.code.equals(code)) {
+                    return m;
+                }
+            }
+            return MONTHLY;
+        }
+    }
+
+    /** With monthly interest. */
+    Loan(long accountId, int rateMilli, long originalCents, int termMonths, LocalDate origination,
+         String interestCategory, long paymentCents, LocalDate firstPayment) {
+        this(accountId, rateMilli, originalCents, termMonths, origination, interestCategory, paymentCents,
+                firstPayment, InterestMethod.MONTHLY);
+    }
 
     /** Without the lender's payment or first payment date (both calculated). */
     Loan(long accountId, int rateMilli, long originalCents, int termMonths, LocalDate origination,
@@ -77,6 +120,43 @@ record Loan(long accountId, int rateMilli, long originalCents, int termMonths, L
                 .setScale(0, RoundingMode.HALF_UP).longValue();
     }
 
+    /**
+     * One day's interest on a balance owed (positive cents), unrounded: daily
+     * interest adds these up between payments and rounds the total.
+     */
+    BigDecimal dailyInterest(long owedCents) {
+        if (owedCents <= 0 || rateMilli <= 0) {
+            return BigDecimal.ZERO;
+        }
+        return BigDecimal.valueOf(owedCents).multiply(dailyRate(), MC);
+    }
+
+    /**
+     * The interest for one period of the schedule, from one due date to the
+     * next, on a balance owed (positive cents), rounded to the cent: a
+     * month's interest for monthly loans, else a day's for each day.
+     */
+    long periodInterest(long owedCents, LocalDate from, LocalDate to) {
+        if (interestMethod == InterestMethod.MONTHLY || from == null || to == null) {
+            return monthlyInterest(owedCents);
+        }
+        long days = java.time.temporal.ChronoUnit.DAYS.between(from, to);
+        return dailyInterest(owedCents).multiply(BigDecimal.valueOf(days), MC)
+                .setScale(0, RoundingMode.HALF_UP).longValue();
+    }
+
+    /** The interest rate for one day: rate / 365 (for DUE_DATES, cut to 8 decimal places as those lenders do). */
+    private BigDecimal dailyRate() {
+        BigDecimal r = BigDecimal.valueOf(rateMilli).divide(BigDecimal.valueOf(100_000L * 365), MC);
+        return interestMethod == InterestMethod.DUE_DATES ? r.setScale(8, RoundingMode.DOWN) : r;
+    }
+
+    /** The day payment number n (1 = the first) is due, or null if the loan has no dates. */
+    LocalDate dueDate(int n) {
+        LocalDate first = firstPaymentDate();
+        return first == null ? null : first.plusMonths(n - 1L);
+    }
+
     /** The regular monthly payment: the lender's, if entered, else the calculated one. */
     long regularPayment() {
         return paymentCents > 0 ? paymentCents : calculatedPayment();
@@ -120,14 +200,15 @@ record Loan(long accountId, int rateMilli, long originalCents, int termMonths, L
 
     /**
      * The payments that pay off owedCents, from firstDate on, monthly, paying
-     * paymentCents each time (the last one is just what's left). Stops after
-     * 1200 payments if the payment never covers the interest.
+     * paymentCents each time (the last one is just what's left). Each one's
+     * interest is for the month before it. Stops after 1200 payments if the
+     * payment never covers the interest.
      */
     List<Payment> schedule(long owedCents, LocalDate firstDate, long paymentCents) {
         List<Payment> rows = new ArrayList<>();
         long owed = owedCents;
         for (int n = 1; owed > 0 && n <= 1200; n++) {
-            long interest = monthlyInterest(owed);
+            long interest = periodInterest(owed, firstDate.plusMonths(n - 2L), firstDate.plusMonths(n - 1L));
             long pay = Math.min(paymentCents, owed + interest);
             if (pay <= interest && n > 1) {
                 break;                                  // the payment doesn't even cover the interest

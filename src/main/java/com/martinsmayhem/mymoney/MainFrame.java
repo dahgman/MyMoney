@@ -73,6 +73,16 @@ public class MainFrame extends javax.swing.JFrame {
     private JMenuItem redoItem;
     private boolean reloadingTree;           // true while loadAccounts rebuilds the tree
     private boolean showTreeBalances;        // preference: cleared balances in the account tree
+    private boolean showGroupTotals;         // preference: totals on the tree's type headings (with balances)
+    private boolean enterNextField;          // preference: Enter moves to the next field (else down a row)
+
+    /**
+     * The transaction being edited, kept white until it's committed: from the
+     * first field edited until another transaction is selected (or a new one
+     * is saved). Its id, 0 for the blank new-transaction row, NO_EDIT if none.
+     */
+    private long editingTxn = NO_EDIT;
+    private static final long NO_EDIT = Long.MIN_VALUE;
     private Map<Long, Long> treeBalances = new HashMap<>();   // account id -> cleared (envelopes: current) balance
 
     private int lastLedgerRow = -1;          // for noticing when the new-transaction row is left
@@ -83,6 +93,8 @@ public class MainFrame extends javax.swing.JFrame {
     private final JLabel filterCountLabel = new JLabel(" ");
     private final JLabel selectionTotalLabel = new JLabel(" ");
     private final JLabel websiteLabel = new JLabel();     // the account's website, under its name
+    private final JLabel loanNumberLabel = new JLabel();  // a loan's number, under its name (smaller)
+    private final BalanceChart balanceChart = new BalanceChart();   // the past 12 months, in the top panel
     private String websiteUrl;
 
     /**
@@ -109,10 +121,17 @@ public class MainFrame extends javax.swing.JFrame {
             }
         });
         setupWebsiteLink();
-        setTitle("MyMoney - " + db.getFile().getFileName());
+        setTitle("MyMoney - " + db.getFile());           // the full path of the open file
         setSize(1000, 650);
+        LedgerTableModel.setDateFormat(config.getString(AppConfig.DATE_FORMAT, LedgerTableModel.DATE_FORMATS[0]));
         setupLedger();
+        setupSummary();
         setupMenus();
+        try {
+            transactionRepo.recalculateAllLoans();      // loan interest, before there's anything to undo
+        } catch (SQLException e) {
+            showError("Could not work out the interest in your loans' payments:\n" + e.getMessage());
+        }
         try {
             undoLog = new UndoLog(db);
         } catch (SQLException e) {
@@ -121,15 +140,23 @@ public class MainFrame extends javax.swing.JFrame {
         updateUndoMenu();
         createScheduledTransactions(false);              // bring scheduled transactions up to date
         showTreeBalances = config.getBoolean(AppConfig.SHOW_TREE_BALANCES, false);
+        showGroupTotals = config.getBoolean(AppConfig.SHOW_TREE_GROUP_TOTALS, true);
+        enterNextField = config.getBoolean(AppConfig.ENTER_NEXT_FIELD, false);
+        Money.setAutoDecimal(config.getBoolean(AppConfig.AUTO_DECIMAL, false));
         setupTreeRenderer();
         accountTree.addTreeSelectionListener(e -> {
             if (!reloadingTree) {
+                if (selectedAccount() != null) {
+                    showLedgerView();                    // an account picked: its ledger, not the summary
+                }
                 showAccount(selectedAccount());
             }
         });
         loadAccounts(null);
-        if (accountTree.getRowCount() > 0) {
-            accountTree.setSelectionRow(0);    // open on the first account
+        if (config.getBoolean(AppConfig.OPEN_ON_SUMMARY, false)) {
+            showSummary();                     // the preference: open on Summary
+        } else if (accountTree.getRowCount() > 0) {
+            selectFirstAccount();              // open on the first account
         } else {
             showAccount(null);                 // no accounts yet
         }
@@ -156,7 +183,7 @@ public class MainFrame extends javax.swing.JFrame {
         ledgerTable.setSurrendersFocusOnKeystroke(true);                         // typing goes straight into the cell
 
         TableColumnModel cols = ledgerTable.getColumnModel();
-        int[] widths = {110, 60, 160, 160, 110, 150, 130, 30, 90, 90, 100, 30, 30};
+        int[] widths = {110, 60, 160, 160, 110, 150, 130, 30, 90, 90, 100, 30, 30, 90, 90};
         for (int i = 0; i < widths.length; i++) {
             cols.getColumn(i).setPreferredWidth(widths[i]);
         }
@@ -168,7 +195,15 @@ public class MainFrame extends javax.swing.JFrame {
         cols.getColumn(LedgerTableModel.BALANCE).setMinWidth(90);
 
         // The whole row being edited is drawn white (see muted): redraw it as editing starts and stops.
-        ledgerTable.addPropertyChangeListener("tableCellEditor", e -> ledgerTable.repaint());
+        ledgerTable.addPropertyChangeListener("tableCellEditor", e -> {
+            // (The table names the editor before the row, so the row is read just after.)
+            SwingUtilities.invokeLater(() -> {
+                if (ledgerTable.isEditing() && ledgerTable.getEditingRow() >= 0) {
+                    editingTxn = ledgerModel.transactionId(ledgerTable.getEditingRow());   // being edited
+                }
+                ledgerTable.repaint();
+            });
+        });
 
         // Future-dated transactions are drawn with grey text, in every column.
         ledgerTable.setDefaultRenderer(Object.class, muted(ledgerTable.getDefaultRenderer(Object.class)));
@@ -178,6 +213,8 @@ public class MainFrame extends javax.swing.JFrame {
         TableCellRenderer money = muted(right);
         cols.getColumn(LedgerTableModel.PAYMENT).setCellRenderer(money);
         cols.getColumn(LedgerTableModel.DEPOSIT).setCellRenderer(money);
+        cols.getColumn(LedgerTableModel.INTEREST).setCellRenderer(money);
+        cols.getColumn(LedgerTableModel.PRINCIPAL).setCellRenderer(money);
         // Balance: red when negative, green when positive (selected rows keep the selection colors).
         cols.getColumn(LedgerTableModel.BALANCE).setCellRenderer((table, value, isSelected, hasFocus, row, column) -> {
             java.awt.Component c = money.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
@@ -247,6 +284,10 @@ public class MainFrame extends javax.swing.JFrame {
                 return;
             }
             int row = ledgerTable.getSelectedRow();
+            if (editingTxn != NO_EDIT && !isEditingTxnRow(row)) {
+                editingTxn = NO_EDIT;                   // moved to another transaction: it's committed
+                ledgerTable.repaint();
+            }
             int previous = lastLedgerRow;
             lastLedgerRow = row;
             if (row != previous && ledgerModel.isDraftRow(previous) && ledgerModel.draftHasData()) {
@@ -271,6 +312,10 @@ public class MainFrame extends javax.swing.JFrame {
         // Show the download column right after C. (Done last: everything above
         // finds columns by their model number, which is also their place until now.)
         ledgerTable.getColumnModel().moveColumn(LedgerTableModel.DOWNLOAD, LedgerTableModel.STATUS + 1);
+        // And a loan's Interest and Principal right after Deposit.
+        TableColumnModel order = ledgerTable.getColumnModel();
+        order.moveColumn(order.getColumnIndex("Interest"), order.getColumnIndex("Deposit") + 1);
+        order.moveColumn(order.getColumnIndex("Principal"), order.getColumnIndex("Interest") + 1);
         setupColumnChooser();
     }
 
@@ -296,12 +341,13 @@ public class MainFrame extends javax.swing.JFrame {
             try {
                 int column = Integer.parseInt(part.trim());
                 if (column != LedgerTableModel.DATE && ledgerColumns.containsKey(column)) {
-                    cols.removeColumn(ledgerColumns.get(column));
+                    hiddenColumns.add(column);
                 }
             } catch (NumberFormatException ignored) {
                 // blank or damaged: nothing hidden
             }
         }
+        applyColumns();
         ledgerTable.getTableHeader().addMouseListener(new MouseAdapter() {
             @Override
             public void mousePressed(MouseEvent e) {
@@ -321,12 +367,19 @@ public class MainFrame extends javax.swing.JFrame {
         });
     }
 
+    /** The columns the user has hidden (Interest and Principal also only show for loans). */
+    private final java.util.Set<Integer> hiddenColumns = new java.util.HashSet<>();
+
     private JPopupMenu columnMenu() {
         JPopupMenu menu = new JPopupMenu();
         JMenuItem title = new JMenuItem("Show columns:");
         title.setEnabled(false);
         menu.add(title);
+        boolean loan = isLoanShown();
         for (int column : defaultColumnOrder) {
+            if (LedgerTableModel.isLoanColumn(column) ? !loan : loan && LedgerTableModel.isHiddenForLoans(column)) {
+                continue;                               // only a loan's ledger has these, or a loan's doesn't
+            }
             javax.swing.JCheckBoxMenuItem item = new javax.swing.JCheckBoxMenuItem(
                     LedgerTableModel.columnName(column), isColumnShown(column));
             item.setEnabled(column != LedgerTableModel.DATE);   // Date always stays
@@ -335,9 +388,9 @@ public class MainFrame extends javax.swing.JFrame {
         }
         menu.addSeparator();
         menu.add(menuItem("Show All Columns", () -> {
-            for (int column : defaultColumnOrder) {
-                setColumnShown(column, true);
-            }
+            hiddenColumns.clear();
+            saveHiddenColumns();
+            applyColumns();
         }));
         return menu;
     }
@@ -346,34 +399,30 @@ public class MainFrame extends javax.swing.JFrame {
         return ledgerTable.convertColumnIndexToView(column) >= 0;
     }
 
-    /** Hides or shows a ledger column (shown again just after the nearest shown column before it), and saves it. */
+    /** True if the ledger is showing a loan. */
+    private boolean isLoanShown() {
+        Account a = ledgerModel.currentAccount();
+        return a != null && a.type() == AccountType.LOAN;
+    }
+
+    /** Hides or shows a ledger column, and saves the choice. */
     private void setColumnShown(int column, boolean show) {
-        if (show == isColumnShown(column) || column == LedgerTableModel.DATE) {
+        if (column == LedgerTableModel.DATE) {
             return;
         }
-        if (ledgerTable.isEditing()) {
-            ledgerTable.getCellEditor().stopCellEditing();
-        }
-        TableColumnModel cols = ledgerTable.getColumnModel();
         if (show) {
-            int place = 0;                              // after the shown columns that usually come before it
-            for (int c : defaultColumnOrder) {
-                if (c == column) {
-                    break;
-                }
-                int v = ledgerTable.convertColumnIndexToView(c);
-                if (v >= 0) {
-                    place = Math.max(place, v + 1);
-                }
-            }
-            cols.addColumn(ledgerColumns.get(column));
-            cols.moveColumn(cols.getColumnCount() - 1, place);
+            hiddenColumns.remove(column);
         } else {
-            cols.removeColumn(ledgerColumns.get(column));
+            hiddenColumns.add(column);
         }
+        saveHiddenColumns();
+        applyColumns();
+    }
+
+    private void saveHiddenColumns() {
         StringBuilder hidden = new StringBuilder();
         for (int c : defaultColumnOrder) {
-            if (!isColumnShown(c)) {
+            if (hiddenColumns.contains(c)) {
                 hidden.append(hidden.length() == 0 ? "" : ",").append(c);
             }
         }
@@ -381,6 +430,48 @@ public class MainFrame extends javax.swing.JFrame {
             config.setString(AppConfig.HIDDEN_LEDGER_COLUMNS, hidden.toString());
         } catch (SQLException e) {
             // it applies now, just not next time
+        }
+    }
+
+    /**
+     * Shows the columns that should be: those not hidden, with Interest and
+     * Principal only for a loan. A column shown again goes back just after
+     * the nearest shown column that usually comes before it.
+     */
+    private void applyColumns() {
+        boolean loan = isLoanShown();
+        TableColumnModel cols = ledgerTable.getColumnModel();
+        // A loan's ledger calls its amounts Charge and Payment (see LedgerTableModel.header).
+        AccountType type = loan ? AccountType.LOAN : null;
+        for (int column : new int[] {LedgerTableModel.PAYMENT, LedgerTableModel.DEPOSIT}) {
+            ledgerColumns.get(column).setHeaderValue(LedgerTableModel.header(column, type));
+        }
+        ledgerTable.getTableHeader().repaint();
+        for (int column : defaultColumnOrder) {
+            boolean show = !hiddenColumns.contains(column) && (loan || !LedgerTableModel.isLoanColumn(column))
+                    && !(loan && LedgerTableModel.isHiddenForLoans(column));
+            if (show == isColumnShown(column)) {
+                continue;
+            }
+            if (ledgerTable.isEditing()) {
+                ledgerTable.getCellEditor().stopCellEditing();
+            }
+            if (show) {
+                int place = 0;                          // after the shown columns that usually come before it
+                for (int c : defaultColumnOrder) {
+                    if (c == column) {
+                        break;
+                    }
+                    int v = ledgerTable.convertColumnIndexToView(c);
+                    if (v >= 0) {
+                        place = Math.max(place, v + 1);
+                    }
+                }
+                cols.addColumn(ledgerColumns.get(column));
+                cols.moveColumn(cols.getColumnCount() - 1, place);
+            } else {
+                cols.removeColumn(ledgerColumns.get(column));
+            }
         }
     }
 
@@ -521,8 +612,8 @@ public class MainFrame extends javax.swing.JFrame {
         }
         selectionTotalLabel.setText(count == 0 ? "No transactions selected"
                 : "<html>" + count + (count == 1 ? " transaction" : " transactions") + " selected"
-                        + "&nbsp;&nbsp;&nbsp;Payments: " + Money.format(payments)
-                        + "&nbsp;&nbsp;&nbsp;Deposits: " + Money.format(deposits)
+                        + "&nbsp;&nbsp;&nbsp;" + (isLoanShown() ? "Charges: " : "Payments: ") + Money.format(payments)
+                        + "&nbsp;&nbsp;&nbsp;" + (isLoanShown() ? "Payments: " : "Deposits: ") + Money.format(deposits)
                         + "&nbsp;&nbsp;&nbsp;<b>Net: " + Money.format(deposits - payments) + "</b></html>");
     }
 
@@ -545,7 +636,7 @@ public class MainFrame extends javax.swing.JFrame {
         if (ledgerTable.isEditing()) {
             ledgerTable.getCellEditor().stopCellEditing();   // save a half-finished cell first
         }
-        ledgerModel.setFilter(filterField.getText(), hideReconciledBox.isSelected());
+        ledgerModel.setFilter(filterField.getText(), hideReconciledBox.isSelected() && !isLoanShown());
     }
 
     private void updateFilterCount() {
@@ -573,6 +664,15 @@ public class MainFrame extends javax.swing.JFrame {
     static final Color EDITING_BACKGROUND = Color.WHITE;
     static final Color EDITING_TEXT = Color.BLACK;
 
+    /** True if a row shows the transaction being edited (see editingTxn). */
+    private boolean isEditingTxnRow(int row) {
+        if (editingTxn == NO_EDIT || row < 0) {
+            return false;
+        }
+        return editingTxn == 0 ? ledgerModel.isDraftRow(row)
+                : ledgerModel.isSavedRow(row) && ledgerModel.transactionId(row) == editingTxn;
+    }
+
     /** Text color for transactions dated after today. */
     private static final Color FUTURE_TEXT = new Color(128, 128, 128);         // grey
 
@@ -586,8 +686,8 @@ public class MainFrame extends javax.swing.JFrame {
         return (table, value, isSelected, hasFocus, row, column) -> {
             java.awt.Component c = base.getTableCellRendererComponent(
                     table, value, isSelected, hasFocus, row, column);
-            if (row == table.getEditingRow()) {
-                c.setBackground(EDITING_BACKGROUND);   // the row being edited stands out
+            if (row == table.getEditingRow() || isEditingTxnRow(row)) {
+                c.setBackground(EDITING_BACKGROUND);   // the transaction being edited stands out
                 c.setForeground(EDITING_TEXT);
             } else if (ledgerModel.isDraftRow(row)) {
                 c.setBackground(newRowBackground(table)); // the blank new-transaction row: always grey
@@ -642,8 +742,10 @@ public class MainFrame extends javax.swing.JFrame {
     }
 
     /**
-     * Saves the cell being edited, then moves down one row. After a new
-     * transaction is recorded, moves to the Date of the new blank row instead.
+     * Enter in a ledger cell: saves the cell, then moves down one row, or (with
+     * the "Enter moves to the next field" preference) to the next field of the
+     * same transaction, and past the last field to the next row's Date. After
+     * a new transaction is recorded, moves to the Date of the new blank row.
      */
     private void commitAndMoveDown() {
         if (!ledgerTable.isEditing()) {
@@ -654,6 +756,16 @@ public class MainFrame extends javax.swing.JFrame {
         int rowsBefore = ledgerTable.getRowCount();
         if (!ledgerTable.getCellEditor().stopCellEditing()) {
             return;
+        }
+        if (enterNextField && ledgerTable.getRowCount() == rowsBefore) {
+            // Enter works like Tab: on to the next field of this transaction that can be edited.
+            for (int v = column + 1; v < ledgerTable.getColumnCount(); v++) {
+                if (ledgerModel.isCellEditable(row, ledgerTable.convertColumnIndexToModel(v))) {
+                    ledgerTable.changeSelection(row, v, false, false);
+                    return;
+                }
+            }
+            column = ledgerTable.convertColumnIndexToView(LedgerTableModel.DATE);   // past the last: next row's Date
         }
         if (ledgerTable.getRowCount() == rowsBefore && ledgerModel.isDraftRow(row)
                 && ledgerModel.draftHasData() && !resolveDraft(true)) {
@@ -879,6 +991,10 @@ public class MainFrame extends javax.swing.JFrame {
 
     /** After each saved ledger change: new balances, and one undo step. */
     private void afterLedgerChange() {
+        refreshSummaryIfShown();
+        if (editingTxn == 0 && !ledgerModel.draftHasData()) {
+            editingTxn = NO_EDIT;                       // the new transaction was saved: committed
+        }
         updateSummary(selectedAccount());
         refreshTreeBalances();                          // a transfer changes another account too
         checkpoint(ledgerModel.lastAction());
@@ -886,15 +1002,26 @@ public class MainFrame extends javax.swing.JFrame {
 
     /** Groups everything saved since the last checkpoint into one undo step. */
     private void checkpoint(String label) {
-        if (undoLog == null) {
-            return;
-        }
+        // Whatever changed, loans' interest is brought up to date as part of the same step.
+        boolean recalculated = false;
         try {
-            undoLog.checkpoint(label);
+            recalculated = transactionRepo.recalculateAllLoans();
         } catch (SQLException e) {
-            // undo history is a convenience; never block the change itself
+            showError("Could not work out the interest in your loans' payments:\n" + e.getMessage());
         }
-        updateUndoMenu();
+        if (undoLog != null) {
+            try {
+                undoLog.checkpoint(label);
+            } catch (SQLException e) {
+                // undo history is a convenience; never block the change itself
+            }
+            updateUndoMenu();
+        }
+        if (recalculated) {
+            ledgerModel.reload();
+            updateSummary(selectedAccount());
+            refreshTreeBalances();
+        }
     }
 
     /** Edit > Undo (Ctrl+Z). While typing in a cell, it just cancels the typing. */
@@ -936,7 +1063,7 @@ public class MainFrame extends javax.swing.JFrame {
         Account selected = selectedAccount();
         loadAccounts(selected == null ? null : selected.id());
         if (selectedAccount() == null && accountTree.getRowCount() > 0) {
-            accountTree.setSelectionRow(0);            // the selected account was undone away
+            selectFirstAccount();                      // the selected account was undone away
         }
         updateUndoMenu();
     }
@@ -992,10 +1119,25 @@ public class MainFrame extends javax.swing.JFrame {
             }
             message.append(info.transactions() == 1 ? " will be deleted." : " will be deleted.");
         }
-        if (info.transfers() > 0) {
-            message.append("\n").append(info.transfers())
-                   .append(info.transfers() == 1 ? " transfer" : " transfers")
-                   .append(" with other accounts will stay in those accounts, with no category.");
+        boolean debt = a.type() == AccountType.LOAN || a.type() == AccountType.CREDIT_CARD;
+        int kept = info.transfers() - info.upcomingPayments();
+        if (kept > 0) {
+            message.append("\n").append(kept).append(kept == 1 ? " transfer" : " transfers")
+                   .append(" with other accounts will stay in those accounts")
+                   .append(debt ? ", in the category " + AccountRepository.debtPaymentsCategory(a.name()) + "."
+                           : ", with no category.")
+                   .append(" Their balances don't change.");
+        }
+        if (info.linkedSchedules() > 0) {
+            message.append("\n").append(info.linkedSchedules())
+                   .append(info.linkedSchedules() == 1 ? " scheduled payment pays" : " scheduled payments pay")
+                   .append(" this account; ").append(info.linkedSchedules() == 1 ? "it" : "they").append(" will end");
+            if (info.upcomingPayments() > 0) {
+                message.append(", and ").append(info.upcomingPayments())
+                       .append(info.upcomingPayments() == 1 ? " upcoming payment" : " upcoming payments")
+                       .append(" not yet made will be removed");
+            }
+            message.append(".");
         }
         message.append("\n\nYou can undo this with Edit > Undo.");
         Object[] options = {"Delete Account", "Cancel"};
@@ -1021,7 +1163,7 @@ public class MainFrame extends javax.swing.JFrame {
         checkpoint("Delete Account");
         loadAccounts(null);
         if (accountTree.getRowCount() > 0) {
-            accountTree.setSelectionRow(0);
+            selectFirstAccount();
         }
     }
 
@@ -1170,7 +1312,7 @@ public class MainFrame extends javax.swing.JFrame {
                 showError("Enter the loan's original amount and term first (Account > Edit Account).");
                 return;
             }
-            new LoanScheduleDialog(this, a.name(), loan, -accounts.balanceThrough(a.id(), LocalDate.now()))
+            new LoanScheduleDialog(this, a.name(), loan, accounts.principalOwed(a.id(), LocalDate.now()))
                     .setVisible(true);
         } catch (SQLException e) {
             showError("Could not read the loan:\n" + e.getMessage());
@@ -1248,8 +1390,18 @@ public class MainFrame extends javax.swing.JFrame {
         names.setOpaque(false);
         names.setLayout(new BoxLayout(names, BoxLayout.PAGE_AXIS));
         names.add(accountNameLabel);
+        names.add(loanNumberLabel);
         names.add(websiteLabel);
+        loanNumberLabel.setFont(loanNumberLabel.getFont().deriveFont(loanNumberLabel.getFont().getSize2D() - 2));
+        loanNumberLabel.setVisible(false);
         summaryPanel.add(names, java.awt.BorderLayout.WEST);
+        // The account's balance over the past 12 months, between its name and its balances.
+        JPanel chartHolder = new JPanel(new java.awt.BorderLayout());
+        chartHolder.setOpaque(false);
+        chartHolder.setBorder(BorderFactory.createEmptyBorder(0, 18, 0, 18));
+        chartHolder.add(balanceChart, java.awt.BorderLayout.CENTER);
+        summaryPanel.add(chartHolder, java.awt.BorderLayout.CENTER);
+        rightSplit.setDividerLocation(160);             // room for the chart
         websiteLabel.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
         websiteLabel.setVisible(false);
         websiteLabel.addMouseListener(new MouseAdapter() {
@@ -1262,16 +1414,22 @@ public class MainFrame extends javax.swing.JFrame {
         });
     }
 
+    /** Under the account name: a loan's number, and the account's website as a link (each only if it has one). */
     private void showWebsite(Account a) {
         String site = null;
+        String loanNumber = null;
         if (a != null) {
             try {
                 AccountRepository.Details d = accounts.findDetails(a.id());
                 site = d == null ? null : d.website();
+                loanNumber = d == null || d.type() != AccountType.LOAN ? null : d.accountNumber();
             } catch (SQLException e) {
                 // no link, then
             }
         }
+        // A loan's number (from Manage Accounts) goes just under its name.
+        loanNumberLabel.setVisible(loanNumber != null && !loanNumber.isBlank());
+        loanNumberLabel.setText(loanNumber == null ? "" : "Loan " + loanNumber.trim());
         websiteUrl = site == null || site.isBlank() ? null
                 : site.contains("://") ? site.trim() : "https://" + site.trim();
         websiteLabel.setVisible(websiteUrl != null);
@@ -1580,7 +1738,7 @@ public class MainFrame extends javax.swing.JFrame {
         Account selected = selectedAccount();
         loadAccounts(selected == null ? null : selected.id());
         if (selectedAccount() == null && accountTree.getRowCount() > 0) {
-            accountTree.setSelectionRow(0);
+            selectFirstAccount();
         }
         JOptionPane.showMessageDialog(this, summary.describe(), "Import QIF",
                 JOptionPane.INFORMATION_MESSAGE);
@@ -1850,12 +2008,17 @@ public class MainFrame extends javax.swing.JFrame {
         DefaultMutableTreeNode root = new DefaultMutableTreeNode("Accounts");
         Map<Long, DefaultMutableTreeNode> nodes = new HashMap<>();
 
-        // Top-level accounts first, so their envelopes have somewhere to go.
+        // A heading for each account type (in the type list's order), holding its
+        // top-level accounts by name; envelopes go under their parent account.
+        Map<AccountType, DefaultMutableTreeNode> groups = new java.util.EnumMap<>(AccountType.class);
+        for (AccountType t : AccountType.values()) {
+            groups.put(t, new DefaultMutableTreeNode(new TypeGroup(t)));
+        }
         for (Account a : all) {
             if (a.parentId() == null) {
                 DefaultMutableTreeNode node = new DefaultMutableTreeNode(a);
                 nodes.put(a.id(), node);
-                root.add(node);
+                groups.get(a.type()).add(node);
             }
         }
         for (Account a : all) {
@@ -1863,7 +2026,12 @@ public class MainFrame extends javax.swing.JFrame {
                 DefaultMutableTreeNode node = new DefaultMutableTreeNode(a);
                 nodes.put(a.id(), node);
                 DefaultMutableTreeNode parent = nodes.get(a.parentId());
-                (parent != null ? parent : root).add(node);
+                (parent != null ? parent : groups.get(AccountType.ENVELOPE)).add(node);   // orphans: Envelopes
+            }
+        }
+        for (AccountType t : AccountType.values()) {
+            if (groups.get(t).getChildCount() > 0) {
+                root.add(groups.get(t));                // only types that have accounts
             }
         }
 
@@ -1885,6 +2053,7 @@ public class MainFrame extends javax.swing.JFrame {
             reloadingTree = false;
         }
         showAccount(selectedAccount());
+        refreshSummaryIfShown();
     }
 
     // ----- Account tree balances --------------------------------------------
@@ -1895,6 +2064,31 @@ public class MainFrame extends javax.swing.JFrame {
      */
     private void setupTreeRenderer() {
         javax.swing.ToolTipManager.sharedInstance().registerComponent(accountTree);
+        // Type headings can't be selected: clicking one leaves the current account showing.
+        accountTree.setSelectionModel(new javax.swing.tree.DefaultTreeSelectionModel() {
+            @Override
+            public void setSelectionPaths(TreePath[] paths) {
+                TreePath[] accountsOnly = withoutHeadings(paths);
+                if (paths == null || paths.length == 0 || accountsOnly.length > 0) {
+                    super.setSelectionPaths(accountsOnly);
+                }
+            }
+
+            @Override
+            public void addSelectionPaths(TreePath[] paths) {
+                super.addSelectionPaths(withoutHeadings(paths));
+            }
+
+            private TreePath[] withoutHeadings(TreePath[] paths) {
+                if (paths == null) {
+                    return null;
+                }
+                return java.util.Arrays.stream(paths).filter(p -> !(p.getLastPathComponent()
+                        instanceof DefaultMutableTreeNode n && n.getUserObject() instanceof TypeGroup))
+                        .toArray(TreePath[]::new);
+            }
+        });
+        accountTree.getSelectionModel().setSelectionMode(javax.swing.tree.TreeSelectionModel.SINGLE_TREE_SELECTION);
         accountTree.setCellRenderer(new javax.swing.tree.DefaultTreeCellRenderer() {
             @Override
             public java.awt.Component getTreeCellRendererComponent(javax.swing.JTree tree, Object value,
@@ -1903,6 +2097,9 @@ public class MainFrame extends javax.swing.JFrame {
                 setToolTipText(null);
                 if (value instanceof DefaultMutableTreeNode n && n.getUserObject() instanceof Account a) {
                     setIcon(AccountIcon.of(a));         // its type's icon; stacked for a sub-account
+                } else if (value instanceof DefaultMutableTreeNode n && n.getUserObject() instanceof TypeGroup g) {
+                    setIcon(null);                      // a type heading: bold, no icon
+                    setText("<html><b>" + g + "</b></html>");
                 }
                 if (showTreeBalances && value instanceof DefaultMutableTreeNode n
                         && n.getUserObject() instanceof Account a && treeBalances.containsKey(a.id())) {
@@ -1941,12 +2138,14 @@ public class MainFrame extends javax.swing.JFrame {
             if (r == null || r.y + r.height < visible.y || r.y > visible.y + visible.height) {
                 continue;
             }
-            Object node = accountTree.getPathForRow(row).getLastPathComponent();
-            if (!(node instanceof DefaultMutableTreeNode n) || !(n.getUserObject() instanceof Account a)
-                    || !treeBalances.containsKey(a.id())) {
+            Long amount = treeAmount(row);
+            if (amount == null) {
                 continue;
             }
-            long cents = treeBalances.get(a.id());
+            long cents = amount;
+            boolean heading = isHeadingRow(row);
+            g.setFont(heading ? accountTree.getFont().deriveFont(java.awt.Font.BOLD) : accountTree.getFont());
+            fm = g.getFontMetrics();
             String text = Money.format(cents);
             if (accountTree.isRowSelected(row)) {          // on the selection highlight: its text color
                 java.awt.Color sel = javax.swing.UIManager.getColor("Tree.selectionForeground");
@@ -1972,15 +2171,13 @@ public class MainFrame extends javax.swing.JFrame {
         if (!showTreeBalances) {
             return TREE_MIN_WIDTH;
         }
-        java.awt.FontMetrics fm = accountTree.getFontMetrics(accountTree.getFont());
         int need = 0;
         for (int row = 0; row < accountTree.getRowCount(); row++) {
             java.awt.Rectangle r = accountTree.getRowBounds(row);
-            Object node = accountTree.getPathForRow(row).getLastPathComponent();
-            if (r != null && node instanceof DefaultMutableTreeNode n && n.getUserObject() instanceof Account a
-                    && treeBalances.containsKey(a.id())) {
+            Long amount = treeAmount(row);
+            if (r != null && amount != null) {
                 need = Math.max(need, r.x + r.width + TREE_BALANCE_GAP
-                        + fm.stringWidth(Money.format(treeBalances.get(a.id()))) + TREE_BALANCE_MARGIN);
+                        + amountWidth(row, amount) + TREE_BALANCE_MARGIN);
             }
         }
         java.awt.Insets in = accountScroll.getInsets();
@@ -2001,12 +2198,54 @@ public class MainFrame extends javax.swing.JFrame {
         if (!showTreeBalances) {
             return 0;
         }
-        java.awt.FontMetrics fm = accountTree.getFontMetrics(accountTree.getFont());
         int w = 0;
-        for (long cents : treeBalances.values()) {
-            w = Math.max(w, fm.stringWidth(Money.format(cents)));
+        for (int row = 0; row < accountTree.getRowCount(); row++) {
+            Long amount = treeAmount(row);
+            if (amount != null) {
+                w = Math.max(w, amountWidth(row, amount));
+            }
         }
         return w;
+    }
+
+    /**
+     * The amount shown at the right of a tree row: an account's balance, or
+     * for a type heading the total of every account under it (envelopes
+     * too). Null if there is none to show.
+     */
+    private Long treeAmount(int row) {
+        Object node = accountTree.getPathForRow(row).getLastPathComponent();
+        if (!(node instanceof DefaultMutableTreeNode n)) {
+            return null;
+        }
+        if (n.getUserObject() instanceof Account a) {
+            return treeBalances.get(a.id());
+        }
+        if (!(n.getUserObject() instanceof TypeGroup) || !showGroupTotals) {
+            return null;
+        }
+        long total = 0;
+        boolean any = false;
+        java.util.Enumeration<javax.swing.tree.TreeNode> e = n.depthFirstEnumeration();
+        while (e.hasMoreElements()) {
+            if (e.nextElement() instanceof DefaultMutableTreeNode c && c.getUserObject() instanceof Account a
+                    && treeBalances.containsKey(a.id())) {
+                total += treeBalances.get(a.id());
+                any = true;
+            }
+        }
+        return any ? total : null;
+    }
+
+    private boolean isHeadingRow(int row) {
+        return accountTree.getPathForRow(row).getLastPathComponent() instanceof DefaultMutableTreeNode n
+                && n.getUserObject() instanceof TypeGroup;
+    }
+
+    /** How wide a row's amount is drawn (headings' totals are bold). */
+    private int amountWidth(int row, long cents) {
+        java.awt.Font f = isHeadingRow(row) ? accountTree.getFont().deriveFont(java.awt.Font.BOLD) : accountTree.getFont();
+        return accountTree.getFontMetrics(f).stringWidth(Money.format(cents));
     }
 
     private static String escape(String s) {
@@ -2038,6 +2277,11 @@ public class MainFrame extends javax.swing.JFrame {
     private void editPreferences() {
         javax.swing.JCheckBox balances = new javax.swing.JCheckBox(
                 "Show balances in the account tree (cleared; current for envelopes)", showTreeBalances);
+        javax.swing.JCheckBox groupTotals = new javax.swing.JCheckBox(
+                "Show totals on the account type headings", showGroupTotals);
+        groupTotals.setBorder(BorderFactory.createEmptyBorder(0, 24, 0, 0));   // indented under balances
+        groupTotals.setEnabled(balances.isSelected());
+        balances.addActionListener(e -> groupTotals.setEnabled(balances.isSelected()));
         javax.swing.JCheckBox match = new javax.swing.JCheckBox("Match existing transactions",
                 config.getBoolean(AppConfig.MATCH_DOWNLOADS, true));
         javax.swing.JSpinner days = new javax.swing.JSpinner(new javax.swing.SpinnerNumberModel(
@@ -2058,10 +2302,40 @@ public class MainFrame extends javax.swing.JFrame {
         scheduleRow.add(new JLabel("Put them in the ledger"));
         scheduleRow.add(scheduleDays);
         scheduleRow.add(new JLabel("days ahead"));
+        JLabel editHeading = new JLabel("Editing the ledger: Enter");
+        editHeading.setBorder(BorderFactory.createEmptyBorder(10, 0, 0, 0));
+        javax.swing.JRadioButton enterDown = new javax.swing.JRadioButton(
+                "moves down to the next transaction", !enterNextField);
+        javax.swing.JRadioButton enterRight = new javax.swing.JRadioButton(
+                "moves to the next field, like Tab", enterNextField);
+        javax.swing.ButtonGroup enterGroup = new javax.swing.ButtonGroup();
+        enterGroup.add(enterDown);
+        enterGroup.add(enterRight);
+        javax.swing.JCheckBox autoDecimal = new javax.swing.JCheckBox("Amounts: insert the decimal point"
+                + " automatically (123 enters $1.23; 12 enters $0.12; 1 enters $0.01; 12. enters $12.00)",
+                config.getBoolean(AppConfig.AUTO_DECIMAL, false));
+        autoDecimal.setBorder(BorderFactory.createEmptyBorder(6, 0, 0, 0));
+        javax.swing.JCheckBox openOnSummary = new javax.swing.JCheckBox(
+                "Open on the Summary screen (instead of the first account)",
+                config.getBoolean(AppConfig.OPEN_ON_SUMMARY, false));
+        JComboBox<String> dateFormat = new JComboBox<>();
+        for (String f : LedgerTableModel.DATE_FORMATS) {
+            dateFormat.addItem(f.toUpperCase() + "   (today: " + LocalDate.now().format(
+                    java.time.format.DateTimeFormatter.ofPattern(f)) + ")");
+        }
+        String currentFormat = config.getString(AppConfig.DATE_FORMAT, LedgerTableModel.DATE_FORMATS[0]);
+        dateFormat.setSelectedIndex(Math.max(0, java.util.Arrays.asList(LedgerTableModel.DATE_FORMATS)
+                .indexOf(currentFormat)));
+        JPanel dateRow = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 4, 0));
+        dateRow.add(new JLabel("Dates:"));
+        dateRow.add(dateFormat);
+        dateRow.add(new JLabel("(8 digits typed in a date field become a date in this format)"));
         JLabel scheduleHeading = new JLabel("Scheduled transactions:");
         scheduleHeading.setBorder(BorderFactory.createEmptyBorder(10, 0, 0, 0));
         int r = JOptionPane.showConfirmDialog(this,
-                new Object[] {balances, importHeading, matchRow, scheduleHeading, scheduleRow},
+                new Object[] {openOnSummary, dateRow, balances, groupTotals, editHeading, enterDown, enterRight, autoDecimal, importHeading,
+                    matchRow,
+                    scheduleHeading, scheduleRow},
                 "Preferences", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
         if (r != JOptionPane.OK_OPTION) {
             return;
@@ -2070,19 +2344,138 @@ public class MainFrame extends javax.swing.JFrame {
             config.setBoolean(AppConfig.MATCH_DOWNLOADS, match.isSelected());
             config.setInt(AppConfig.MATCH_DAYS, (Integer) days.getValue());
             config.setBoolean(AppConfig.SHOW_TREE_BALANCES, balances.isSelected());
+            config.setBoolean(AppConfig.SHOW_TREE_GROUP_TOTALS, groupTotals.isSelected());
+            config.setBoolean(AppConfig.ENTER_NEXT_FIELD, enterRight.isSelected());
+            config.setBoolean(AppConfig.AUTO_DECIMAL, autoDecimal.isSelected());
+            config.setBoolean(AppConfig.OPEN_ON_SUMMARY, openOnSummary.isSelected());
+            config.setString(AppConfig.DATE_FORMAT, LedgerTableModel.DATE_FORMATS[dateFormat.getSelectedIndex()]);
             config.setInt(AppConfig.SCHEDULE_DAYS, (Integer) scheduleDays.getValue());
         } catch (SQLException e) {
             showError("The preferences apply now, but could not be saved for next time:\n" + e.getMessage());
         }
+        enterNextField = enterRight.isSelected();
+        Money.setAutoDecimal(autoDecimal.isSelected());
+        String newFormat = LedgerTableModel.DATE_FORMATS[dateFormat.getSelectedIndex()];
+        if (!newFormat.equals(currentFormat)) {
+            LedgerTableModel.setDateFormat(newFormat);
+            ledgerModel.reload();                        // show the dates the new way
+            updateSummary(selectedAccount());
+            refreshSummaryIfShown();
+        }
         if ((Integer) scheduleDays.getValue() > oldScheduleDays) {
             createScheduledTransactions(true);           // further ahead: create the extra ones now
         }
-        if (balances.isSelected() == showTreeBalances) {
+        if (balances.isSelected() == showTreeBalances && groupTotals.isSelected() == showGroupTotals) {
             return;
         }
         showTreeBalances = balances.isSelected();
+        showGroupTotals = groupTotals.isSelected();
         Account selected = selectedAccount();
         loadAccounts(selected == null ? null : selected.id());   // redraws the tree and fits its width
+    }
+
+    // ----- The Summary screen -------------------------------------------------
+
+    private final JPanel rightCards = new JPanel(new java.awt.CardLayout());
+    private final JButton summaryButton = new JButton("Summary");
+    private SummaryPanel summaryView;
+    private boolean showingSummary;
+
+    /**
+     * Puts Summary above the account tree. Clicking it shows the Summary
+     * screen (net worth and widgets) where the ledger is; picking an account
+     * in the tree shows its ledger again.
+     */
+    private void setupSummary() {
+        summaryView = new SummaryPanel(accounts, this::selectAccountInTree);
+        javax.swing.JScrollPane summaryScroll = new javax.swing.JScrollPane(summaryView);
+        summaryScroll.setBorder(null);
+        summaryScroll.getVerticalScrollBar().setUnitIncrement(16);
+        rightCards.add(rightSplit, "ledger");
+        rightCards.add(summaryScroll, "summary");
+        int divider = mainSplit.getDividerLocation();
+        mainSplit.setRightComponent(rightCards);
+
+        summaryButton.setHorizontalAlignment(SwingConstants.LEADING);
+        summaryButton.setFont(summaryButton.getFont().deriveFont(java.awt.Font.BOLD));
+        summaryButton.setToolTipText("Net worth and every account's balance at a glance");
+        summaryButton.setFocusable(false);
+        summaryButton.addActionListener(e -> showSummary());
+        JPanel left = new JPanel(new java.awt.BorderLayout(0, 4));
+        left.add(summaryButton, java.awt.BorderLayout.NORTH);
+        left.add(accountScroll, java.awt.BorderLayout.CENTER);
+        mainSplit.setLeftComponent(left);
+        mainSplit.setDividerLocation(divider);
+    }
+
+    /** Shows the Summary screen (the tree's selection is cleared, so any account can be picked after). */
+    private void showSummary() {
+        if (ledgerTable.isEditing()) {
+            ledgerTable.getCellEditor().stopCellEditing();
+        }
+        accountTree.clearSelection();                   // leaves the ledger (and asks about an unsaved new row)
+        if (selectedAccount() != null) {
+            return;                                     // kept on the ledger ("Go Back" on an unsaved row)
+        }
+        showingSummary = true;
+        summaryView.refresh();
+        ((java.awt.CardLayout) rightCards.getLayout()).show(rightCards, "summary");
+        summaryButton.setSelected(true);
+        summaryButton.setText("\u25B8 Summary");       // ▸ marks the screen shown
+    }
+
+    private void showLedgerView() {
+        if (!showingSummary) {
+            return;
+        }
+        showingSummary = false;
+        ((java.awt.CardLayout) rightCards.getLayout()).show(rightCards, "ledger");
+        summaryButton.setText("Summary");
+    }
+
+    private void refreshSummaryIfShown() {
+        if (showingSummary && summaryView != null) {
+            summaryView.refresh();
+        }
+    }
+
+    /** Selects an account in the tree by id (which shows its ledger). */
+    private void selectAccountInTree(long id) {
+        for (int row = 0; row < accountTree.getRowCount(); row++) {
+            Object node = accountTree.getPathForRow(row).getLastPathComponent();
+            if (node instanceof DefaultMutableTreeNode n && n.getUserObject() instanceof Account a && a.id() == id) {
+                accountTree.setSelectionRow(row);
+                accountTree.scrollRowToVisible(row);
+                return;
+            }
+        }
+    }
+
+    /** A heading in the account tree for one account type ("Credit Cards"). */
+    private record TypeGroup(AccountType type) {
+        @Override
+        public String toString() {
+            return switch (type) {
+                case CHECKING -> "Checking";
+                case SAVINGS -> "Savings";
+                case CREDIT_CARD -> "Credit Cards";
+                case CASH -> "Cash";
+                case LOAN -> "Loans";
+                case OTHER_ASSET -> "Other Assets";
+                case ENVELOPE -> "Envelopes";
+            };
+        }
+    }
+
+    /** Selects the first account in the tree (skipping the type headings), if there is one. */
+    private void selectFirstAccount() {
+        for (int row = 0; row < accountTree.getRowCount(); row++) {
+            Object node = accountTree.getPathForRow(row).getLastPathComponent();
+            if (node instanceof DefaultMutableTreeNode n && n.getUserObject() instanceof Account) {
+                accountTree.setSelectionRow(row);
+                return;
+            }
+        }
     }
 
     /** Narrowest and widest the account tree pane is sized to automatically. */
@@ -2119,6 +2512,7 @@ public class MainFrame extends javax.swing.JFrame {
         Account current = ledgerModel.currentAccount();
         if (a != null && current != null && a.id() == current.id()) {
             ledgerModel.updateAccount(a);                // same account: refresh, keep sort and blank row
+            applyColumns();                              // its type may have changed
             updateSummary(a);
             return;
         }
@@ -2127,6 +2521,9 @@ public class MainFrame extends javax.swing.JFrame {
         }
         resolveDraft(false);                             // a new transaction left without an amount
         ledgerModel.setAccount(a);                       // also resets the sort to Status, Date
+        applyColumns();                                  // a loan's Interest and Principal
+        hideReconciledBox.setVisible(a == null || a.type() != AccountType.LOAN);   // nothing's reconciled in a loan
+        applyFilter();
         ledgerTable.getTableHeader().repaint();          // update the sort arrows
         updateSummary(a);
     }
@@ -2171,6 +2568,7 @@ public class MainFrame extends javax.swing.JFrame {
      */
     private void updateSummary(Account a) {
         if (a == null) {
+            balanceChart.setData(null, null);
             showWebsite(null);
             accountNameLabel.setText("No account selected");
             balanceLabel.setText(" ");
@@ -2179,6 +2577,24 @@ public class MainFrame extends javax.swing.JFrame {
         accountNameLabel.setText(a.name() + "  (" + a.type() + ")");
         showWebsite(a);
         try {
+            LocalDate today = LocalDate.now();
+            LocalDate from = today.minusYears(1);
+            balanceChart.setData(from, accounts.dailyBalances(a.id(), from, today));
+        } catch (SQLException e) {
+            balanceChart.setData(null, null);
+        }
+        try {
+            if (a.type() == AccountType.LOAN) {
+                // A loan: what's left to pay as of today, and what's been paid on it so far (as lenders show it).
+                LocalDate today = LocalDate.now();
+                long remaining = -accounts.balanceThrough(a.id(), today);
+                long[] paid = accounts.loanPaid(a.id(), today);
+                balanceLabel.setText("<html><div align='right'><b><font size='+1'>Remaining Balance: "
+                        + Money.format(remaining) + "</font></b><br>"
+                        + "Total Interest Paid: " + Money.format(paid[1]) + "<br>"
+                        + "Total Amount Paid: " + Money.format(paid[0]) + "</div></html>");
+                return;
+            }
             AccountRepository.Balances b = accounts.balances(a);
             balanceLabel.setText("<html><div align='right'><b><font size='+1'>Cleared Balance: "
                     + colored(b.clearedCents()) + "</font></b><br>"

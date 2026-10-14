@@ -158,7 +158,8 @@ final class Snowball {
             if (a.type() != AccountType.LOAN && a.type() != AccountType.CREDIT_CARD) {
                 continue;
             }
-            long owed = -accounts.balanceThrough(a.id(), today);
+            long owed = a.type() == AccountType.LOAN ? accounts.principalOwed(a.id(), today)
+                    : -accounts.balanceThrough(a.id(), today);
             if (owed <= 0) {
                 continue;
             }

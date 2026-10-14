@@ -146,6 +146,8 @@ public class AppConfig implements AutoCloseable {
 
     /** Show each account's cleared balance in the account tree. */
     public static final String SHOW_TREE_BALANCES = "show_tree_balances";
+    /** With tree balances shown: each account type heading shows its accounts' total (on unless turned off). */
+    public static final String SHOW_TREE_GROUP_TOTALS = "show_tree_group_totals";
 
     /** Bank imports: match downloaded transactions with existing ones. */
     public static final String MATCH_DOWNLOADS = "match_downloads";
@@ -157,6 +159,14 @@ public class AppConfig implements AutoCloseable {
     public static final int DEFAULT_SCHEDULE_DAYS = 14;
     /** The ledger columns hidden from view: their numbers (LedgerTableModel), comma-separated. */
     public static final String HIDDEN_LEDGER_COLUMNS = "hidden_ledger_columns";
+    /** Editing the ledger: Enter moves to the next field, like Tab (false: down to the next transaction). */
+    public static final String ENTER_NEXT_FIELD = "enter_next_field";
+    /** Typed amounts: digits with no decimal point are cents (12345 = $123.45). */
+    public static final String AUTO_DECIMAL = "auto_decimal";
+    /** How dates are shown and typed: one of LedgerTableModel.DATE_FORMATS, like "MM/dd/yyyy". */
+    public static final String DATE_FORMAT = "date_format";
+    /** Open on the Summary screen instead of the first account's ledger. */
+    public static final String OPEN_ON_SUMMARY = "open_on_summary";
 
     /** A text preference, or def if it was never set (or can't be read). */
     public String getString(String key, String def) {

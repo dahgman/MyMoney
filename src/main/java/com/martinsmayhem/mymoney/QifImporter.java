@@ -334,7 +334,7 @@ final class QifImporter {
             WHERE t.account_id = ? AND t.txn_date = ? AND t.id <= ?
               AND COALESCE(t.check_number, '') = ?
               AND COALESCE((SELECT name FROM payee p WHERE p.id = t.payee_id), '') = ? COLLATE NOCASE
-              AND COALESCE((SELECT SUM(amount_cents) FROM split s WHERE s.txn_id = t.id), 0) = ?
+              AND COALESCE((SELECT SUM(amount_cents) FROM split s WHERE s.txn_id = t.id AND s.loan_interest <> 1), 0) = ?
             LIMIT 1
             """;
         try (PreparedStatement ps = conn.prepareStatement(sql)) {

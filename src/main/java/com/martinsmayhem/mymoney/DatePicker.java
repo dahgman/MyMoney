@@ -19,6 +19,7 @@ final class DatePicker extends JPanel {
     DatePicker(LocalDate date) {
         super(new BorderLayout(2, 0));
         setDate(date);
+        LedgerTableModel.formatDatesIn(field);          // 8 digits become a date
         button.setMargin(new java.awt.Insets(0, 4, 0, 4));
         button.setFocusable(false);
         button.setToolTipText("Pick from a calendar");

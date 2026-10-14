@@ -194,7 +194,7 @@ final class DebtSnowballDialog extends JDialog {
 
     private void recalculate() {
         try {
-            settings.budgetCents = budgetField.getText().isBlank() ? 0 : Math.abs(Money.parse(budgetField.getText()));
+            settings.budgetCents = budgetField.getText().isBlank() ? 0 : Math.abs(Money.parseTyped(budgetField.getText()));
         } catch (IllegalArgumentException e) {
             summary.setText(e.getMessage());
             return;
@@ -481,7 +481,7 @@ final class DebtSnowballDialog extends JDialog {
                     settings.minimums.remove(id);            // back to the schedule / loan / card's own
                 } else {
                     try {
-                        settings.minimums.put(id, Math.abs(Money.parse(t)));
+                        settings.minimums.put(id, Math.abs(Money.parseTyped(t)));
                     } catch (IllegalArgumentException e) {
                         JOptionPane.showMessageDialog(DebtSnowballDialog.this, e.getMessage(), getTitle(),
                                 JOptionPane.ERROR_MESSAGE);

@@ -69,6 +69,9 @@ final class ManageAccountsDialog extends JDialog {
 
     // Loan accounts only:
     private final JTextField rateField = new JTextField(8);
+    private final JComboBox<String> interestMethodCombo = new JComboBox<>(new String[] {
+        "Monthly (rate ÷ 12)", "Daily, from the day paid (rate ÷ 365)",
+        "Daily, on the due dates (rate ÷ 365; Affirm)"});
     private final JTextField originalField = new JTextField(12);
     private final JSpinner termSpinner = new JSpinner(new javax.swing.SpinnerNumberModel(0, 0, 1200, 1));
     private final JComboBox<String> interestCategoryCombo = new JComboBox<>();
@@ -182,6 +185,7 @@ final class ManageAccountsDialog extends JDialog {
         rateRow.add(rateField);
         rateRow.add(new JLabel("% a year"));
         row = addRow(form, row, "Interest Rate:", rateRow);
+        row = addRow(form, row, "Interest Charged:", interestMethodCombo);
         row = addRow(form, row, "Original Amount:", originalField);
         JPanel termRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
         termRow.add(termSpinner);
@@ -202,8 +206,8 @@ final class ManageAccountsDialog extends JDialog {
         summaryRow.add(javax.swing.Box.createVerticalStrut(4));
         summaryRow.add(scheduleButton);
         row = addRow(form, row, "", summaryRow);
-        loanOnly.addAll(List.of(rateRow, originalField, termRow, paymentRow, firstPaymentPicker, interestCategoryCombo,
-                summaryRow));
+        loanOnly.addAll(List.of(rateRow, interestMethodCombo, originalField, termRow, paymentRow, firstPaymentPicker,
+                interestCategoryCombo, summaryRow));
 
         JPanel aprRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
         aprRow.add(aprField);
@@ -250,6 +254,11 @@ final class ManageAccountsDialog extends JDialog {
         interestCategoryCombo.setToolTipText("Where the interest part of each payment goes (blank: "
                 + Loan.DEFAULT_INTEREST_CATEGORY + ")");
         rateField.setToolTipText("The annual interest rate, like 6.375");
+        interestMethodCombo.setToolTipText("<html>How the lender works out the interest in each payment:<br>"
+                + "Monthly: a twelfth of the yearly rate each month (many mortgages).<br>"
+                + "Daily, from the day paid: for each day since the last payment (many auto and personal loans).<br>"
+                + "Daily, on the due dates: for each day from one due date to the next, whenever you pay"
+                + " (Affirm and other pay-over-time loans).</html>");
         originalField.setToolTipText("The amount borrowed");
         termSpinner.setToolTipText("How many monthly payments, from the origination date");
         typeCombo.addActionListener(e -> typeChanged());
@@ -480,8 +489,8 @@ final class ManageAccountsDialog extends JDialog {
         formTitle.setText(d == null ? " " : d.id() == 0 ? "New Account" : d.name());
         for (JComponent c : new JComponent[] {nameField, typeCombo, parentCombo, bankField, startDate, openingField,
                 adjustmentField, accountNumberField, routingNumberField, categoryCombo, websiteField, commentsArea,
-                rateField, originalField, termSpinner, interestCategoryCombo, scheduleButton, loanPaymentField,
-                firstPaymentPicker,
+                rateField, interestMethodCombo, originalField, termSpinner, interestCategoryCombo, scheduleButton,
+                loanPaymentField, firstPaymentPicker,
                 aprField, limitField, statementDaySpinner, dueDaySpinner, minPercentField, minFloorField,
                 payoffButton}) {
             c.setEnabled(on);
@@ -514,6 +523,7 @@ final class ManageAccountsDialog extends JDialog {
         interestCategoryCombo.setSelectedItem(text(t.interestCategory()));
         loanPaymentField.setText(t.paymentCents() == 0 ? "" : Money.format(t.paymentCents()));
         firstPaymentPicker.setDate(t.firstPayment());
+        interestMethodCombo.setSelectedIndex(t.interestMethod() == null ? 0 : t.interestMethod().ordinal());
         AccountRepository.CardTerms ct = d.card() == null ? AccountRepository.CardTerms.NONE : d.card();
         aprField.setText(ct.aprMilli() == 0 ? "" : Loan.formatRate(ct.aprMilli()).replace("%", ""));
         limitField.setText(ct.limitCents() == 0 ? "" : Money.format(ct.limitCents()));
@@ -568,10 +578,57 @@ final class ManageAccountsDialog extends JDialog {
                     + (l.paymentCents() > 0 && calculated > 0 && calculated != payment
                             ? " (the standard calculation gives " + Money.format(calculated) + ")" : "")
                     + (maturity == null ? "" : "<br>Matures " + maturity.format(LedgerTableModel.DISPLAY_DATE))
+                    + totals(l, payment)
                     + "</html>");
         } catch (IllegalArgumentException e) {
             loanSummary.setText(" ");
         }
+    }
+
+    /**
+     * The loan's totals, as summary lines: over its original terms (what the
+     * lender's disclosure calls the total of payments and finance charge),
+     * paid so far, and what's left to pay at the regular payment.
+     */
+    private String totals(Loan l, long payment) {
+        StringBuilder s = new StringBuilder();
+        java.time.LocalDate first = l.firstPaymentDate();
+        if (l.originalCents() > 0 && first != null) {
+            List<Loan.Payment> all = l.schedule(l.originalCents(), first, payment);
+            long total = all.stream().mapToLong(Loan.Payment::paymentCents).sum();
+            long interest = all.stream().mapToLong(Loan.Payment::interestCents).sum();
+            s.append("<br>Original terms: <b>").append(Money.format(total)).append("</b> in all, <b>")
+             .append(Money.format(interest)).append("</b> of it interest");
+        }
+        if (loaded == null || loaded.id() == 0 || loaded.type() != AccountType.LOAN) {
+            return s.toString();                         // nothing paid on a new loan
+        }
+        try {
+            java.time.LocalDate today = java.time.LocalDate.now();
+            long[] paid = accounts.loanPaid(loaded.id(), today);
+            long owed = accounts.principalOwed(loaded.id(), today);
+            s.append("<br>Paid so far: ").append(Money.format(paid[0])).append(", ")
+             .append(Money.format(paid[1])).append(" of it interest");
+            if (owed > 0) {
+                java.time.LocalDate next = first == null ? today.plusMonths(1) : first;
+                while (!next.isAfter(today)) {
+                    next = next.plusMonths(1);
+                }
+                List<Loan.Payment> rest = l.schedule(owed, next, payment);
+                if (!rest.isEmpty() && rest.get(rest.size() - 1).balanceCents() == 0) {
+                    long left = rest.stream().mapToLong(Loan.Payment::paymentCents).sum();
+                    long interest = rest.stream().mapToLong(Loan.Payment::interestCents).sum();
+                    s.append("<br>Still to pay: about ").append(Money.format(left)).append(" (")
+                     .append(rest.size()).append(rest.size() == 1 ? " payment" : " payments").append(", ")
+                     .append(Money.format(interest)).append(" interest)")
+                     .append("<br>Total: about <b>").append(Money.format(paid[0] + left)).append("</b>, <b>")
+                     .append(Money.format(paid[1] + interest)).append("</b> of it interest");
+                }
+            }
+        } catch (SQLException e) {
+            // the totals are a convenience: leave them out
+        }
+        return s.toString();
     }
 
     /** The card as the form has it. @throws IllegalArgumentException with a message fit to show */
@@ -659,7 +716,8 @@ final class ManageAccountsDialog extends JDialog {
         return new Loan(loaded == null ? 0 : loaded.id(), Loan.parseRate(rateField.getText()), original,
                 (Integer) termSpinner.getValue(), startDate.getDateOrNull(),
                 Objects.toString(interestCategoryCombo.getEditor().getItem(), "").trim(), payment,
-                firstPaymentPicker.getDateOrNull());
+                firstPaymentPicker.getDateOrNull(),
+                Loan.InterestMethod.values()[Math.max(0, interestMethodCombo.getSelectedIndex())]);
     }
 
     /** Shows the amortization schedule for the loan as the form has it. */
@@ -678,7 +736,7 @@ final class ManageAccountsDialog extends JDialog {
         long owedNow = 0;
         try {
             if (loaded != null && loaded.id() != 0) {
-                owedNow = -accounts.balanceThrough(loaded.id(), java.time.LocalDate.now());
+                owedNow = accounts.principalOwed(loaded.id(), java.time.LocalDate.now());
             }
         } catch (SQLException e) {
             owedNow = 0;
@@ -754,7 +812,7 @@ final class ManageAccountsDialog extends JDialog {
             String cat = l.interestCategory();
             terms = new AccountRepository.LoanTerms(l.rateMilli(), l.originalCents(), l.termMonths(),
                     cat == null || cat.isBlank() ? null : CategoryRepository.normalize(cat), l.paymentCents(),
-                    l.firstPayment());
+                    l.firstPayment(), l.interestMethod());
         }
         String category = Objects.toString(categoryCombo.getEditor().getItem(), "").trim();
         if (!category.isEmpty()) {
@@ -770,7 +828,7 @@ final class ManageAccountsDialog extends JDialog {
     private static long amount(JTextField f, String what) {
         String t = f.getText().trim();
         try {
-            return t.isEmpty() ? 0 : Money.parse(t);
+            return t.isEmpty() ? 0 : Money.parseTyped(t);
         } catch (IllegalArgumentException e) {
             throw new IllegalArgumentException(what + ": " + e.getMessage());
         }

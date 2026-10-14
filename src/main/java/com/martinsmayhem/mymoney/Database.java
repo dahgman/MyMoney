@@ -12,6 +12,8 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.ArrayList;
+import java.util.List;
 import java.time.Instant;
 
 /**
@@ -41,7 +43,7 @@ public class Database implements AutoCloseable {
      *  12 - loans: the lender's monthly payment and first payment date
      * When changing the schema: bump this, update createSchema(), and add a step to upgrade().
      */
-    public static final int SCHEMA_VERSION = 12;
+    public static final int SCHEMA_VERSION = 16;
 
     private final Path file;
     private final Connection conn;
@@ -152,6 +154,42 @@ public class Database implements AutoCloseable {
                 throw new SQLException("Not a MyMoney file.");
             }
             return Integer.parseInt(rs.getString(1));
+        }
+    }
+
+    /**
+     * Loan payments entered in the loan's ledger as money out (in the column
+     * then called Payment, now Charge) raised what's owed instead of lowering
+     * it. Any such entry that's plainly a payment (the loan's monthly payment,
+     * to the cent or a cent off for the last one, with no category and no
+     * transfer) becomes money in.
+     */
+    private void fixLoanPaymentSigns(Statement st) throws SQLException {
+        List<long[]> loans = new ArrayList<>();           // account, regular payment
+        try (ResultSet rs = st.executeQuery("SELECT id, interest_rate_milli, original_amount_cents, term_months,"
+                + " loan_payment_cents FROM account WHERE type = 'LOAN'")) {
+            while (rs.next()) {
+                Loan l = new Loan(rs.getLong(1), rs.getInt(2), rs.getLong(3), rs.getInt(4), null, null,
+                        rs.getLong(5), null);
+                loans.add(new long[] {rs.getLong(1), l.regularPayment()});
+            }
+        }
+        try (PreparedStatement ps = conn.prepareStatement("""
+                UPDATE split SET amount_cents = -amount_cents
+                WHERE amount_cents BETWEEN ? AND ? AND category_id IS NULL AND transfer_account_id IS NULL
+                  AND loan_interest = 0
+                  AND txn_id IN (SELECT id FROM txn WHERE account_id = ?)
+                  AND (SELECT COUNT(*) FROM split o WHERE o.txn_id = split.txn_id) = 1
+                """)) {
+            for (long[] l : loans) {
+                if (l[1] <= 0) {
+                    continue;
+                }
+                ps.setLong(1, -l[1] - 1);
+                ps.setLong(2, -l[1] + 1);
+                ps.setLong(3, l[0]);
+                ps.executeUpdate();
+            }
         }
     }
 
@@ -270,7 +308,30 @@ public class Database implements AutoCloseable {
                 st.execute("ALTER TABLE account ADD COLUMN loan_payment_cents INTEGER NOT NULL DEFAULT 0");
                 st.execute("ALTER TABLE account ADD COLUMN first_payment_date TEXT");
             }
-            // Future: if (fromVersion < 13) { ... }
+            if (fromVersion < 13) {
+                st.execute("ALTER TABLE account ADD COLUMN interest_method TEXT NOT NULL DEFAULT 'M'");
+            }
+            if (fromVersion < 14) {
+                // A loan payment's interest is now a split of the payment itself, not a transaction
+                // of its own (as a test build of version 13 kept it): those go, and are recalculated.
+                boolean hasInterestFor = false;
+                try (ResultSet rs = st.executeQuery("SELECT 1 FROM pragma_table_info('txn')"
+                        + " WHERE name = 'interest_for'")) {
+                    hasInterestFor = rs.next();
+                }
+                if (hasInterestFor) {
+                    st.execute("DELETE FROM txn WHERE interest_for IS NOT NULL");
+                    st.execute("ALTER TABLE txn DROP COLUMN interest_for");
+                }
+                st.execute("ALTER TABLE split ADD COLUMN loan_interest INTEGER NOT NULL DEFAULT 0");
+            }
+            if (fromVersion < 15) {
+                st.execute("ALTER TABLE txn ADD COLUMN loan_interest_cents INTEGER NOT NULL DEFAULT 0");
+            }
+            if (fromVersion < 16) {
+                fixLoanPaymentSigns(st);
+            }
+            // Future: if (fromVersion < 17) { ... }
 
             try (PreparedStatement ps = conn.prepareStatement(
                     "UPDATE meta SET value = ? WHERE key = 'schema_version'")) {
@@ -321,7 +382,8 @@ public class Database implements AutoCloseable {
                 min_payment_percent_milli INTEGER NOT NULL DEFAULT 0,  -- cards: minimum payment, % of balance (thousandths)
                 min_payment_floor_cents   INTEGER NOT NULL DEFAULT 0,  -- cards: smallest minimum payment
                 loan_payment_cents    INTEGER NOT NULL DEFAULT 0,   -- loans: the lender's payment (0 = calculated)
-                first_payment_date    TEXT                          -- loans: first payment due (NULL = a month in)
+                first_payment_date    TEXT,                         -- loans: first payment due (NULL = a month in)
+                interest_method       TEXT NOT NULL DEFAULT 'M'     -- loans: M = monthly (rate / 12), D = daily
             )
             """,
             """
@@ -360,7 +422,8 @@ public class Database implements AutoCloseable {
                 download_status TEXT,                            -- from a bank download: M = matched, N = new
                 download_id     TEXT,                            -- the download's id (OFX FITID, or made up for QIF)
                 schedule_id     INTEGER REFERENCES schedule(id) ON DELETE SET NULL,  -- created by this schedule
-                schedule_date   TEXT                             -- the scheduled date it was created for
+                schedule_date   TEXT,                            -- the scheduled date it was created for
+                loan_interest_cents INTEGER NOT NULL DEFAULT 0   -- loans charged on due dates: this payment's interest (shown only)
             )
             """,
             """
@@ -392,7 +455,9 @@ public class Database implements AutoCloseable {
                 transfer_account_id INTEGER REFERENCES account(id),
                 amount_cents        INTEGER NOT NULL,            -- negative = payment, positive = deposit
                 memo                TEXT,
-                transfer_txn_id     INTEGER REFERENCES txn(id) ON DELETE SET NULL   -- other side of a transfer
+                transfer_txn_id     INTEGER REFERENCES txn(id) ON DELETE SET NULL,  -- other side of a transfer
+                loan_interest       INTEGER NOT NULL DEFAULT 0   -- loans: 1 = a payment's calculated interest,
+                                                                 --   2 = all the scheduled interest (charged on due dates)
             )
             """,
             "CREATE INDEX idx_account_parent ON account(parent_id)",

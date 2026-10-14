@@ -19,8 +19,9 @@ import javax.swing.border.LineBorder;
  * Typing into a cell replaces its old value. Enter runs the onEnter action
  * (the ledger uses it to save and move down).
  * When given a list of suggestions, a drop-down of matching entries appears
- * under the cell while typing (see AutoComplete): Up/Down highlight an entry,
- * Enter or a click picks it, and Escape closes the list.
+ * under the cell while typing (see AutoComplete): Up/Down or a click highlight
+ * an entry, Enter or Space takes it (a double-click too), and Escape closes
+ * the list.
  */
 public class AutoCompleteEditor extends DefaultCellEditor {
 
@@ -50,7 +51,7 @@ public class AutoCompleteEditor extends DefaultCellEditor {
                 cancelCellEditing();
             }
         });
-        complete.setOnClickPick(this::stopCellEditing);   // a click picks and saves
+        complete.setOnClickPick(this::stopCellEditing);   // a double-click picks and saves
     }
 
     @Override

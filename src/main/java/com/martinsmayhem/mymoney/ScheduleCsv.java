@@ -314,8 +314,8 @@ final class ScheduleCsv {
 
     private static LocalDate date(String text, String what) {
         try {
-            return LedgerTableModel.parseDate(text.trim());
-        } catch (IllegalArgumentException e) {
+            return LocalDate.parse(text.trim(), DATE);     // the file's own format, whatever the preference
+        } catch (java.time.format.DateTimeParseException e) {
             throw new IllegalArgumentException(what + " \"" + text + "\" isn't a date (use MM/DD/YYYY).");
         }
     }

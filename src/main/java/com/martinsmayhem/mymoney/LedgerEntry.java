@@ -24,6 +24,9 @@ public class LedgerEntry {
     boolean toEnvelope;       // a transfer whose other account is an envelope (read from the database)
     int attachments;          // how many files are attached (read from the database)
     String download;          // from a bank download: "M" matched, "N" new; null = entered by hand
+    long interestCents;       // a loan payment's calculated interest, shown (read from the database)
+    long interestSplitCents;  // the part of it recorded in the payment, lowering its effect on the balance
+    boolean scheduledInterest; // a loan's calculated scheduled-interest charge (read-only but for its status)
 
     /** A separate copy, for trying out changes before saving them. */
     LedgerEntry copy() {
@@ -43,6 +46,9 @@ public class LedgerEntry {
         c.toEnvelope = toEnvelope;
         c.attachments = attachments;
         c.download = download;
+        c.interestCents = interestCents;
+        c.interestSplitCents = interestSplitCents;
+        c.scheduledInterest = scheduledInterest;
         return c;
     }
 
@@ -60,6 +66,14 @@ public class LedgerEntry {
 
     private static String blank(String s) {
         return s == null ? "" : s.trim();
+    }
+
+    /**
+     * What it does to the account's balance: the amount, less any interest
+     * recorded in a loan payment (so just its principal).
+     */
+    long netCents() {
+        return amountCents - interestSplitCents;
     }
 
     boolean isSaved() {

@@ -29,8 +29,8 @@ import java.util.Set;
  *    then the closest date. Ones already cleared (or reconciled, or being
  *    reconciled) come after: the download may be one entered and cleared by
  *    hand, and listing them keeps it from being added twice.
- *  - Accepting a match keeps its payee, puts the bank's description in its
- *    memo, and marks it Cleared. Linking to one already cleared does the
+ *  - Accepting a match keeps its payee, puts the bank's memo in its memo
+ *    (or the bank's name, if it sent no memo), and marks it Cleared. Linking to one already cleared does the
  *    same but leaves its status alone (a reconciled one stays reconciled).
  *  - Adding as new creates a Cleared transaction under the payee the user
  *    chose: a payment to a payee that pays a debt goes to that debt account
@@ -46,7 +46,13 @@ final class DownloadImporter {
     /** One downloaded transaction. id identifies it across imports (OFX FITID, or made up for QIF). */
     record Download(LocalDate date, long amountCents, String payee, String memo, String checkNumber, String id) {
 
-        /** The bank's description: payee and memo, as one line. */
+        /** The bank's text for the transaction to go in a memo: its memo, or (if none) its name. */
+        String bankMemo() {
+            String m = memo == null ? "" : memo.trim();
+            return m.isEmpty() ? (payee == null ? "" : payee.trim()) : m;
+        }
+
+        /** The bank's name and memo as one line (for comparing with payees when looking for matches). */
         String description() {
             String p = payee == null ? "" : payee.trim();
             String m = memo == null ? "" : memo.trim();
@@ -128,7 +134,8 @@ final class DownloadImporter {
         String remembered = rememberedPayee(d);          // a payee chosen for this bank name before also counts
         try (PreparedStatement ps = conn.prepareStatement("""
                 SELECT t.id, t.txn_date, p.name, t.memo, t.check_number, t.status,
-                       (SELECT COALESCE(SUM(amount_cents), 0) FROM split WHERE txn_id = t.id) AS amount
+                       (SELECT COALESCE(SUM(amount_cents), 0) FROM split WHERE txn_id = t.id AND loan_interest <> 1)
+                           AS amount
                 FROM txn t LEFT JOIN payee p ON p.id = t.payee_id
                 WHERE t.account_id = ? AND t.download_status IS NULL
                   AND t.txn_date BETWEEN ? AND ? AND amount = ?
@@ -188,12 +195,12 @@ final class DownloadImporter {
     }
 
     /**
-     * Accepts a match: keeps its payee; puts the bank's description in the memo;
+     * Accepts a match: keeps its payee; puts the bank's memo (or name, if it sent no memo) in the memo;
      * marks it matched, and Cleared (one already cleared or reconciled keeps
      * its status: it is just linked to the download).
      */
     void accept(Download d, Candidate c) throws SQLException {
-        String description = d.description();
+        String description = d.bankMemo();
         String memo = c.memo() == null ? "" : c.memo().trim();
         if (memo.isEmpty()) {
             memo = description;
@@ -209,6 +216,9 @@ final class DownloadImporter {
             TransactionRepository.setText(ps, 4, d.id());
             ps.setLong(5, c.id());
             ps.executeUpdate();
+        }
+        if (!c.alreadyCleared()) {
+            transactions.clearOtherSides(c.id());     // a matched transfer: its other side clears too
         }
     }
 
@@ -229,10 +239,10 @@ final class DownloadImporter {
     }
 
     /**
-     * Adds a download as a new, Cleared transaction in the account's default
-     * category, under the payee the user chose (blank: no payee). If that
-     * isn't the bank's name, the bank's description goes in the memo (as for
-     * a match), so it isn't lost. Returns its id.
+     * Adds a download as a new, Cleared transaction, under the payee the user
+     * chose (the bank's name unless renamed; blank: no payee), with the bank's
+     * memo as its memo. A payment to a payee that pays a debt goes to that
+     * debt; anything else to the account's default category. Returns its id.
      */
     long addNew(Account account, Download d, String payee) throws SQLException {
         conn.setAutoCommit(false);
@@ -247,8 +257,7 @@ final class DownloadImporter {
             e.date = d.date();
             e.payee = payee;
             e.checkNumber = d.checkNumber();
-            boolean renamed = !norm(payee).equals(norm(d.payee()));
-            e.memo = renamed ? d.description() : d.memo();
+            e.memo = d.memo();                          // the bank's NAME is the payee (unless renamed); MEMO the memo
             e.category = debt != null ? debt : account.defaultCategory();
             e.amountCents = d.amountCents();
             e.status = TxnStatus.CLEARED;

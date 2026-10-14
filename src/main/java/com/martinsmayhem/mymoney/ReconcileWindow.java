@@ -532,11 +532,11 @@ final class ReconcileWindow extends JDialog {
         }
 
         long clearedCents() {
-            return rows.stream().filter(e -> e.status == TxnStatus.RECONCILING).mapToLong(e -> e.amountCents).sum();
+            return rows.stream().filter(e -> e.status == TxnStatus.RECONCILING).mapToLong(LedgerEntry::netCents).sum();
         }
 
         long unclearedCents() {
-            return rows.stream().filter(e -> e.status != TxnStatus.RECONCILING).mapToLong(e -> e.amountCents).sum();
+            return rows.stream().filter(e -> e.status != TxnStatus.RECONCILING).mapToLong(LedgerEntry::netCents).sum();
         }
 
         List<LedgerEntry> highlighted() {
@@ -587,7 +587,7 @@ final class ReconcileWindow extends JDialog {
                     case PAYEE -> e.payee == null ? "" : e.payee;
                     case DESCRIPTION -> e.description == null ? "" : e.description;
                     case C -> e.status;
-                    case AMOUNT -> Math.abs(e.amountCents);
+                    case AMOUNT -> Math.abs(e.netCents());
                     default -> "";
                 };
             }

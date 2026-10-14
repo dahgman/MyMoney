@@ -108,7 +108,7 @@ final class CardPayoffDialog extends JDialog {
         long amount = 0;
         if (fixed.isSelected()) {
             try {
-                amount = Math.abs(Money.parse(fixedField.getText()));
+                amount = Math.abs(Money.parseTyped(fixedField.getText()));
             } catch (IllegalArgumentException e) {
                 summary.setText(e.getMessage());
                 return;

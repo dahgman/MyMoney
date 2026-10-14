@@ -80,6 +80,8 @@ final class TransactionDialog extends JDialog {
         } else if (entry.amountCents > 0) {
             deposit.setText(Money.format(entry.amountCents));
         }
+        Money.calculateOnExit(payment);                 // "12.50+3.25" becomes "$15.75"
+        Money.calculateOnExit(deposit);
         boolean split = TransactionRepository.SPLIT_LABEL.equals(entry.category);
         if (split) {                                // a split's amount and categories aren't edited here
             category.setEnabled(false);
@@ -145,7 +147,7 @@ final class TransactionDialog extends JDialog {
                 if (!p.isEmpty() && !d.isEmpty()) {
                     throw new IllegalArgumentException("Enter a payment or a deposit, not both.");
                 }
-                entry.amountCents = !p.isEmpty() ? -Money.parse(p) : !d.isEmpty() ? Money.parse(d) : 0;
+                entry.amountCents = !p.isEmpty() ? -Money.parseTyped(p) : !d.isEmpty() ? Money.parseTyped(d) : 0;
                 String cat = comboText(category);
                 entry.category = cat.isEmpty() ? null
                         : TransactionRepository.isTransfer(cat) ? cat : CategoryRepository.normalize(cat);

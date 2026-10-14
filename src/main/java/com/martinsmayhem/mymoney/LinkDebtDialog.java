@@ -177,7 +177,7 @@ final class LinkDebtDialog extends JDialog {
         long owed;
         int rate;
         try {
-            owed = owedField.getText().isBlank() ? 0 : Math.abs(Money.parse(owedField.getText()));
+            owed = owedField.getText().isBlank() ? 0 : Math.abs(Money.parseTyped(owedField.getText()));
             rate = Loan.parseRate(rateField.getText());
         } catch (IllegalArgumentException e) {
             error(e.getMessage());

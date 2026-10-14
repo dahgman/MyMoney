@@ -17,9 +17,16 @@ public class AccountRepository {
             + " balance_adjustment_cents, default_category";
 
     private final Connection conn;
+    private final CategoryRepository categories;
 
     public AccountRepository(Database db) {
         this.conn = db.getConnection();
+        this.categories = new CategoryRepository(db);
+    }
+
+    /** The category payments to a deleted loan or credit card get: "Debt Payments:Visa". */
+    static String debtPaymentsCategory(String accountName) {
+        return "Debt Payments:" + accountName.replace(":", "-").trim();
     }
 
     /** Every account, sorted by name (case-insensitive). */
@@ -153,8 +160,16 @@ public class AccountRepository {
      * startDate the origination date.
      */
     public record LoanTerms(int rateMilli, long originalCents, int termMonths, String interestCategory,
-                            long paymentCents, java.time.LocalDate firstPayment) {
-        public static final LoanTerms NONE = new LoanTerms(0, 0, 0, null, 0, null);
+                            long paymentCents, java.time.LocalDate firstPayment,
+                            Loan.InterestMethod interestMethod) {
+        public static final LoanTerms NONE = new LoanTerms(0, 0, 0, null, 0, null, Loan.InterestMethod.MONTHLY);
+
+        /** With monthly interest. */
+        public LoanTerms(int rateMilli, long originalCents, int termMonths, String interestCategory,
+                         long paymentCents, java.time.LocalDate firstPayment) {
+            this(rateMilli, originalCents, termMonths, interestCategory, paymentCents, firstPayment,
+                    Loan.InterestMethod.MONTHLY);
+        }
     }
 
     /**
@@ -176,6 +191,87 @@ public class AccountRepository {
         }
     }
 
+    /**
+     * An account's balance at the end of each day from from to to (inclusive):
+     * its opening balance and adjustment plus every transaction dated on or
+     * before that day, whatever its status. Index 0 is from.
+     */
+    public long[] dailyBalances(long accountId, java.time.LocalDate from, java.time.LocalDate to) throws SQLException {
+        int days = (int) java.time.temporal.ChronoUnit.DAYS.between(from, to) + 1;
+        long[] out = new long[Math.max(0, days)];
+        if (days <= 0) {
+            return out;
+        }
+        long balance = balanceThrough(accountId, from.minusDays(1));
+        java.util.Map<java.time.LocalDate, Long> perDay = new java.util.HashMap<>();
+        try (PreparedStatement ps = conn.prepareStatement("""
+                SELECT t.txn_date, SUM(s.amount_cents) FROM split s JOIN txn t ON t.id = s.txn_id
+                WHERE t.account_id = ? AND t.txn_date BETWEEN ? AND ?
+                GROUP BY t.txn_date
+                """)) {
+            ps.setLong(1, accountId);
+            ps.setString(2, from.toString());
+            ps.setString(3, to.toString());
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    perDay.put(java.time.LocalDate.parse(rs.getString(1)), rs.getLong(2));
+                }
+            }
+        }
+        for (int i = 0; i < days; i++) {
+            balance += perDay.getOrDefault(from.plusDays(i), 0L);
+            out[i] = balance;
+        }
+        return out;
+    }
+
+    /**
+     * What's been paid on a loan through a date: {the payments' total, the
+     * interest in them}. A payment is a transaction that lowers what's owed.
+     */
+    public long[] loanPaid(long accountId, java.time.LocalDate through) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement("""
+                SELECT COALESCE(SUM(paid), 0), COALESCE(SUM(interest), 0) FROM (
+                    SELECT SUM(CASE WHEN s.loan_interest = 0 THEN s.amount_cents ELSE 0 END) AS paid,
+                           -SUM(CASE WHEN s.loan_interest = 1 THEN s.amount_cents ELSE 0 END)
+                               + MAX(t.loan_interest_cents) AS interest
+                    FROM txn t JOIN split s ON s.txn_id = t.id
+                    WHERE t.account_id = ? AND t.txn_date <= ?
+                    GROUP BY t.id)
+                WHERE paid > 0
+                """)) {
+            ps.setLong(1, accountId);
+            ps.setString(2, through.toString());
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                return new long[] {rs.getLong(1), rs.getLong(2)};
+            }
+        }
+    }
+
+    /**
+     * The principal still owed on a loan on a date (positive). For a loan
+     * charged on its due dates, the balance also holds the interest still
+     * scheduled; that's taken out. For anything else it's just what's owed.
+     */
+    public long principalOwed(long accountId, java.time.LocalDate date) throws SQLException {
+        long owed = -balanceThrough(accountId, date);
+        try (PreparedStatement ps = conn.prepareStatement("""
+                SELECT COALESCE((SELECT -SUM(s.amount_cents) FROM split s JOIN txn t ON t.id = s.txn_id
+                                 WHERE t.account_id = ? AND s.loan_interest = 2), 0)
+                     - COALESCE((SELECT SUM(loan_interest_cents) FROM txn
+                                 WHERE account_id = ? AND txn_date <= ?), 0)
+                """)) {
+            ps.setLong(1, accountId);
+            ps.setLong(2, accountId);
+            ps.setString(3, date.toString());
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                return owed - rs.getLong(1);              // less the interest not yet paid
+            }
+        }
+    }
+
     /** A loan account's terms as a Loan, or null if the account isn't a loan. */
     public Loan findLoan(long accountId) throws SQLException {
         Details d = findDetails(accountId);
@@ -184,7 +280,7 @@ public class AccountRepository {
         }
         LoanTerms t = d.loan();
         return new Loan(accountId, t.rateMilli(), t.originalCents(), t.termMonths(), d.startDate(),
-                t.interestCategory(), t.paymentCents(), t.firstPayment());
+                t.interestCategory(), t.paymentCents(), t.firstPayment(), t.interestMethod());
     }
 
     public Details findDetails(long id) throws SQLException {
@@ -192,7 +288,8 @@ public class AccountRepository {
                 + " start_date, opening_balance_cents, balance_adjustment_cents, account_number, routing_number,"
                 + " default_category, comments, website, interest_rate_milli, original_amount_cents, term_months,"
                 + " interest_category, credit_limit_cents, statement_day, due_day, min_payment_percent_milli,"
-                + " min_payment_floor_cents, loan_payment_cents, first_payment_date FROM account WHERE id = ?")) {
+                + " min_payment_floor_cents, loan_payment_cents, first_payment_date, interest_method"
+                + " FROM account WHERE id = ?")) {
             ps.setLong(1, id);
             try (ResultSet rs = ps.executeQuery()) {
                 if (!rs.next()) {
@@ -209,7 +306,8 @@ public class AccountRepository {
                         type != AccountType.LOAN ? LoanTerms.NONE      // only the terms for its type
                                 : new LoanTerms(rs.getInt(14), rs.getLong(15), rs.getInt(16), rs.getString(17),
                                         rs.getLong(23), rs.getString(24) == null ? null
-                                                : java.time.LocalDate.parse(rs.getString(24))),
+                                                : java.time.LocalDate.parse(rs.getString(24)),
+                                        Loan.InterestMethod.fromCode(rs.getString(25))),
                         type != AccountType.CREDIT_CARD ? CardTerms.NONE
                                 : new CardTerms(rs.getInt(14), rs.getLong(18), rs.getInt(19), rs.getInt(20),
                                         rs.getInt(21), rs.getLong(22)));
@@ -224,7 +322,8 @@ public class AccountRepository {
                 + " account_number = ?, routing_number = ?, default_category = ?, comments = ?, website = ?,"
                 + " interest_rate_milli = ?, original_amount_cents = ?, term_months = ?, interest_category = ?,"
                 + " credit_limit_cents = ?, statement_day = ?, due_day = ?, min_payment_percent_milli = ?,"
-                + " min_payment_floor_cents = ?, loan_payment_cents = ?, first_payment_date = ? WHERE id = ?")) {
+                + " min_payment_floor_cents = ?, loan_payment_cents = ?, first_payment_date = ?, interest_method = ?"
+                + " WHERE id = ?")) {
             ps.setString(1, d.name());
             ps.setString(2, d.type().name());
             TransactionRepository.setId(ps, 3, d.parentId());
@@ -251,7 +350,8 @@ public class AccountRepository {
             ps.setLong(21, c.minFloorCents());
             ps.setLong(22, t.paymentCents());
             TransactionRepository.setText(ps, 23, t.firstPayment() == null ? null : t.firstPayment().toString());
-            ps.setLong(24, d.id());
+            ps.setString(24, t.interestMethod() == null ? "M" : t.interestMethod().code());
+            ps.setLong(25, d.id());
             ps.executeUpdate();
         }
     }
@@ -324,7 +424,8 @@ public class AccountRepository {
     }
 
     /** What deleting an account would affect, for the confirmation message. */
-    public record DeleteInfo(int transactions, int reconciled, int transfers, List<String> envelopes) {
+    public record DeleteInfo(int transactions, int reconciled, int transfers, List<String> envelopes,
+                             int linkedSchedules, int upcomingPayments) {
     }
 
     public DeleteInfo deleteInfo(long id) throws SQLException {
@@ -359,7 +460,48 @@ public class AccountRepository {
                 }
             }
         }
-        return new DeleteInfo(transactions, reconciled, transfers, envelopes);
+        // Schedules in other accounts that pay this one (a loan or card), and their untouched upcoming payments.
+        int linked = 0;
+        int upcoming = 0;
+        for (long s : linkedScheduleIds(id)) {
+            linked++;
+            upcoming += untouchedUpcoming(s).size();
+        }
+        return new DeleteInfo(transactions, reconciled, transfers, envelopes, linked, upcoming);
+    }
+
+    /** Schedules in other accounts whose category is a transfer to this account ("[Visa]"). */
+    private List<Long> linkedScheduleIds(long id) throws SQLException {
+        List<Long> ids = new ArrayList<>();
+        try (PreparedStatement ps = conn.prepareStatement("""
+                SELECT s.id FROM schedule s JOIN account a ON a.id = ?
+                WHERE s.account_id <> a.id AND s.category = '[' || a.name || ']' COLLATE NOCASE
+                """)) {
+            ps.setLong(1, id);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    ids.add(rs.getLong(1));
+                }
+            }
+        }
+        return ids;
+    }
+
+    /** A schedule's transactions still Scheduled and dated from today on. */
+    private List<Long> untouchedUpcoming(long scheduleId) throws SQLException {
+        List<Long> ids = new ArrayList<>();
+        try (PreparedStatement ps = conn.prepareStatement("SELECT id FROM txn WHERE schedule_id = ?"
+                + " AND status = ? AND schedule_date >= ?")) {
+            ps.setLong(1, scheduleId);
+            ps.setString(2, TxnStatus.SCHEDULED.code());
+            ps.setString(3, java.time.LocalDate.now().toString());
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    ids.add(rs.getLong(1));
+                }
+            }
+        }
+        return ids;
     }
 
     /**
@@ -371,12 +513,61 @@ public class AccountRepository {
     public void delete(long id) throws SQLException {
         conn.setAutoCommit(false);
         try {
+            Account deleted = null;
+            for (Account a : findAll()) {
+                if (a.id() == id) {
+                    deleted = a;
+                }
+            }
+            boolean debt = deleted != null
+                    && (deleted.type() == AccountType.LOAN || deleted.type() == AccountType.CREDIT_CARD);
+            Long debtCategory = debt ? categories.findOrCreate(debtPaymentsCategory(deleted.name())) : null;
+
+            // Schedules elsewhere that pay this account: their untouched upcoming payments go,
+            // and the schedule ends (or, if it never started, goes).
+            java.time.LocalDate yesterday = java.time.LocalDate.now().minusDays(1);
+            for (long s : linkedScheduleIds(id)) {
+                for (long txn : untouchedUpcoming(s)) {
+                    try (PreparedStatement ps = conn.prepareStatement("DELETE FROM txn WHERE id = ?")) {
+                        ps.setLong(1, txn);
+                        ps.executeUpdate();             // its other side, in this account, goes below
+                    }
+                }
+                String start;
+                try (PreparedStatement ps = conn.prepareStatement("SELECT start_date FROM schedule WHERE id = ?")) {
+                    ps.setLong(1, s);
+                    try (ResultSet rs = ps.executeQuery()) {
+                        rs.next();
+                        start = rs.getString(1);
+                    }
+                }
+                if (java.time.LocalDate.parse(start).isAfter(yesterday)) {
+                    try (PreparedStatement ps = conn.prepareStatement("DELETE FROM schedule WHERE id = ?")) {
+                        ps.setLong(1, s);
+                        ps.executeUpdate();
+                    }
+                } else {
+                    try (PreparedStatement ps = conn.prepareStatement("UPDATE schedule SET end_date = ?,"
+                            + " max_count = NULL, category = ? WHERE id = ?")) {
+                        ps.setString(1, yesterday.toString());
+                        TransactionRepository.setText(ps, 2,
+                                debt ? debtPaymentsCategory(deleted.name()) : null);   // no longer "[name]"
+                        ps.setLong(3, s);
+                        ps.executeUpdate();
+                    }
+                }
+            }
+
+            // Transfers kept in other accounts: no longer transfers; payments to a debt
+            // get "Debt Payments:<name>" so the history still says where the money went.
             try (PreparedStatement ps = conn.prepareStatement(
-                    "UPDATE split SET transfer_account_id = NULL, transfer_txn_id = NULL"
+                    "UPDATE split SET transfer_account_id = NULL, transfer_txn_id = NULL,"
+                    + " category_id = COALESCE(?, category_id)"
                     + " WHERE transfer_account_id = ?"
                     + " AND txn_id IN (SELECT id FROM txn WHERE account_id <> ?)")) {
-                ps.setLong(1, id);
+                TransactionRepository.setId(ps, 1, debtCategory);
                 ps.setLong(2, id);
+                ps.setLong(3, id);
                 ps.executeUpdate();
             }
             for (String sql : new String[] {
@@ -441,12 +632,13 @@ public class AccountRepository {
     /**
      * The balance shown next to each account in the account tree, by account id:
      * the cleared balance (opening + reconciled, cleared and reconciling), except
-     * for envelopes, which show their current balance (opening + every
-     * transaction dated today or earlier).
+     * for envelopes and loans, which show their current balance (opening +
+     * every transaction dated today or earlier; for a loan, its remaining
+     * balance, as its top panel shows it).
      */
     public java.util.Map<Long, Long> treeBalances() throws SQLException {
         String sql = "SELECT a.id, a.opening_balance_cents + a.balance_adjustment_cents + COALESCE(SUM(CASE"
-                + " WHEN a.type = 'ENVELOPE' THEN CASE WHEN t.txn_date <= ? THEN s.amount_cents END"
+                + " WHEN a.type IN ('ENVELOPE', 'LOAN') THEN CASE WHEN t.txn_date <= ? THEN s.amount_cents END"
                 + " WHEN t.status IN (?, ?, ?) THEN s.amount_cents END), 0)"
                 + " FROM account a LEFT JOIN txn t ON t.account_id = a.id LEFT JOIN split s ON s.txn_id = t.id"
                 + " GROUP BY a.id";

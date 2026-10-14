@@ -31,12 +31,14 @@ public class TransactionRepository {
     private final CategoryRepository categories;
     private final AccountRepository accounts;
     private final TagRepository tags;
+    private final LoanInterest loanInterest;
 
     public TransactionRepository(Database db) {
         this.conn = db.getConnection();
         this.categories = new CategoryRepository(db);
         this.accounts = new AccountRepository(db);
         this.tags = new TagRepository(db);
+        this.loanInterest = new LoanInterest(db);
     }
 
     /** True for Category text naming a transfer account, like "[Savings]". */
@@ -60,12 +62,15 @@ public class TransactionRepository {
                    tg.name, tg.color,
                    CASE WHEN sp.n = 1 AND xa.type = 'ENVELOPE' THEN 1 ELSE 0 END,
                    (SELECT COUNT(*) FROM attachment at WHERE at.txn_id = t.id),
-                   t.download_status
+                   t.download_status,
+                   COALESCE((SELECT -SUM(amount_cents) FROM split WHERE txn_id = t.id AND loan_interest = 1), 0),
+                   t.loan_interest_cents,
+                   EXISTS (SELECT 1 FROM split WHERE txn_id = t.id AND loan_interest = 2)
             FROM txn t
             LEFT JOIN payee p ON p.id = t.payee_id
             LEFT JOIN (SELECT txn_id, COUNT(*) AS n, SUM(amount_cents) AS total,
                               MAX(category_id) AS cat, MAX(transfer_account_id) AS xfer
-                         FROM split GROUP BY txn_id) sp ON sp.txn_id = t.id
+                         FROM split WHERE loan_interest <> 1 GROUP BY txn_id) sp ON sp.txn_id = t.id
             LEFT JOIN category c ON c.id = sp.cat
             LEFT JOIN category cp ON cp.id = c.parent_id
             LEFT JOIN account xa ON xa.id = sp.xfer
@@ -94,6 +99,9 @@ public class TransactionRepository {
                     e.toEnvelope = rs.getInt(12) == 1;
                     e.attachments = rs.getInt(13);
                     e.download = rs.getString(14);
+                    e.interestSplitCents = rs.getLong(15);
+                    e.interestCents = e.interestSplitCents + rs.getLong(16);
+                    e.scheduledInterest = rs.getBoolean(17);
                     list.add(e);
                 }
             }
@@ -130,50 +138,12 @@ public class TransactionRepository {
             ps.executeUpdate();
         }
         long id = lastInsertId();
-        Loan loan = target.transferAccountId() != null && entry.amountCents < 0
-                ? accounts.findLoan(target.transferAccountId()) : null;
-        long interest = loan == null ? 0 : loanInterest(loan, entry.date, -entry.amountCents);
-        if (interest > 0) {
-            // A payment into a loan: the month's interest goes to the interest category,
-            // the rest (including any extra) is principal, transferred to the loan.
-            long principal = entry.amountCents + interest;
-            if (principal != 0) {
-                createMirror(insertSplit(id, principal, target, "Principal", null));
-            }
-            insertSplit(id, -interest, new Target(categories.findOrCreate(loan.interestCategoryOrDefault()), null),
-                    "Interest", null);
-        } else {
-            long splitId = insertSplit(id, entry.amountCents, target, null, null);
-            if (target.transferAccountId() != null) {
-                createMirror(splitId);
-            }
+        long splitId = insertSplit(id, entry.amountCents, target, null, null);
+        if (target.transferAccountId() != null) {
+            createMirror(splitId);
         }
         entry.id = id;
-    }
-
-    /**
-     * The interest part of a payment into a loan on a date: a month's interest
-     * on what is owed then (at most the whole payment). A payment in a month
-     * that already had one is all principal (extra principal), as is any
-     * payment into a loan with no interest rate or nothing owed.
-     */
-    private long loanInterest(Loan loan, LocalDate date, long paymentCents) throws SQLException {
-        if (loan.rateMilli() <= 0) {
-            return 0;
-        }
-        try (PreparedStatement ps = conn.prepareStatement("SELECT 1 FROM txn t JOIN split s ON s.txn_id = t.id"
-                + " WHERE t.account_id = ? AND t.txn_date BETWEEN ? AND ? AND s.amount_cents > 0 LIMIT 1")) {
-            ps.setLong(1, loan.accountId());
-            ps.setString(2, date.withDayOfMonth(1).toString());
-            ps.setString(3, date.toString());
-            try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) {
-                    return 0;                           // this month's interest is already paid
-                }
-            }
-        }
-        long owed = -accounts.balanceThrough(loan.accountId(), date);
-        return Math.min(loan.monthlyInterest(owed), paymentCents);
+        recalculateLoans(accountsOf(id));              // a payment into (or more borrowed from) a loan
     }
 
     /** As delete(), for a caller that already has a database transaction open: doesn't commit or roll back. */
@@ -217,6 +187,16 @@ public class TransactionRepository {
     }
 
     private void doUpdate(LedgerEntry entry) throws SQLException {
+        if (isScheduledInterest(entry.id)) {
+            // Calculated: only its status can change (for reconciling).
+            try (PreparedStatement ps = conn.prepareStatement("UPDATE txn SET status = ? WHERE id = ?")) {
+                ps.setString(1, entry.status.code());
+                ps.setLong(2, entry.id);
+                ps.executeUpdate();
+            }
+            return;
+        }
+        java.util.Set<Long> loans = accountsOf(entry.id);
         int splits = splitCount(entry.id);
         if (splits > 1 && (entry.amountCents != splitTotal(entry.id)
                 || !SPLIT_LABEL.equals(entry.category))) {
@@ -243,7 +223,8 @@ public class TransactionRepository {
             Long oldTransferAccount;
             Long mirror;
             try (PreparedStatement ps = conn.prepareStatement(
-                    "SELECT id, transfer_account_id, transfer_txn_id FROM split WHERE txn_id = ?")) {
+                    "SELECT id, transfer_account_id, transfer_txn_id FROM split"
+                            + " WHERE txn_id = ? AND loan_interest <> 1")) {
                 ps.setLong(1, entry.id);
                 try (ResultSet rs = ps.executeQuery()) {
                     rs.next();
@@ -279,6 +260,33 @@ public class TransactionRepository {
             }
         }
         syncMirrors(entry.id);
+        if (entry.status == TxnStatus.CLEARED) {
+            clearOtherSides(entry.id);
+        }
+        loans.addAll(accountsOf(entry.id));
+        recalculateLoans(loans);
+    }
+
+    /**
+     * When one side of a transfer is cleared, the other side is cleared too
+     * if it's still Scheduled or has no status (one already marked otherwise,
+     * like Pending or Reconciled, is left alone).
+     */
+    void clearOtherSides(long txnId) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement("""
+                UPDATE txn SET status = ?
+                WHERE status IN (?, ?) AND id IN (
+                    SELECT transfer_txn_id FROM split WHERE txn_id = ? AND transfer_txn_id IS NOT NULL
+                    UNION
+                    SELECT txn_id FROM split WHERE transfer_txn_id = ?)
+                """)) {
+            ps.setString(1, TxnStatus.CLEARED.code());
+            ps.setString(2, TxnStatus.SCHEDULED.code());
+            ps.setString(3, TxnStatus.NONE.code());
+            ps.setLong(4, txnId);
+            ps.setLong(5, txnId);
+            ps.executeUpdate();
+        }
     }
 
     /** Deletes a transaction, and the matching side of any transfer in it. */
@@ -289,7 +297,14 @@ public class TransactionRepository {
     /** Deletes several transactions at once: all of them, or none. */
     public void deleteAll(List<Long> txnIds) throws SQLException {
         inTransaction(() -> {
+            // A loan's scheduled interest among others is passed over (it's recalculated anyway).
+            List<Long> ids = new ArrayList<>();
             for (long id : txnIds) {
+                if (!isScheduledInterest(id)) {
+                    ids.add(id);
+                }
+            }
+            for (long id : ids.isEmpty() ? txnIds : ids) {
                 doDelete(id);
             }
         });
@@ -321,7 +336,8 @@ public class TransactionRepository {
             LEFT JOIN account xa ON xa.id = s.transfer_account_id
             WHERE p.name = ? COLLATE NOCASE
               AND (c.id IS NOT NULL OR xa.id IS NOT NULL)
-              AND (SELECT COUNT(*) FROM split WHERE txn_id = t.id) = 1
+              AND s.loan_interest <> 1
+              AND (SELECT COUNT(*) FROM split WHERE txn_id = t.id AND loan_interest <> 1) = 1
             ORDER BY t.account_id = ? DESC, t.txn_date DESC, t.id DESC
             LIMIT 1
             """;
@@ -385,6 +401,11 @@ public class TransactionRepository {
     }
 
     private void doDelete(long txnId) throws SQLException {
+        if (isScheduledInterest(txnId)) {
+            throw new SQLException("A loan's scheduled interest is calculated from its terms and payments, so it"
+                    + " can't be deleted. Change the loan's terms in Manage Accounts instead.");
+        }
+        java.util.Set<Long> loans = accountsOf(txnId);
         for (long mirror : mirrorsOf(txnId)) {
             deleteMirror(mirror);
         }
@@ -392,6 +413,54 @@ public class TransactionRepository {
             ps.setLong(1, txnId);
             ps.executeUpdate();             // its splits go too (ON DELETE CASCADE)
         }
+        recalculateLoans(loans);                        // its interest goes, and later payments change
+    }
+
+    // ----- Loan interest ---------------------------------------------------
+
+    /**
+     * Recalculates the interest in every loan's payments (see LoanInterest).
+     * Returns true if any changed.
+     */
+    public boolean recalculateAllLoans() throws SQLException {
+        int before = loanInterest.changes();
+        inTransaction(loanInterest::recalculateAll);
+        return loanInterest.changes() != before;
+    }
+
+    /** Recalculates the interest of whichever of these accounts are loans. */
+    private void recalculateLoans(java.util.Set<Long> accountIds) throws SQLException {
+        for (long id : accountIds) {
+            loanInterest.recalculate(id);
+        }
+    }
+
+    /** True for a loan's calculated scheduled-interest charge (see LoanInterest). */
+    private boolean isScheduledInterest(long txnId) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT 1 FROM split WHERE txn_id = ? AND loan_interest = 2")) {
+            ps.setLong(1, txnId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next();
+            }
+        }
+    }
+
+    /** The accounts a transaction touches: its own and those on the other side of its transfers. */
+    private java.util.Set<Long> accountsOf(long txnId) throws SQLException {
+        java.util.Set<Long> ids = new java.util.HashSet<>();
+        try (PreparedStatement ps = conn.prepareStatement("SELECT account_id FROM txn WHERE id = ?"
+                + " UNION SELECT transfer_account_id FROM split"
+                + " WHERE txn_id = ? AND transfer_account_id IS NOT NULL")) {
+            ps.setLong(1, txnId);
+            ps.setLong(2, txnId);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    ids.add(rs.getLong(1));
+                }
+            }
+        }
+        return ids;
     }
 
     /** Database work that must succeed or fail as a whole. */
@@ -469,7 +538,8 @@ public class TransactionRepository {
         String sql = """
             SELECT s.transfer_txn_id, s.amount_cents, a.name, m.status,
                    m.txn_date <> t.txn_date OR COALESCE(m.payee_id, -1) <> COALESCE(t.payee_id, -1)
-                       OR (SELECT SUM(amount_cents) FROM split WHERE txn_id = m.id) <> -s.amount_cents,
+                       OR (SELECT SUM(amount_cents) FROM split WHERE txn_id = m.id AND loan_interest <> 1)
+                           <> -s.amount_cents,
                    COALESCE(m.description, '') <> COALESCE(t.description, '')
                        OR COALESCE(m.tag_id, -1) <> COALESCE(t.tag_id, -1)
             FROM split s
@@ -652,7 +722,7 @@ public class TransactionRepository {
 
     private int splitCount(long txnId) throws SQLException {
         try (PreparedStatement ps = conn.prepareStatement(
-                "SELECT COUNT(*) FROM split WHERE txn_id = ?")) {
+                "SELECT COUNT(*) FROM split WHERE txn_id = ? AND loan_interest <> 1")) {
             ps.setLong(1, txnId);
             try (ResultSet rs = ps.executeQuery()) {
                 rs.next();
@@ -663,7 +733,7 @@ public class TransactionRepository {
 
     private long splitTotal(long txnId) throws SQLException {
         try (PreparedStatement ps = conn.prepareStatement(
-                "SELECT COALESCE(SUM(amount_cents), 0) FROM split WHERE txn_id = ?")) {
+                "SELECT COALESCE(SUM(amount_cents), 0) FROM split WHERE txn_id = ? AND loan_interest <> 1")) {
             ps.setLong(1, txnId);
             try (ResultSet rs = ps.executeQuery()) {
                 rs.next();

@@ -113,8 +113,8 @@ final class DownloadReviewWindow extends JDialog {
                 downloadSelected();
             }
         });
-        setWidths(downloadTable, 95, 320, 70, 100, 260);
-        rightAlign(downloadTable, 3);
+        setWidths(downloadTable, 95, 220, 180, 70, 100, 230);
+        rightAlign(downloadTable, 4);
         ColumnFit.install(downloadTable);
         JLabel heading = new JLabel("Downloaded transactions for " + account.name()
                 + (skipped > 0 ? "   (" + skipped + " imported before, not shown)" : ""));
@@ -409,9 +409,9 @@ final class DownloadReviewWindow extends JDialog {
         return s == null ? "" : s;
     }
 
-    /** The downloads: date, the bank's description, check number, amount, and what happened. */
+    /** The downloads: date, the bank's name and memo, check number, amount, and what happened. */
     private final class DownloadModel extends AbstractTableModel {
-        private final String[] columns = {"Date", "Description", "Check #", "Amount", "Result"};
+        private final String[] columns = {"Date", "Name", "Memo", "Check #", "Amount", "Result"};
 
         @Override
         public int getRowCount() {
@@ -433,10 +433,11 @@ final class DownloadReviewWindow extends JDialog {
             DownloadImporter.Download d = downloads.get(row);
             return switch (column) {
                 case 0 -> date(d.date());
-                case 1 -> d.description();
-                case 2 -> text(d.checkNumber());
-                case 3 -> Money.format(d.amountCents());
-                case 4 -> outcomes.get(row) == Outcome.TO_REVIEW ? "" : outcomes.get(row).label + " " + notes.get(row);
+                case 1 -> text(d.payee());
+                case 2 -> text(d.memo());
+                case 3 -> text(d.checkNumber());
+                case 4 -> Money.format(d.amountCents());
+                case 5 -> outcomes.get(row) == Outcome.TO_REVIEW ? "" : outcomes.get(row).label + " " + notes.get(row);
                 default -> "";
             };
         }

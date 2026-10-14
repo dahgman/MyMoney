@@ -115,6 +115,8 @@ final class ScheduleDialog extends JDialog {
             depositField.setText(Money.format(editing.amountCents()));
         }
         paymentField.setHorizontalAlignment(JTextField.RIGHT);
+        Money.calculateOnExit(paymentField);            // "12.50+3.25" becomes "$15.75"
+        Money.calculateOnExit(depositField);
         depositField.setHorizontalAlignment(JTextField.RIGHT);
 
         Recurrence r = editing.recurrence();
@@ -305,7 +307,7 @@ final class ScheduleDialog extends JDialog {
             if (!pay.isEmpty() && !dep.isEmpty()) {
                 throw new IllegalArgumentException("Enter a payment or a deposit, not both.");
             }
-            amount = !pay.isEmpty() ? -Money.parse(pay) : !dep.isEmpty() ? Money.parse(dep) : 0;
+            amount = !pay.isEmpty() ? -Money.parseTyped(pay) : !dep.isEmpty() ? Money.parseTyped(dep) : 0;
             if (amount == 0) {
                 throw new IllegalArgumentException("Enter the payment or deposit amount.");
             }

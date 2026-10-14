@@ -49,6 +49,7 @@ public class DateCellEditor extends DefaultCellEditor {
         DateField dateField = (DateField) getComponent();
         this.field = dateField;
         AutoCompleteEditor.editingColors(dateField);
+        LedgerTableModel.formatDatesIn(dateField);       // 8 digits become a date
         this.calendar = new CalendarPanel(date -> {
             setText(date);
             stopCellEditing();                      // a click picks and saves

@@ -123,9 +123,10 @@ final class BankImportDialog extends JDialog {
         JLabel help = new JLabel("<html><div style='width:400px'>Next, you review each downloaded"
                 + " transaction. Possible matches are existing transactions with the same amount, dated"
                 + " within that many days, that aren't already reconciled or cleared; the payee most like"
-                + " the bank's description comes first. Accepting a match keeps its payee, puts the bank's"
-                + " description in its memo, and marks it Cleared. Otherwise it can be added as a new,"
-                + " Cleared transaction. Transactions imported before are left out.</div></html>");
+                + " the bank's name comes first. Accepting a match keeps its payee, puts the bank's memo in"
+                + " its memo, and marks it Cleared. Otherwise it can be added as a new, Cleared transaction,"
+                + " with the bank's name as the payee (or one you choose) and its memo as the memo."
+                + " Transactions imported before are left out.</div></html>");
         c = new GridBagConstraints();
         c.gridx = 0;
         c.gridy = row;

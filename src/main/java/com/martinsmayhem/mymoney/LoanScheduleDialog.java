@@ -113,7 +113,7 @@ final class LoanScheduleDialog extends JDialog {
     private void recalculate() {
         long extra;
         try {
-            extra = extraField.getText().isBlank() ? 0 : Math.abs(Money.parse(extraField.getText()));
+            extra = extraField.getText().isBlank() ? 0 : Math.abs(Money.parseTyped(extraField.getText()));
         } catch (IllegalArgumentException e) {
             summary.setText(e.getMessage());
             return;

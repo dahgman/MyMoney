@@ -24,9 +24,10 @@ import javax.swing.event.DocumentListener;
  * A suggestion drop-down for a text field (the ledger's Category and Tag
  * cells, the import's payee box). While typing, the list shrinks to the
  * entries that start with what was typed, then those that contain it.
- * Up/Down highlight an entry (Down with the list closed shows everything),
- * and a click picks one. The field's owner decides what Enter and Escape do,
- * using pickHighlighted() and hidePopup().
+ * Up/Down or a click highlight an entry (Down with the list closed shows
+ * everything); Space puts the highlighted entry in the field, and so does
+ * Enter (the field's owner decides what else Enter and Escape do, using
+ * pickHighlighted() and hidePopup()). A double-click picks an entry at once.
  */
 final class AutoComplete {
 
@@ -47,6 +48,18 @@ final class AutoComplete {
         this.source = source;
         bind(KeyEvent.VK_DOWN, "autocomplete-down", () -> move(1));
         bind(KeyEvent.VK_UP, "autocomplete-up", () -> move(-1));
+        // Space: with an entry highlighted, take it; otherwise just type a space.
+        field.getInputMap().put(KeyStroke.getKeyStroke(' '), "autocomplete-space");
+        field.getActionMap().put("autocomplete-space", new AbstractAction() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                if (popupShowing() && list.getSelectedValue() != null) {
+                    pickHighlighted();
+                } else {
+                    field.replaceSelection(" ");
+                }
+            }
+        });
 
         field.getDocument().addDocumentListener(new DocumentListener() {
             @Override
@@ -70,16 +83,22 @@ final class AutoComplete {
             @Override
             public void mouseClicked(MouseEvent e) {
                 int i = list.locationToIndex(e.getPoint());
-                if (i >= 0) {
+                if (i < 0) {
+                    return;
+                }
+                if (e.getClickCount() >= 2) {             // double-click: take it now
                     setTextQuietly(matches.get(i));
                     hidePopup();
                     onClickPick.run();
+                } else {                                  // a click highlights; Enter or Space takes it
+                    list.setSelectedIndex(i);
+                    field.requestFocusInWindow();
                 }
             }
         });
     }
 
-    /** What to do after a click picks an entry (the ledger saves the cell). */
+    /** What to do after a double-click picks an entry (the ledger saves the cell). */
     void setOnClickPick(Runnable r) {
         onClickPick = r;
     }

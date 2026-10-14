@@ -3,10 +3,7 @@ package com.martinsmayhem.mymoney;
 import java.awt.Color;
 import java.sql.SQLException;
 import java.time.LocalDate;
-import java.time.MonthDay;
 import java.time.format.DateTimeFormatter;
-import java.time.format.DateTimeParseException;
-import java.time.format.ResolverStyle;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -56,11 +53,18 @@ public class LedgerTableModel extends AbstractTableModel {
     public static final int BALANCE = 10;
     public static final int FILES = 11;          // how many attachments (double-click to open)
     public static final int DOWNLOAD = 12;       // from a bank download: matched or new (shown next to C)
+    public static final int INTEREST = 13;       // loans: the interest in a payment (calculated)
+    public static final int PRINCIPAL = 14;      // loans: the rest of a payment
+
+    /** True for the columns only a loan's ledger shows. */
+    public static boolean isLoanColumn(int column) {
+        return column == INTEREST || column == PRINCIPAL;
+    }
 
     /** Column headers (Files shows as a paperclip icon, so it has no text). */
     private static final String[] COLUMNS = {
         "Date", "Num", "Payee", "Category", "Tag", "Description", "Memo", "C",
-        "Payment", "Deposit", "Balance", "", "D"
+        "Payment", "Deposit", "Balance", "", "D", "Interest", "Principal"
     };
     /** A column's full name (the header may be shorter, like "C" for Status). */
     public static String columnName(int column) {
@@ -70,19 +74,29 @@ public class LedgerTableModel extends AbstractTableModel {
     /** Column names for messages and Undo labels ("Undo Change Status"). */
     private static final String[] NAMES = {
         "Date", "Num", "Payee", "Category", "Tag", "Description", "Memo", "Status",
-        "Payment", "Deposit", "Balance", "Files", "Downloaded"
+        "Payment", "Deposit", "Balance", "Files", "Downloaded", "Interest", "Principal"
     };
 
-    /** How dates are shown in the ledger (also used by DateCellEditor). */
-    static final DateTimeFormatter DISPLAY_DATE = DateTimeFormatter.ofPattern("MM/dd/yyyy");
+    /**
+     * The date formats to choose from (Preferences > Date format), as
+     * patterns. The first is the default.
+     */
+    static final String[] DATE_FORMATS = {"MM/dd/yyyy", "dd/MM/yyyy", "yyyy-MM-dd", "MM-dd-yyyy", "dd.MM.yyyy"};
 
-    /** Date formats accepted when typing. A date without a year means this year. */
-    private static final DateTimeFormatter[] INPUT_DATES = {
-        strict("M/d/uuuu"), strict("M/d/uu"), strict("M-d-uuuu"), strict("M-d-uu"), strict("uuuu-M-d")
-    };
-    private static final DateTimeFormatter[] INPUT_MONTH_DAY = {
-        strict("M/d"), strict("M-d")
-    };
+    /** How dates are shown everywhere (see setDateFormat). */
+    static DateTimeFormatter DISPLAY_DATE = DateTimeFormatter.ofPattern(DATE_FORMATS[0]);
+    private static String datePattern = DATE_FORMATS[0];
+
+    /** Shows (and reads) dates in this format from now on: one of DATE_FORMATS (anything else: the default). */
+    static void setDateFormat(String pattern) {
+        datePattern = java.util.Arrays.asList(DATE_FORMATS).contains(pattern) ? pattern : DATE_FORMATS[0];
+        DISPLAY_DATE = DateTimeFormatter.ofPattern(datePattern);
+    }
+
+    /** The date format as people write it: "MM/DD/YYYY". */
+    static String dateFormatExample() {
+        return datePattern.toUpperCase();
+    }
 
     private final TransactionRepository transactions;
     private final Consumer<String> onError;     // shows an error message to the user
@@ -160,9 +174,18 @@ public class LedgerTableModel extends AbstractTableModel {
         this.draft = newDraft(LocalDate.now());
         draft.category = defaultCategory();
         sortKeys.clear();
-        sortKeys.addAll(DEFAULT_SORT);
+        if (account != null && account.type() == AccountType.LOAN) {
+            sortKeys.add(new SortKey(DATE, true));       // a loan's status doesn't matter: just in date order
+        } else {
+            sortKeys.addAll(DEFAULT_SORT);
+        }
         load();
         fireTableDataChanged();
+    }
+
+    /** True for the columns a loan's ledger leaves out: its payments' status doesn't matter. */
+    public static boolean isHiddenForLoans(int column) {
+        return column == STATUS || column == DOWNLOAD;
     }
 
     /**
@@ -579,6 +602,21 @@ public class LedgerTableModel extends AbstractTableModel {
         return COLUMNS[column];
     }
 
+    /**
+     * A column's header for an account of this type. In a loan's ledger,
+     * money in (lowering what's owed) is a Payment, and money out (owing
+     * more) is a Charge, as lenders put it.
+     */
+    public static String header(int column, AccountType type) {
+        if (type == AccountType.LOAN && column == PAYMENT) {
+            return "Charge";
+        }
+        if (type == AccountType.LOAN && column == DEPOSIT) {
+            return "Payment";
+        }
+        return COLUMNS[column];
+    }
+
     @Override
     public Class<?> getColumnClass(int column) {
         return column == STATUS ? TxnStatus.class : String.class;
@@ -586,11 +624,14 @@ public class LedgerTableModel extends AbstractTableModel {
 
     @Override
     public boolean isCellEditable(int row, int column) {
-        if (account == null || column == BALANCE || column == FILES || column == DOWNLOAD) {
+        if (account == null || column == BALANCE || column == FILES || column == DOWNLOAD || isLoanColumn(column)) {
             return false;
         }
         if (column == STATUS && isSavedRow(row) && entryAt(row).status == TxnStatus.RECONCILING) {
             return false;                       // only Reconcile Account changes these
+        }
+        if (isSavedRow(row) && entryAt(row).scheduledInterest) {
+            return column == STATUS;                // calculated from the loan's terms and payments
         }
         if (isLocked(row)) {
             // Reconciled: status, tag and category only (a transfer's category stays put).
@@ -617,6 +658,9 @@ public class LedgerTableModel extends AbstractTableModel {
             case BALANCE -> isSavedRow(row) ? Money.format(e.balanceCents) : "";
             case FILES -> e.attachments > 0 ? String.valueOf(e.attachments) : "";
             case DOWNLOAD -> e.download == null ? "" : e.download;     // drawn as an icon
+            // A loan payment: how much of it was interest, and how much principal (what's owed went down by).
+            case INTEREST -> e.interestCents != 0 ? Money.format(e.interestCents) : "";
+            case PRINCIPAL -> e.amountCents > 0 && isSavedRow(row) ? Money.format(e.amountCents - e.interestCents) : "";
             default -> "";
         };
     }
@@ -715,14 +759,14 @@ public class LedgerTableModel extends AbstractTableModel {
             case STATUS -> e.status = value instanceof TxnStatus s ? s : TxnStatus.NONE;
             case PAYMENT -> {
                 if (!text.isEmpty()) {
-                    e.amountCents = -Money.parse(text);
+                    e.amountCents = -Money.parseTyped(text);
                 } else if (e.amountCents < 0) {
                     e.amountCents = 0;
                 }
             }
             case DEPOSIT -> {
                 if (!text.isEmpty()) {
-                    e.amountCents = Money.parse(text);
+                    e.amountCents = Money.parseTyped(text);
                 } else if (e.amountCents > 0) {
                     e.amountCents = 0;
                 }
@@ -819,6 +863,9 @@ public class LedgerTableModel extends AbstractTableModel {
             case BALANCE -> by(e -> e.balanceCents, Comparator.<Long>naturalOrder(), ascending);
             case FILES -> by(e -> e.attachments == 0 ? null : e.attachments, Comparator.<Integer>naturalOrder(), ascending);
             case DOWNLOAD -> by(e -> e.download, Comparator.<String>naturalOrder(), ascending);
+            case INTEREST -> by(e -> e.interestCents, Comparator.<Long>naturalOrder(), ascending);
+            case PRINCIPAL -> by(e -> e.amountCents > 0 ? e.amountCents - e.interestCents : null,
+                    Comparator.<Long>naturalOrder(), ascending);
             default -> (a, b) -> 0;
         };
     }
@@ -935,7 +982,7 @@ public class LedgerTableModel extends AbstractTableModel {
         }
         long balance = account.startingBalanceCents();
         for (LedgerEntry e : all) {
-            balance += e.amountCents;
+            balance += e.netCents();                     // a loan payment: just its principal
             e.balanceCents = balance;
         }
     }
@@ -1002,24 +1049,96 @@ public class LedgerTableModel extends AbstractTableModel {
         return s == null ? "" : s;
     }
 
-    private static DateTimeFormatter strict(String pattern) {
-        return DateTimeFormatter.ofPattern(pattern).withResolverStyle(ResolverStyle.STRICT);
+    /**
+     * A typed date, read in the order of the date format (month first, day
+     * first or year first): with /, - or . between the parts (10/11/2026,
+     * 10-11-26; a two-digit year is 20xx), as 8 digits with nothing between
+     * (10112026, or 20261011 year first), or without the year (10/11: this
+     * year). Starting with a four-digit year is always year, month, day.
+     */
+    static LocalDate parseDate(String text) {
+        String t = text.trim();
+        boolean dayFirst = datePattern.startsWith("dd");
+        try {
+            if (t.matches("\\d{8}")) {
+                int a = Integer.parseInt(t.substring(0, 2));
+                int b = Integer.parseInt(t.substring(2, 4));
+                if (datePattern.startsWith("yyyy")) {
+                    return LocalDate.of(Integer.parseInt(t.substring(0, 4)), Integer.parseInt(t.substring(4, 6)),
+                            Integer.parseInt(t.substring(6, 8)));
+                }
+                int year = Integer.parseInt(t.substring(4, 8));
+                return dayFirst ? LocalDate.of(year, b, a) : LocalDate.of(year, a, b);
+            }
+            String[] p = t.split("[/.-]", -1);
+            if ((p.length == 2 || p.length == 3) && java.util.Arrays.stream(p).allMatch(s -> s.matches("\\d{1,4}"))) {
+                if (p.length == 3 && p[0].length() == 4) {
+                    return LocalDate.of(Integer.parseInt(p[0]), Integer.parseInt(p[1]), Integer.parseInt(p[2]));
+                }
+                if (p[0].length() <= 2 && p[1].length() <= 2) {
+                    int first = Integer.parseInt(p[0]);
+                    int second = Integer.parseInt(p[1]);
+                    int year = LocalDate.now().getYear();
+                    if (p.length == 3) {
+                        if (p[2].length() != 2 && p[2].length() != 4) {
+                            throw new java.time.DateTimeException("year");
+                        }
+                        year = Integer.parseInt(p[2]) + (p[2].length() == 2 ? 2000 : 0);
+                    }
+                    return dayFirst ? LocalDate.of(year, second, first) : LocalDate.of(year, first, second);
+                }
+            }
+        } catch (java.time.DateTimeException | NumberFormatException ignored) {
+            // not a real date (like 02/30): said below
+        }
+        throw new IllegalArgumentException("\"" + text + "\" is not a valid date. Use " + dateFormatExample()
+                + " (or 8 digits, like " + LocalDate.now().format(DateTimeFormatter.ofPattern(
+                        datePattern.replaceAll("[^yMd]", ""))) + ").");
     }
 
-    /** Accepts 10/11/2026, 10/11/26, 10-11-2026, 2026-10-11, or 10/11 (this year). */
-    static LocalDate parseDate(String text) {
-        for (DateTimeFormatter f : INPUT_DATES) {
-            try {
-                return LocalDate.parse(text, f);
-            } catch (DateTimeParseException ignored) {
+    /**
+     * Makes a date field tidy itself: as soon as 8 digits making a date are
+     * typed, and when the field is left with any date that can be read, the
+     * text becomes that date in the date format.
+     */
+    static void formatDatesIn(javax.swing.JTextField field) {
+        field.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
+            @Override
+            public void insertUpdate(javax.swing.event.DocumentEvent e) {
+                String t = field.getText().trim();
+                if (t.matches("\\d{8}")) {
+                    javax.swing.SwingUtilities.invokeLater(() -> tidy(field));   // not while the text is changing
+                }
             }
-        }
-        for (DateTimeFormatter f : INPUT_MONTH_DAY) {
-            try {
-                return MonthDay.parse(text, f).atYear(LocalDate.now().getYear());
-            } catch (DateTimeParseException ignored) {
+
+            @Override
+            public void removeUpdate(javax.swing.event.DocumentEvent e) {
             }
+
+            @Override
+            public void changedUpdate(javax.swing.event.DocumentEvent e) {
+            }
+        });
+        field.addFocusListener(new java.awt.event.FocusAdapter() {
+            @Override
+            public void focusLost(java.awt.event.FocusEvent e) {
+                tidy(field);
+            }
+        });
+    }
+
+    private static void tidy(javax.swing.JTextField field) {
+        String t = field.getText().trim();
+        if (t.isEmpty()) {
+            return;
         }
-        throw new IllegalArgumentException("\"" + text + "\" is not a valid date. Use MM/DD/YYYY.");
+        try {
+            String formatted = parseDate(t).format(DISPLAY_DATE);
+            if (!formatted.equals(field.getText())) {
+                field.setText(formatted);
+            }
+        } catch (IllegalArgumentException ignored) {
+            // left as typed, for whoever reads it to report
+        }
     }
 }
