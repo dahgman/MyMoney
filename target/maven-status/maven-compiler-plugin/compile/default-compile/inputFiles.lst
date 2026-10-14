@@ -8,6 +8,7 @@
 /mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/AttachmentsPanel.java
 /mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/AutoComplete.java
 /mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/AutoCompleteEditor.java
+/mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/BalanceChart.java
 /mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/BankImportDialog.java
 /mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/CalendarPanel.java
 /mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/CardPayoffDialog.java
@@ -25,6 +26,7 @@
 /mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/LedgerTableModel.java
 /mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/LinkDebtDialog.java
 /mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/Loan.java
+/mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/LoanInterest.java
 /mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/LoanScheduleDialog.java
 /mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/MainFrame.java
 /mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/ManageAccountsDialog.java
@@ -50,6 +52,7 @@
 /mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/Snowball.java
 /mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/StartupDialog.java
 /mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/StatusCell.java
+/mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/SummaryPanel.java
 /mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/TagCell.java
 /mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/TagDialog.java
 /mnt/thehive-home/GitRepos/MyMoney/src/main/java/com/martinsmayhem/mymoney/TagRepository.java
