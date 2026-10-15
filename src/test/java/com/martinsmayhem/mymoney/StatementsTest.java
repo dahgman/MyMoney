@@ -11,6 +11,7 @@ import java.sql.PreparedStatement;
 import java.time.LocalDate;
 import java.time.YearMonth;
 import java.util.List;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -26,6 +27,12 @@ class StatementsTest {
     private AccountRepository accounts;
     private AttachmentRepository attachments;
     private Path pdf;
+
+    // Windows won't let @TempDir delete a database file that is still open.
+    @AfterEach
+    void tearDown() {
+        db.close();
+    }
 
     @BeforeEach
     void setUp() throws Exception {

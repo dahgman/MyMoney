@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Path;
 import java.util.List;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -30,6 +31,12 @@ class TypeAndFilterTest {
     private Database db;
     private TransactionRepository transactions;
     private Account checking;
+
+    // Windows won't let @TempDir delete a database file that is still open.
+    @AfterEach
+    void tearDown() {
+        db.close();
+    }
 
     @BeforeEach
     void setUp() throws Exception {

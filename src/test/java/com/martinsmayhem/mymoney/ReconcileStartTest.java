@@ -6,6 +6,7 @@ import java.nio.file.Path;
 import java.time.LocalDate;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -24,6 +25,12 @@ class ReconcileStartTest {
     private TransactionRepository transactions;
     private ReconcileRepository reconciles;
     private final Map<String, Long> ids = new LinkedHashMap<>();
+
+    // Windows won't let @TempDir delete a database file that is still open.
+    @AfterEach
+    void tearDown() {
+        db.close();
+    }
 
     @BeforeEach
     void setUp() throws Exception {

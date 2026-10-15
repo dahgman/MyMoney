@@ -9,6 +9,7 @@ import java.nio.file.Path;
 import java.sql.PreparedStatement;
 import java.time.LocalDate;
 import java.util.List;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -23,6 +24,12 @@ class AttachmentFilingTest {
     private TransactionRepository transactions;
     private AttachmentRepository attachments;
     private Account checking;
+
+    // Windows won't let @TempDir delete a database file that is still open.
+    @AfterEach
+    void tearDown() {
+        db.close();
+    }
 
     @BeforeEach
     void setUp() throws Exception {

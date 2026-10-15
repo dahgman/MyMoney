@@ -7,6 +7,7 @@ import java.math.BigDecimal;
 import java.nio.file.Path;
 import java.time.LocalDate;
 import java.util.List;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -21,12 +22,19 @@ class LoanBalanceTest {
 
     @TempDir
     Path dir;
+    private Database db;
     private AccountRepository accounts;
     private TransactionRepository transactions;
 
+    // Windows won't let @TempDir delete a database file that is still open.
+    @AfterEach
+    void tearDown() {
+        db.close();
+    }
+
     @BeforeEach
     void setUp() throws Exception {
-        Database db = Database.create(dir.resolve("T.MyMoney"), "password1");
+        db = Database.create(dir.resolve("T.MyMoney"), "password1");
         accounts = new AccountRepository(db);
         transactions = new TransactionRepository(db);
     }
