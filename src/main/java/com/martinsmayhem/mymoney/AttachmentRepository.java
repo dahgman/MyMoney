@@ -14,7 +14,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Files attached to transactions and to bank statements (reconciliations).
+ * Files attached to transactions, and account statements: added on their
+ * own (any account, any time) or while reconciling.
  *
  * Attached files are copied into folders next to the data file, one folder
  * per account:
@@ -65,6 +66,21 @@ final class AttachmentRepository {
             throws SQLException, IOException {
         String dir = folderName(account.name()) + "/Attachments/Statements/" + datePath(statementDate);
         return add(account.id(), null, reconciliationId, dir, source);
+    }
+
+    /**
+     * Copies a file in as one of an account's statements, dated date (filed
+     * with the statements saved while reconciling).
+     */
+    Attachment addStatement(Account account, LocalDate date, Path source) throws SQLException, IOException {
+        String dir = folderName(account.name()) + "/Attachments/Statements/" + datePath(date);
+        Attachment a = add(account.id(), null, null, dir, source);
+        try (PreparedStatement ps = conn.prepareStatement("UPDATE attachment SET statement_date = ? WHERE id = ?")) {
+            ps.setString(1, date.toString());
+            ps.setLong(2, a.id());
+            ps.executeUpdate();
+        }
+        return a;
     }
 
     private Attachment add(long accountId, Long txnId, Long reconciliationId, String dir, Path source)
@@ -118,6 +134,64 @@ final class AttachmentRepository {
         return list("SELECT id, file_name, path FROM attachment WHERE txn_id = ? ORDER BY id", txnId);
     }
 
+    /**
+     * One of an account's statements: added on its own, or saved while
+     * reconciling (fromReconcile; dated by the reconciliation).
+     */
+    record Statement(Attachment attachment, LocalDate date, boolean fromReconcile) {
+    }
+
+    /** An account's statements, newest first. */
+    List<Statement> statements(long accountId) throws SQLException {
+        List<Statement> list = new ArrayList<>();
+        try (PreparedStatement ps = conn.prepareStatement("""
+                SELECT a.id, a.file_name, a.path, COALESCE(a.statement_date, r.statement_date), a.reconciliation_id
+                FROM attachment a LEFT JOIN reconciliation r ON r.id = a.reconciliation_id
+                WHERE a.account_id = ? AND a.txn_id IS NULL
+                  AND (a.statement_date IS NOT NULL OR a.reconciliation_id IS NOT NULL)
+                ORDER BY 4 DESC, a.id DESC
+                """)) {
+            ps.setLong(1, accountId);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    long rec = rs.getLong(5);
+                    boolean fromReconcile = !rs.wasNull();
+                    list.add(new Statement(new Attachment(rs.getLong(1), rs.getString(2), rs.getString(3)),
+                            LocalDate.parse(rs.getString(4)), fromReconcile));
+                }
+            }
+        }
+        return list;
+    }
+
+    /**
+     * Re-dates a statement added on its own, moving its file to the new
+     * date's folder.
+     */
+    void redateStatement(Statement s, Account account, LocalDate date) throws SQLException, IOException {
+        if (s.fromReconcile()) {
+            throw new SQLException("This statement was saved while reconciling; its date is the reconciliation's.");
+        }
+        Path from = file(s.attachment(), account);
+        String dir = folderName(account.name()) + "/Attachments/Statements/" + datePath(date);
+        Path folder = root.resolve(dir);
+        Files.createDirectories(folder);
+        Path to = unusedName(folder, from.getFileName().toString());
+        Files.move(from, to);
+        try (PreparedStatement ps = conn.prepareStatement(
+                "UPDATE attachment SET statement_date = ?, path = ?, file_name = ? WHERE id = ?")) {
+            ps.setString(1, date.toString());
+            ps.setString(2, dir + "/" + to.getFileName());
+            ps.setString(3, to.getFileName().toString());
+            ps.setLong(4, s.attachment().id());
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            Files.move(to, from);                       // put it back
+            throw e;
+        }
+        removeIfEmpty(from.getParent());
+    }
+
     List<Attachment> forReconciliation(long reconciliationId) throws SQLException {
         return list("SELECT id, file_name, path FROM attachment WHERE reconciliation_id = ? ORDER BY id",
                 reconciliationId);
@@ -166,7 +240,10 @@ final class AttachmentRepository {
             ps.executeUpdate();
         }
         Files.deleteIfExists(p);
-        Path dir = p.getParent();
+        removeIfEmpty(p.getParent());
+    }
+
+    private static void removeIfEmpty(Path dir) {
         try (var s = Files.list(dir)) {
             if (s.findAny().isEmpty()) {
                 Files.delete(dir);
@@ -174,6 +251,11 @@ final class AttachmentRepository {
         } catch (IOException ignored) {
             // an empty folder left behind is harmless
         }
+    }
+
+    /** The folder an account's statements are filed under (it may not exist yet). */
+    Path statementsFolder(Account account) {
+        return root.resolve(folderName(account.name()) + "/Attachments/Statements");
     }
 
     /**

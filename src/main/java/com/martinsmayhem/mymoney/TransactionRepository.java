@@ -65,7 +65,8 @@ public class TransactionRepository {
                    t.download_status,
                    COALESCE((SELECT -SUM(amount_cents) FROM split WHERE txn_id = t.id AND loan_interest = 1), 0),
                    t.loan_interest_cents,
-                   EXISTS (SELECT 1 FROM split WHERE txn_id = t.id AND loan_interest = 2)
+                   EXISTS (SELECT 1 FROM split WHERE txn_id = t.id AND loan_interest = 2),
+                   t.txn_type, t.interest_override
             FROM txn t
             LEFT JOIN payee p ON p.id = t.payee_id
             LEFT JOIN (SELECT txn_id, COUNT(*) AS n, SUM(amount_cents) AS total,
@@ -102,6 +103,9 @@ public class TransactionRepository {
                     e.interestSplitCents = rs.getLong(15);
                     e.interestCents = e.interestSplitCents + rs.getLong(16);
                     e.scheduledInterest = rs.getBoolean(17);
+                    e.type = rs.getString(18);
+                    long override = rs.getLong(19);
+                    e.interestOverride = rs.wasNull() ? null : override;
                     list.add(e);
                 }
             }
@@ -125,7 +129,8 @@ public class TransactionRepository {
     void insertInCurrentTransaction(long accountId, LedgerEntry entry) throws SQLException {
         Target target = target(entry.category);       // check the category first
         String sql = "INSERT INTO txn (account_id, txn_date, payee_id, check_number,"
-                + " memo, status, description, tag_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+                + " memo, status, description, tag_id, txn_type, interest_override)"
+                + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setLong(1, accountId);
             ps.setString(2, entry.date.toString());     // ISO: YYYY-MM-DD
@@ -135,6 +140,8 @@ public class TransactionRepository {
             ps.setString(6, entry.status.code());
             setText(ps, 7, entry.description);
             setId(ps, 8, tagId(entry.tag));
+            setText(ps, 9, normalizeType(entry.type));
+            setId(ps, 10, entry.interestOverride);
             ps.executeUpdate();
         }
         long id = lastInsertId();
@@ -204,7 +211,8 @@ public class TransactionRepository {
                     + " can't be changed in the ledger yet.");
         }
         String sql = "UPDATE txn SET txn_date = ?, payee_id = ?, check_number = ?,"
-                + " memo = ?, status = ?, description = ?, tag_id = ? WHERE id = ?";
+                + " memo = ?, status = ?, description = ?, tag_id = ?, txn_type = ?, interest_override = ?"
+                + " WHERE id = ?";
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, entry.date.toString());
             setId(ps, 2, payeeId(entry.payee));
@@ -213,7 +221,9 @@ public class TransactionRepository {
             ps.setString(5, entry.status.code());
             setText(ps, 6, entry.description);
             setId(ps, 7, tagId(entry.tag));
-            ps.setLong(8, entry.id);
+            setText(ps, 8, normalizeType(entry.type));
+            setId(ps, 9, entry.interestOverride);
+            ps.setLong(10, entry.id);
             ps.executeUpdate();
         }
 
@@ -308,6 +318,33 @@ public class TransactionRepository {
                 doDelete(id);
             }
         });
+    }
+
+    /**
+     * The transaction types banks send (OFX TRNTYPE), offered in the Type
+     * column. Any other text can be typed too.
+     */
+    public static final List<String> STANDARD_TYPES = List.of("ATM", "CASH", "CHECK", "CREDIT", "DEBIT",
+            "DEP", "DIRECTDEBIT", "DIRECTDEP", "DIV", "FEE", "HOLD", "INT", "OTHER", "PAYMENT", "POS",
+            "REPEATPMT", "SRVCHG", "XFER");
+
+    /** A type as stored: trimmed and in capitals, like the banks send them; null for blank. */
+    static String normalizeType(String type) {
+        return type == null || type.isBlank() ? null : type.trim().toUpperCase(java.util.Locale.ROOT);
+    }
+
+    /** Every type to offer: the standard ones and any others already used, sorted. */
+    public List<String> findTypes() throws SQLException {
+        java.util.TreeSet<String> types = new java.util.TreeSet<>(STANDARD_TYPES);
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT DISTINCT txn_type FROM txn WHERE txn_type IS NOT NULL")) {
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    types.add(rs.getString(1));
+                }
+            }
+        }
+        return new ArrayList<>(types);
     }
 
     /** Payee names, sorted, for the bulk Change Payee drop-down. */

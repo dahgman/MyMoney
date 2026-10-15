@@ -99,8 +99,9 @@ final class OfxParser {
                             case "MEMO" -> current.memo = value;
                             case "CHECKNUM" -> current.check = value;
                             case "FITID" -> current.fitid = value;
+                            case "TRNTYPE" -> current.type = value;
                             default -> {
-                                // TRNTYPE, SIC, REFNUM, ... not needed
+                                // SIC, REFNUM, ... not needed
                             }
                         }
                     }
@@ -121,6 +122,7 @@ final class OfxParser {
         String memo;
         String check;
         String fitid;
+        String type;
     }
 
     private static void add(OfxFile ofx, Fields f) {
@@ -132,7 +134,7 @@ final class OfxParser {
                     Integer.parseInt(f.date.substring(4, 6)), Integer.parseInt(f.date.substring(6, 8)));
             long cents = QifParser.amount(f.amount.replace("+", ""));
             ofx.transactions.add(new DownloadImporter.Download(date, cents, f.name, f.memo, f.check,
-                    f.fitid == null ? null : "OFX:" + f.fitid));
+                    f.fitid == null ? null : "OFX:" + f.fitid, f.type));
         } catch (RuntimeException e) {
             ofx.warnings.add("Skipped a transaction (" + (f.name == null ? "no name" : f.name) + "): "
                     + (e.getMessage() == null ? "unreadable" : e.getMessage()));

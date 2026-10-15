@@ -34,12 +34,19 @@ import java.util.List;
  *     lender's schedule, the nth payment paying the nth period (from one due
  *     date to the next), whenever it's actually paid.</li>
  * </ul>
- * A loan charged on its due dates is shown as such lenders show it: the
- * balance is everything left to pay. All the interest its schedule charges
- * (for the payments made, and the rest of the schedule at the regular
- * payment) is one calculated "Scheduled interest" transaction on the day the
- * loan was made; each payment then lowers the balance by its full amount, its
- * interest only shown beside it (txn.loan_interest_cents).
+ * A payment's interest can also be typed in (txn.interest_override): an
+ * interest-only or principal-only payment, or the lender's own figure. It is
+ * used as it is, and everything after it is worked out from there; daily
+ * interest it didn't cover is still due at the next payment. Only a
+ * full-sized payment counts as one of the schedule's regular payments.
+ * A loan is shown as lenders show it: the balance is everything left to
+ * pay. All the interest its schedule charges (for the payments made, and the
+ * rest of the schedule at the regular payment) is one calculated "Scheduled
+ * interest" transaction on the day the loan was made; each payment then
+ * lowers the balance by its full amount, its interest only shown beside it
+ * (txn.loan_interest_cents). (A loan without an origination or first
+ * payment date can't be scheduled: each payment then holds its interest, in
+ * a split, and the balance is just principal.)
  *
  * A reconciled payment's interest is left as it is.
  */
@@ -115,7 +122,7 @@ final class LoanInterest {
                        COALESCE(-SUM(CASE WHEN s.loan_interest = 1 THEN s.amount_cents END), 0),
                        COUNT(CASE WHEN s.loan_interest = 1 THEN 1 END),
                        MAX(CASE WHEN s.loan_interest = 1 THEN s.category_id END),
-                       t.loan_interest_cents
+                       t.loan_interest_cents, t.interest_override
                 FROM txn t LEFT JOIN split s ON s.txn_id = t.id
                 WHERE t.account_id = ?
                   AND NOT EXISTS (SELECT 1 FROM split WHERE txn_id = t.id AND loan_interest = 2)
@@ -124,8 +131,10 @@ final class LoanInterest {
             ps.setLong(1, accountId);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
+                    long typed = rs.getLong(9);
+                    Long override = rs.wasNull() ? null : typed;        // (read before any other column)
                     moves.add(new Move(rs.getLong(1), LocalDate.parse(rs.getString(2)), rs.getString(3),
-                            rs.getLong(4), rs.getLong(5), rs.getInt(6), rs.getLong(7), rs.getLong(8)));
+                            rs.getLong(4), rs.getLong(5), rs.getInt(6), rs.getLong(7), rs.getLong(8), override));
                 }
             }
         }
@@ -138,8 +147,10 @@ final class LoanInterest {
         BigDecimal accrued = BigDecimal.ZERO;
         LocalDate lastPayment = null;
         int paymentNumber = 0;
-        // Charged on the due dates: the balance holds all the scheduled interest, charged up front.
-        boolean upFront = loan.interestMethod() == Loan.InterestMethod.DUE_DATES && loan.dueDate(1) != null;
+        // A loan with dates: the balance holds all the scheduled interest, charged up front, so
+        // it shows what's left to pay (as lenders do). Without dates, each payment holds its interest.
+        boolean upFront = loan.dueDate(1) != null;
+        boolean dueDates = loan.interestMethod() == Loan.InterestMethod.DUE_DATES && upFront;
         long interestCharged = 0;
         for (Move m : moves) {
             // Daily: what's owed earns a day's interest for each day up to this transaction.
@@ -150,11 +161,21 @@ final class LoanInterest {
             }
             balance += m.amount;
             long interest;
-            if (m.amount <= 0 || loan.rateMilli() <= 0 || (made != null && m.date.isBefore(made))) {
-                interest = 0;                           // borrowing more, a fee, or no interest charged
-            } else if (upFront) {
-                // The next period of the lender's schedule, whenever it's actually paid.
+            boolean payment = m.amount > 0 && (made == null || !m.date.isBefore(made));
+            // Interest typed in by hand (an interest-only or principal-only payment, or the lender's
+            // figure for a payment): used as it is. Only a full-sized payment is one of the schedule's
+            // regular payments; a smaller one in between (principal only, interest only) isn't.
+            boolean manual = m.amount > 0 && m.override != null;
+            boolean regular = !manual || m.amount >= loan.regularPayment() - 1;
+            if (payment && regular) {
                 paymentNumber++;
+            }
+            if (manual) {
+                interest = Math.min(m.override, m.amount);
+            } else if (!payment || loan.rateMilli() <= 0) {
+                interest = 0;                           // borrowing more, a fee, or no interest charged
+            } else if (dueDates) {
+                // The next period of the lender's schedule, whenever it's actually paid.
                 LocalDate from = paymentNumber == 1 && made != null ? made : loan.dueDate(paymentNumber - 1);
                 interest = loan.periodInterest(-(balance - m.amount), from, loan.dueDate(paymentNumber));
             } else if (loan.interestMethod() == Loan.InterestMethod.DAILY) {
@@ -164,7 +185,13 @@ final class LoanInterest {
                         && lastPayment.withDayOfMonth(1).equals(m.date.withDayOfMonth(1));
                 interest = paidThisMonth ? 0 : loan.monthlyInterest(-(balance - m.amount));
             }
-            if (m.amount > 0) {
+            if (manual) {
+                // Daily: interest built up and not paid by it is still due at the next payment.
+                accrued = accrued.subtract(BigDecimal.valueOf(interest)).max(BigDecimal.ZERO);
+                if (regular) {
+                    lastPayment = m.date;
+                }
+            } else if (m.amount > 0) {
                 lastPayment = m.date;
                 accrued = BigDecimal.ZERO;
             }
@@ -197,7 +224,12 @@ final class LoanInterest {
         if (upFront && loan.rateMilli() > 0) {
             scheduled = interestCharged;
             if (-balance > 0 && loan.regularPayment() > 0) {
-                for (Loan.Payment p : loan.schedule(-balance, loan.dueDate(paymentNumber + 1), loan.regularPayment())) {
+                // From the loan's start (a first period of any length), the last due date, or (daily
+                // from the day paid) the last payment, to the next due date and on.
+                LocalDate from = paymentNumber == 0 ? made
+                        : dueDates || lastPayment == null ? loan.dueDate(paymentNumber) : lastPayment;
+                for (Loan.Payment p : loan.schedule(-balance, from, loan.dueDate(paymentNumber + 1),
+                        loan.regularPayment())) {
                     scheduled += p.interestCents();
                 }
             }
@@ -354,6 +386,6 @@ final class LoanInterest {
      * split of its own (splitInterest), or just shown (shownInterest).
      */
     private record Move(long id, LocalDate date, String status, long amount, long splitInterest, int interestSplits,
-                        long categoryId, long shownInterest) {
+                        long categoryId, long shownInterest, Long override) {
     }
 }

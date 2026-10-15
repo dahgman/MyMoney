@@ -43,7 +43,7 @@ public class Database implements AutoCloseable {
      *  12 - loans: the lender's monthly payment and first payment date
      * When changing the schema: bump this, update createSchema(), and add a step to upgrade().
      */
-    public static final int SCHEMA_VERSION = 16;
+    public static final int SCHEMA_VERSION = 19;
 
     private final Path file;
     private final Connection conn;
@@ -93,6 +93,7 @@ public class Database implements AutoCloseable {
                 throw new SQLException("This file was created by a newer version of MyMoney.");
             }
             if (version < SCHEMA_VERSION) {
+                Splash.step("Upgrading the file for this version of MyMoney…", 30);
                 db.upgrade(version);
             }
             return db;
@@ -331,7 +332,16 @@ public class Database implements AutoCloseable {
             if (fromVersion < 16) {
                 fixLoanPaymentSigns(st);
             }
-            // Future: if (fromVersion < 17) { ... }
+            if (fromVersion < 17) {
+                st.execute("ALTER TABLE txn ADD COLUMN txn_type TEXT");
+            }
+            if (fromVersion < 18) {
+                st.execute("ALTER TABLE txn ADD COLUMN interest_override INTEGER");
+            }
+            if (fromVersion < 19) {
+                st.execute("ALTER TABLE attachment ADD COLUMN statement_date TEXT");
+            }
+            // Future: if (fromVersion < 20) { ... }
 
             try (PreparedStatement ps = conn.prepareStatement(
                     "UPDATE meta SET value = ? WHERE key = 'schema_version'")) {
@@ -423,7 +433,9 @@ public class Database implements AutoCloseable {
                 download_id     TEXT,                            -- the download's id (OFX FITID, or made up for QIF)
                 schedule_id     INTEGER REFERENCES schedule(id) ON DELETE SET NULL,  -- created by this schedule
                 schedule_date   TEXT,                            -- the scheduled date it was created for
-                loan_interest_cents INTEGER NOT NULL DEFAULT 0   -- loans charged on due dates: this payment's interest (shown only)
+                loan_interest_cents INTEGER NOT NULL DEFAULT 0,  -- loans charged on due dates: this payment's interest (shown only)
+                txn_type        TEXT,                            -- its type, like POS or DIRECTDEBIT (from a bank download's TRNTYPE)
+                interest_override INTEGER                        -- loans: a payment's interest as entered by hand (NULL = calculated)
             )
             """,
             """
@@ -444,7 +456,8 @@ public class Database implements AutoCloseable {
                 reconciliation_id INTEGER REFERENCES reconciliation(id) ON DELETE CASCADE,
                 file_name         TEXT    NOT NULL,
                 path              TEXT    NOT NULL,   -- relative to the data file's folder, '/' separated
-                added_at          TEXT    NOT NULL
+                added_at          TEXT    NOT NULL,
+                statement_date    TEXT                -- an account statement added on its own: its date
             )
             """,
             """

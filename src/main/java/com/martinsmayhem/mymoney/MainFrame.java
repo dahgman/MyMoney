@@ -113,6 +113,8 @@ public class MainFrame extends javax.swing.JFrame {
         this.ledgerModel = new LedgerTableModel(transactionRepo,
                 this::showError, this::confirm, this::afterLedgerChange);
         initComponents();
+        setIconImages(AppIcon.images());
+        Splash.step("Setting up the ledger…", 45);
         ledgerModel.setPayeeDebtCategory(p -> {         // a payee that pays a debt: transfer to it
             try {
                 return transactionRepo.debtCategoryForPayee(p);
@@ -127,17 +129,20 @@ public class MainFrame extends javax.swing.JFrame {
         setupLedger();
         setupSummary();
         setupMenus();
+        Splash.step("Working out loan interest…", 60);
         try {
             transactionRepo.recalculateAllLoans();      // loan interest, before there's anything to undo
         } catch (SQLException e) {
             showError("Could not work out the interest in your loans' payments:\n" + e.getMessage());
         }
+        Splash.step("Preparing undo…", 70);
         try {
             undoLog = new UndoLog(db);
         } catch (SQLException e) {
             showError("Undo is not available for this file:\n" + e.getMessage());
         }
         updateUndoMenu();
+        Splash.step("Creating scheduled transactions…", 78);
         createScheduledTransactions(false);              // bring scheduled transactions up to date
         showTreeBalances = config.getBoolean(AppConfig.SHOW_TREE_BALANCES, false);
         showGroupTotals = config.getBoolean(AppConfig.SHOW_TREE_GROUP_TOTALS, true);
@@ -152,6 +157,7 @@ public class MainFrame extends javax.swing.JFrame {
                 showAccount(selectedAccount());
             }
         });
+        Splash.step("Loading accounts…", 88);
         loadAccounts(null);
         if (config.getBoolean(AppConfig.OPEN_ON_SUMMARY, false)) {
             showSummary();                     // the preference: open on Summary
@@ -161,6 +167,7 @@ public class MainFrame extends javax.swing.JFrame {
             showAccount(null);                 // no accounts yet
         }
         SwingUtilities.invokeLater(this::selectTransactionNearToday);   // once the window is showing
+        Splash.step("Ready", 100);
     }
 
     /**
@@ -183,7 +190,7 @@ public class MainFrame extends javax.swing.JFrame {
         ledgerTable.setSurrendersFocusOnKeystroke(true);                         // typing goes straight into the cell
 
         TableColumnModel cols = ledgerTable.getColumnModel();
-        int[] widths = {110, 60, 160, 160, 110, 150, 130, 30, 90, 90, 100, 30, 30, 90, 90};
+        int[] widths = {110, 60, 160, 160, 110, 150, 130, 30, 90, 90, 100, 30, 30, 90, 90, 120, 110};
         for (int i = 0; i < widths.length; i++) {
             cols.getColumn(i).setPreferredWidth(widths[i]);
         }
@@ -213,19 +220,33 @@ public class MainFrame extends javax.swing.JFrame {
         TableCellRenderer money = muted(right);
         cols.getColumn(LedgerTableModel.PAYMENT).setCellRenderer(money);
         cols.getColumn(LedgerTableModel.DEPOSIT).setCellRenderer(money);
-        cols.getColumn(LedgerTableModel.INTEREST).setCellRenderer(money);
-        cols.getColumn(LedgerTableModel.PRINCIPAL).setCellRenderer(money);
+        // A loan payment's interest and principal: in italics when typed in rather than calculated.
+        TableCellRenderer split = (table, value, isSelected, hasFocus, row, column) -> {
+            java.awt.Component c = money.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
+            boolean manual = ledgerModel.isManualInterest(row);
+            c.setFont(c.getFont().deriveFont(manual ? java.awt.Font.ITALIC : java.awt.Font.PLAIN));
+            if (c instanceof JComponent j) {
+                j.setToolTipText(manual ? "Entered by hand. Clear it to have it calculated again." : null);
+            }
+            return c;
+        };
+        cols.getColumn(LedgerTableModel.INTEREST).setCellRenderer(split);
+        cols.getColumn(LedgerTableModel.PRINCIPAL).setCellRenderer(split);
         // Balance: red when negative, green when positive (selected rows keep the selection colors).
         cols.getColumn(LedgerTableModel.BALANCE).setCellRenderer((table, value, isSelected, hasFocus, row, column) -> {
             java.awt.Component c = money.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
             if ((!isSelected || row == table.getEditingRow()) && ledgerModel.isSavedRow(row)) {
-                long cents = ledgerModel.balanceCents(row);
+                long cents = column == ledgerTable.convertColumnIndexToView(LedgerTableModel.PRINCIPAL_BALANCE)
+                        ? ledgerModel.principalBalanceCents(row) : ledgerModel.balanceCents(row);
                 if (cents != 0) {
                     c.setForeground(cents < 0 ? NEGATIVE : POSITIVE);
                 }
             }
             return c;
         });
+
+        cols.getColumn(LedgerTableModel.PRINCIPAL_BALANCE).setCellRenderer(
+                cols.getColumn(LedgerTableModel.BALANCE).getCellRenderer());     // colored like Balance
 
         // Files: how many attachments; double-click to see them.
         DefaultTableCellRenderer centered = new DefaultTableCellRenderer();
@@ -254,6 +275,10 @@ public class MainFrame extends javax.swing.JFrame {
         cols.getColumn(LedgerTableModel.TAG).setCellRenderer(muted(TagCell.renderer(ledgerModel::tagColor)));
         cols.getColumn(LedgerTableModel.TAG).setCellEditor(
                 new AutoCompleteEditor(this::tagNames, this::commitAndMoveDown));
+
+        // Type (POS, DIRECTDEBIT, ...): suggests the bank types and any already used, like Category.
+        cols.getColumn(LedgerTableModel.TYPE).setCellEditor(
+                new AutoCompleteEditor(this::typeNames, this::commitAndMoveDown));
 
         // Status: a colored dot, edited with a drop-down.
         cols.getColumn(LedgerTableModel.STATUS).setCellRenderer(muted(StatusCell.renderer()));
@@ -312,10 +337,12 @@ public class MainFrame extends javax.swing.JFrame {
         // Show the download column right after C. (Done last: everything above
         // finds columns by their model number, which is also their place until now.)
         ledgerTable.getColumnModel().moveColumn(LedgerTableModel.DOWNLOAD, LedgerTableModel.STATUS + 1);
-        // And a loan's Interest and Principal right after Deposit.
+        // And a loan's Interest and Principal right after Deposit; Type right after Num.
         TableColumnModel order = ledgerTable.getColumnModel();
+        order.moveColumn(order.getColumnIndex("Type"), order.getColumnIndex("Num") + 1);
         order.moveColumn(order.getColumnIndex("Interest"), order.getColumnIndex("Deposit") + 1);
         order.moveColumn(order.getColumnIndex("Principal"), order.getColumnIndex("Interest") + 1);
+        order.moveColumn(order.getColumnIndex("Principal Bal."), order.getColumnIndex("Balance") + 1);
         setupColumnChooser();
     }
 
@@ -337,16 +364,8 @@ public class MainFrame extends javax.swing.JFrame {
             ledgerColumns.put(c.getModelIndex(), c);
             defaultColumnOrder.add(c.getModelIndex());
         }
-        for (String part : config.getString(AppConfig.HIDDEN_LEDGER_COLUMNS, "").split(",")) {
-            try {
-                int column = Integer.parseInt(part.trim());
-                if (column != LedgerTableModel.DATE && ledgerColumns.containsKey(column)) {
-                    hiddenColumns.add(column);
-                }
-            } catch (NumberFormatException ignored) {
-                // blank or damaged: nothing hidden
-            }
-        }
+        readHiddenColumns(AppConfig.HIDDEN_LEDGER_COLUMNS, hiddenOther);
+        readHiddenColumns(AppConfig.HIDDEN_DEBT_COLUMNS, hiddenDebt);
         applyColumns();
         ledgerTable.getTableHeader().addMouseListener(new MouseAdapter() {
             @Override
@@ -367,28 +386,53 @@ public class MainFrame extends javax.swing.JFrame {
         });
     }
 
-    /** The columns the user has hidden (Interest and Principal also only show for loans). */
-    private final java.util.Set<Integer> hiddenColumns = new java.util.HashSet<>();
+    /** The columns the user has hidden in other ledgers (Interest and Principal also only show for debts). */
+    private final java.util.Set<Integer> hiddenOther = new java.util.HashSet<>();
+    /** The same for loans' and credit cards' ledgers, chosen separately (they have their own columns). */
+    private final java.util.Set<Integer> hiddenDebt = new java.util.HashSet<>();
+
+    /** The hidden columns for the ledger being shown. */
+    private java.util.Set<Integer> hiddenColumns() {
+        return isDebtShown() ? hiddenDebt : hiddenOther;
+    }
+
+    private void readHiddenColumns(String key, java.util.Set<Integer> into) {
+        for (String part : config.getString(key, "").split(",")) {
+            try {
+                int column = Integer.parseInt(part.trim());
+                if (column != LedgerTableModel.DATE && ledgerColumns.containsKey(column)) {
+                    into.add(column);
+                }
+            } catch (NumberFormatException ignored) {
+                // blank or damaged: nothing hidden
+            }
+        }
+    }
 
     private JPopupMenu columnMenu() {
         JPopupMenu menu = new JPopupMenu();
         JMenuItem title = new JMenuItem("Show columns:");
         title.setEnabled(false);
         menu.add(title);
-        boolean loan = isLoanShown();
+        boolean debt = isDebtShown();
+        Account shown = ledgerModel.currentAccount();
         for (int column : defaultColumnOrder) {
-            if (LedgerTableModel.isLoanColumn(column) ? !loan : loan && LedgerTableModel.isHiddenForLoans(column)) {
-                continue;                               // only a loan's ledger has these, or a loan's doesn't
+            if (LedgerTableModel.isLoanColumn(column) ? !debt : debt && LedgerTableModel.isHiddenForDebts(column)) {
+                continue;                               // only a debt's ledger has these, or a debt's doesn't
             }
+            if (LedgerTableModel.isLoanOnlyColumn(column) && (shown == null || shown.type() != AccountType.LOAN)) {
+                continue;                               // only a loan's ledger has this (not a card's)
+            }
+            String header = LedgerTableModel.header(column, shown == null ? null : shown.type());
             javax.swing.JCheckBoxMenuItem item = new javax.swing.JCheckBoxMenuItem(
-                    LedgerTableModel.columnName(column), isColumnShown(column));
+                    debt && !header.isEmpty() ? header : LedgerTableModel.columnName(column), isColumnShown(column));
             item.setEnabled(column != LedgerTableModel.DATE);   // Date always stays
             item.addActionListener(e -> setColumnShown(column, item.isSelected()));
             menu.add(item);
         }
         menu.addSeparator();
         menu.add(menuItem("Show All Columns", () -> {
-            hiddenColumns.clear();
+            hiddenColumns().clear();
             saveHiddenColumns();
             applyColumns();
         }));
@@ -399,10 +443,10 @@ public class MainFrame extends javax.swing.JFrame {
         return ledgerTable.convertColumnIndexToView(column) >= 0;
     }
 
-    /** True if the ledger is showing a loan. */
-    private boolean isLoanShown() {
+    /** True if the ledger is showing a loan or credit card (with its own, shorter set of columns). */
+    private boolean isDebtShown() {
         Account a = ledgerModel.currentAccount();
-        return a != null && a.type() == AccountType.LOAN;
+        return a != null && LedgerTableModel.isDebt(a.type());
     }
 
     /** Hides or shows a ledger column, and saves the choice. */
@@ -411,9 +455,9 @@ public class MainFrame extends javax.swing.JFrame {
             return;
         }
         if (show) {
-            hiddenColumns.remove(column);
+            hiddenColumns().remove(column);
         } else {
-            hiddenColumns.add(column);
+            hiddenColumns().add(column);
         }
         saveHiddenColumns();
         applyColumns();
@@ -422,12 +466,13 @@ public class MainFrame extends javax.swing.JFrame {
     private void saveHiddenColumns() {
         StringBuilder hidden = new StringBuilder();
         for (int c : defaultColumnOrder) {
-            if (hiddenColumns.contains(c)) {
+            if (hiddenColumns().contains(c)) {
                 hidden.append(hidden.length() == 0 ? "" : ",").append(c);
             }
         }
         try {
-            config.setString(AppConfig.HIDDEN_LEDGER_COLUMNS, hidden.toString());
+            config.setString(isDebtShown() ? AppConfig.HIDDEN_DEBT_COLUMNS : AppConfig.HIDDEN_LEDGER_COLUMNS,
+                    hidden.toString());
         } catch (SQLException e) {
             // it applies now, just not next time
         }
@@ -435,21 +480,25 @@ public class MainFrame extends javax.swing.JFrame {
 
     /**
      * Shows the columns that should be: those not hidden, with Interest and
-     * Principal only for a loan. A column shown again goes back just after
+     * Principal only for a loan or credit card, whose ledgers have only their
+     * own columns (LedgerTableModel.isHiddenForDebts) and their own choice of
+     * hidden ones. A column shown again goes back just after
      * the nearest shown column that usually comes before it.
      */
     private void applyColumns() {
-        boolean loan = isLoanShown();
+        boolean debt = isDebtShown();
         TableColumnModel cols = ledgerTable.getColumnModel();
-        // A loan's ledger calls its amounts Charge and Payment (see LedgerTableModel.header).
-        AccountType type = loan ? AccountType.LOAN : null;
+        // A loan's or card's ledger calls its amounts Charge and Payment (see LedgerTableModel.header).
+        Account shown = ledgerModel.currentAccount();
+        AccountType type = shown == null ? null : shown.type();
         for (int column : new int[] {LedgerTableModel.PAYMENT, LedgerTableModel.DEPOSIT}) {
             ledgerColumns.get(column).setHeaderValue(LedgerTableModel.header(column, type));
         }
         ledgerTable.getTableHeader().repaint();
         for (int column : defaultColumnOrder) {
-            boolean show = !hiddenColumns.contains(column) && (loan || !LedgerTableModel.isLoanColumn(column))
-                    && !(loan && LedgerTableModel.isHiddenForLoans(column));
+            boolean show = !hiddenColumns().contains(column) && (debt || !LedgerTableModel.isLoanColumn(column))
+                    && (!LedgerTableModel.isLoanOnlyColumn(column) || type == AccountType.LOAN)
+                    && !(debt && LedgerTableModel.isHiddenForDebts(column));
             if (show == isColumnShown(column)) {
                 continue;
             }
@@ -493,7 +542,9 @@ public class MainFrame extends javax.swing.JFrame {
             filterField.setText("");
             ledgerTable.requestFocusInWindow();
         });
-        filterField.setToolTipText("Show only transactions with this text in any column");
+        filterField.setToolTipText("<html>Show only transactions with this text in any column.<br>"
+                + "Start with a column's name and a colon to look in just that column:"
+                + " <b>payee: walmart</b>, <b>type:pos</b>, <b>memo: card 2549</b></html>");
         hideReconciledBox.setToolTipText("Hide reconciled transactions (balances still include them)");
 
         JPanel bar = new JPanel();
@@ -612,8 +663,8 @@ public class MainFrame extends javax.swing.JFrame {
         }
         selectionTotalLabel.setText(count == 0 ? "No transactions selected"
                 : "<html>" + count + (count == 1 ? " transaction" : " transactions") + " selected"
-                        + "&nbsp;&nbsp;&nbsp;" + (isLoanShown() ? "Charges: " : "Payments: ") + Money.format(payments)
-                        + "&nbsp;&nbsp;&nbsp;" + (isLoanShown() ? "Payments: " : "Deposits: ") + Money.format(deposits)
+                        + "&nbsp;&nbsp;&nbsp;" + (isDebtShown() ? "Charges: " : "Payments: ") + Money.format(payments)
+                        + "&nbsp;&nbsp;&nbsp;" + (isDebtShown() ? "Payments: " : "Deposits: ") + Money.format(deposits)
                         + "&nbsp;&nbsp;&nbsp;<b>Net: " + Money.format(deposits - payments) + "</b></html>");
     }
 
@@ -636,7 +687,7 @@ public class MainFrame extends javax.swing.JFrame {
         if (ledgerTable.isEditing()) {
             ledgerTable.getCellEditor().stopCellEditing();   // save a half-finished cell first
         }
-        ledgerModel.setFilter(filterField.getText(), hideReconciledBox.isSelected() && !isLoanShown());
+        ledgerModel.setFilter(filterField.getText(), hideReconciledBox.isSelected() && !isDebtShown());
     }
 
     private void updateFilterCount() {
@@ -845,6 +896,15 @@ public class MainFrame extends javax.swing.JFrame {
     }
 
     /** Tag names for the Tag column's drop-down. */
+    /** The types to suggest in the Type column: the banks' (TRNTYPE) and any others used. */
+    private List<String> typeNames() {
+        try {
+            return transactionRepo.findTypes();
+        } catch (SQLException e) {
+            return TransactionRepository.STANDARD_TYPES;
+        }
+    }
+
     private List<String> tagNames() {
         try {
             return tags.findAllNames();
@@ -878,6 +938,7 @@ public class MainFrame extends javax.swing.JFrame {
         JMenuItem reconcileItem = menuItem("Reconcile Account...", this::reconcileAccount);
         reconcileItem.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_R, menuShortcut()));
         accountMenu.add(reconcileItem);
+        accountMenu.add(menuItem("Statements...", this::showStatements));
         accountMenu.addSeparator();
         accountMenu.add(menuItem("Manage Tags...", this::manageTags));
         accountMenu.add(menuItem("Manage Payee Renames...", this::managePayeeRenames));
@@ -956,6 +1017,7 @@ public class MainFrame extends javax.swing.JFrame {
         treeMenu.add(editFromTree);
         treeMenu.add(menuItem("Delete Account...", this::deleteAccount));
         treeMenu.add(menuItem("Reconcile Account...", this::reconcileAccount));
+        treeMenu.add(menuItem("Statements...", this::showStatements));
         treeMenu.add(menuItem("Amortization Schedule...", this::showLoanSchedule));
         treeMenu.add(menuItem("Payoff Schedule...", this::showCardPayoff));
         accountTree.addMouseListener(new MouseAdapter() {
@@ -1487,6 +1549,18 @@ public class MainFrame extends javax.swing.JFrame {
         }
     }
 
+    /** Account > Statements...: the selected account's statements, to add, open, re-date or remove. */
+    private void showStatements() {
+        Account a = selectedAccount();
+        if (a == null) {
+            showError("Select an account first.");
+            return;
+        }
+        if (StatementsDialog.show(this, a, attachments)) {
+            checkpoint("Statements");
+        }
+    }
+
     /**
      * File > Reconcile Account...: asks for the statement (or picks up an
      * unfinished reconciliation), then shows the reconcile window.
@@ -1986,6 +2060,7 @@ public class MainFrame extends javax.swing.JFrame {
     }
 
     private void showError(String message) {
+        Splash.pause();                                  // (at startup) so the message isn't hidden behind it
         JOptionPane.showMessageDialog(this, message, "MyMoney", JOptionPane.ERROR_MESSAGE);
     }
 
@@ -2522,7 +2597,7 @@ public class MainFrame extends javax.swing.JFrame {
         resolveDraft(false);                             // a new transaction left without an amount
         ledgerModel.setAccount(a);                       // also resets the sort to Status, Date
         applyColumns();                                  // a loan's Interest and Principal
-        hideReconciledBox.setVisible(a == null || a.type() != AccountType.LOAN);   // nothing's reconciled in a loan
+        hideReconciledBox.setVisible(a == null || !LedgerTableModel.isDebt(a.type()));   // no status column there
         applyFilter();
         ledgerTable.getTableHeader().repaint();          // update the sort arrows
         updateSummary(a);
@@ -2604,6 +2679,7 @@ public class MainFrame extends javax.swing.JFrame {
                 long[] paid = accounts.loanPaid(a.id(), today);
                 balanceLabel.setText("<html><div align='right'><b><font size='+1'>Remaining Balance: "
                         + Money.format(remaining) + "</font></b><br>"
+                        + "Principal Remaining: " + Money.format(accounts.principalOwed(a.id(), today)) + "<br>"
                         + "Total Interest Paid: " + Money.format(paid[1]) + "<br>"
                         + "Total Amount Paid: " + Money.format(paid[0]) + "</div></html>");
                 return;

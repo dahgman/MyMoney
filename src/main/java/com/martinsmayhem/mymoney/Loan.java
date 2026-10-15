@@ -162,9 +162,41 @@ record Loan(long accountId, int rateMilli, long originalCents, int termMonths, L
         return paymentCents > 0 ? paymentCents : calculatedPayment();
     }
 
-    /** The standard monthly payment that pays off the original amount over the term. */
+    /**
+     * The monthly payment that pays off the original amount over the term:
+     * for a loan charging interest daily from the day paid (most auto and
+     * installment loans), solved from its actual dates, so a first payment
+     * more or less than a month out counts (LoanCalculator); otherwise the
+     * standard formula (which pay-over-time lenders like Affirm also use).
+     */
     long calculatedPayment() {
+        LoanCalculator.Terms c = interestMethod == InterestMethod.DAILY ? contract(paymentMethod()) : null;
+        if (c != null) {
+            return LoanCalculator.solvePayment(c).movePointRight(2).longValueExact();
+        }
         return paymentFor(originalCents, termMonths);
+    }
+
+    /** How the lender works out the payment: from the actual dates for daily interest, else standard. */
+    LoanCalculator.Method paymentMethod() {
+        return interestMethod == InterestMethod.DAILY ? LoanCalculator.Method.DAILY_SIMPLE_INTEREST
+                : LoanCalculator.Method.STANDARD_AMORTIZATION;
+    }
+
+    /**
+     * The loan's contract for LoanCalculator, worked out the given way: the
+     * original amount, rate and term, from the origination date to the first
+     * payment. Null if any of those is missing.
+     */
+    LoanCalculator.Terms contract(LoanCalculator.Method method) {
+        LocalDate first = firstPaymentDate();
+        if (originalCents <= 0 || termMonths <= 0 || origination == null || first == null
+                || !first.isAfter(origination)) {
+            return null;
+        }
+        return new LoanCalculator.Terms(BigDecimal.valueOf(originalCents, 2), BigDecimal.valueOf(rateMilli, 3),
+                termMonths, origination, first, LoanCalculator.Frequency.MONTHLY, method,
+                LoanCalculator.DayCount.FIXED_365);
     }
 
     /** When the first payment is due: as entered, else a month after origination (null if neither is known). */
@@ -205,10 +237,20 @@ record Loan(long accountId, int rateMilli, long originalCents, int termMonths, L
      * payment never covers the interest.
      */
     List<Payment> schedule(long owedCents, LocalDate firstDate, long paymentCents) {
+        return schedule(owedCents, null, firstDate, paymentCents);
+    }
+
+    /**
+     * As schedule(owed, firstDate, payment), with the first payment's period
+     * starting on from (the loan's start, or the last payment), however long
+     * that is; null: a month before firstDate.
+     */
+    List<Payment> schedule(long owedCents, LocalDate from, LocalDate firstDate, long paymentCents) {
         List<Payment> rows = new ArrayList<>();
         long owed = owedCents;
         for (int n = 1; owed > 0 && n <= 1200; n++) {
-            long interest = periodInterest(owed, firstDate.plusMonths(n - 2L), firstDate.plusMonths(n - 1L));
+            LocalDate start = n == 1 && from != null && from.isBefore(firstDate) ? from : firstDate.plusMonths(n - 2L);
+            long interest = periodInterest(owed, start, firstDate.plusMonths(n - 1L));
             long pay = Math.min(paymentCents, owed + interest);
             if (pay <= interest && n > 1) {
                 break;                                  // the payment doesn't even cover the interest

@@ -55,16 +55,36 @@ public class LedgerTableModel extends AbstractTableModel {
     public static final int DOWNLOAD = 12;       // from a bank download: matched or new (shown next to C)
     public static final int INTEREST = 13;       // loans: the interest in a payment (calculated)
     public static final int PRINCIPAL = 14;      // loans: the rest of a payment
+    public static final int TYPE = 15;           // like POS or DIRECTDEBIT (a bank download's TRNTYPE)
+    public static final int PRINCIPAL_BALANCE = 16;  // loans: the principal still owed after each transaction
 
-    /** True for the columns only a loan's ledger shows. */
+    /** True for the columns only a loan's ledger has (not a credit card's). */
+    public static boolean isLoanOnlyColumn(int column) {
+        return column == PRINCIPAL_BALANCE;
+    }
+
+    /** True for the columns only a debt's (loan's or credit card's) ledger shows. */
     public static boolean isLoanColumn(int column) {
         return column == INTEREST || column == PRINCIPAL;
     }
 
+    /** True for a loan or credit card: what's owed, with its own, shorter ledger. */
+    public static boolean isDebt(AccountType type) {
+        return type == AccountType.LOAN || type == AccountType.CREDIT_CARD;
+    }
+
+    /**
+     * The columns a loan's or credit card's ledger has: Date, Num, Type,
+     * Charge, Payment, Interest, Principal, Balance and Files. (Any of them
+     * can still be hidden.)
+     */
+    private static final java.util.Set<Integer> DEBT_COLUMNS =
+            java.util.Set.of(DATE, NUM, TYPE, PAYMENT, DEPOSIT, INTEREST, PRINCIPAL, BALANCE, PRINCIPAL_BALANCE, FILES);
+
     /** Column headers (Files shows as a paperclip icon, so it has no text). */
     private static final String[] COLUMNS = {
         "Date", "Num", "Payee", "Category", "Tag", "Description", "Memo", "C",
-        "Payment", "Deposit", "Balance", "", "D", "Interest", "Principal"
+        "Payment", "Deposit", "Balance", "", "D", "Interest", "Principal", "Type", "Principal Bal."
     };
     /** A column's full name (the header may be shorter, like "C" for Status). */
     public static String columnName(int column) {
@@ -74,7 +94,8 @@ public class LedgerTableModel extends AbstractTableModel {
     /** Column names for messages and Undo labels ("Undo Change Status"). */
     private static final String[] NAMES = {
         "Date", "Num", "Payee", "Category", "Tag", "Description", "Memo", "Status",
-        "Payment", "Deposit", "Balance", "Files", "Downloaded", "Interest", "Principal"
+        "Payment", "Deposit", "Balance", "Files", "Downloaded", "Interest", "Principal", "Type",
+        "Principal Balance"
     };
 
     /**
@@ -112,6 +133,7 @@ public class LedgerTableModel extends AbstractTableModel {
     private final List<LedgerEntry> all = new ArrayList<>();       // every transaction, with balances
     private final List<LedgerEntry> entries = new ArrayList<>();   // the rows shown (filtered, sorted)
     private String filterText = "";              // lower case; "" = no text filter
+    private int filterColumn = -1;               // the column the filter text is looked for in; -1 = all
     private Function<String, String> payeeDebtCategory = p -> null;   // payee -> "[Debt Account]" or null
     private boolean hideReconciled;
     /** The sort used whenever an account is selected: Status, then Date. */
@@ -174,8 +196,8 @@ public class LedgerTableModel extends AbstractTableModel {
         this.draft = newDraft(LocalDate.now());
         draft.category = defaultCategory();
         sortKeys.clear();
-        if (account != null && account.type() == AccountType.LOAN) {
-            sortKeys.add(new SortKey(DATE, true));       // a loan's status doesn't matter: just in date order
+        if (account != null && isDebt(account.type())) {
+            sortKeys.add(new SortKey(DATE, true));       // no status column in a debt's ledger: just in date order
         } else {
             sortKeys.addAll(DEFAULT_SORT);
         }
@@ -183,25 +205,59 @@ public class LedgerTableModel extends AbstractTableModel {
         fireTableDataChanged();
     }
 
-    /** True for the columns a loan's ledger leaves out: its payments' status doesn't matter. */
-    public static boolean isHiddenForLoans(int column) {
-        return column == STATUS || column == DOWNLOAD;
+    /** True for the columns a loan's or credit card's ledger leaves out (see DEBT_COLUMNS). */
+    public static boolean isHiddenForDebts(int column) {
+        return !DEBT_COLUMNS.contains(column);
     }
 
     /**
      * Shows only transactions with this text (ignoring case) in any column,
      * and, if hideReconciled, only those not reconciled. Blank text matches
      * everything. The blank new-transaction row is always shown.
+     *
+     * Text starting with a column's name and a colon looks in that column
+     * only: "payee: walmart", "memo:card 2549", "type:pos". The name is the
+     * column's header or full name, ignoring case ("C" or "Status"; in a
+     * loan, "Charge" and "Payment" too). Text before a colon that isn't a
+     * column's name is searched for as it is, in every column.
      */
     public void setFilter(String text, boolean hideReconciled) {
         String t = text == null ? "" : text.trim().toLowerCase();
-        if (t.equals(filterText) && hideReconciled == this.hideReconciled) {
+        int column = -1;
+        int colon = t.indexOf(':');
+        if (colon > 0) {
+            column = columnNamed(t.substring(0, colon).trim());
+            if (column >= 0) {
+                t = t.substring(colon + 1).trim();
+            }
+        }
+        if (t.equals(filterText) && column == filterColumn && hideReconciled == this.hideReconciled) {
             return;
         }
         filterText = t;
+        filterColumn = column;
         this.hideReconciled = hideReconciled;
         applyFilter();
         fireTableDataChanged();
+    }
+
+    /**
+     * The column with this header or name (ignoring case), or -1. Headers as
+     * shown come first, so in a loan "payment" is its Payment column.
+     */
+    private int columnNamed(String name) {
+        AccountType type = account == null ? null : account.type();
+        for (int c = 0; c < COLUMNS.length; c++) {
+            if (!header(c, type).isEmpty() && header(c, type).equalsIgnoreCase(name)) {
+                return c;
+            }
+        }
+        for (int c = 0; c < NAMES.length; c++) {
+            if (NAMES[c].equalsIgnoreCase(name)) {
+                return c;
+            }
+        }
+        return -1;
     }
 
     /** True if some transactions are hidden by the filter. */
@@ -225,6 +281,10 @@ public class LedgerTableModel extends AbstractTableModel {
     }
 
     /** A saved row's running balance in cents; 0 for the blank row. */
+    public long principalBalanceCents(int row) {
+        return isSavedRow(row) ? entryAt(row).principalBalanceCents : 0;
+    }
+
     public long balanceCents(int row) {
         return isSavedRow(row) ? entryAt(row).balanceCents : 0;
     }
@@ -603,15 +663,15 @@ public class LedgerTableModel extends AbstractTableModel {
     }
 
     /**
-     * A column's header for an account of this type. In a loan's ledger,
-     * money in (lowering what's owed) is a Payment, and money out (owing
-     * more) is a Charge, as lenders put it.
+     * A column's header for an account of this type. In a loan's or credit
+     * card's ledger, money in (lowering what's owed) is a Payment, and money
+     * out (owing more) is a Charge, as lenders put it.
      */
     public static String header(int column, AccountType type) {
-        if (type == AccountType.LOAN && column == PAYMENT) {
+        if (isDebt(type) && column == PAYMENT) {
             return "Charge";
         }
-        if (type == AccountType.LOAN && column == DEPOSIT) {
+        if (isDebt(type) && column == DEPOSIT) {
             return "Payment";
         }
         return COLUMNS[column];
@@ -624,8 +684,19 @@ public class LedgerTableModel extends AbstractTableModel {
 
     @Override
     public boolean isCellEditable(int row, int column) {
-        if (account == null || column == BALANCE || column == FILES || column == DOWNLOAD || isLoanColumn(column)) {
+        if (account == null || column == BALANCE || column == FILES || column == DOWNLOAD) {
             return false;
+        }
+        if (isLoanColumn(column)) {
+            // A loan payment's interest and principal: calculated, but can be typed over.
+            if (account.type() != AccountType.LOAN) {
+                return false;
+            }
+            if (!isSavedRow(row)) {
+                return true;                            // a principal-only or interest-only payment
+            }
+            LedgerEntry e = entryAt(row);
+            return !e.scheduledInterest && e.amountCents >= 0 && !isLocked(row);
         }
         if (column == STATUS && isSavedRow(row) && entryAt(row).status == TxnStatus.RECONCILING) {
             return false;                       // only Reconcile Account changes these
@@ -652,15 +723,17 @@ public class LedgerTableModel extends AbstractTableModel {
             case TAG -> text(e.tag);
             case DESCRIPTION -> text(e.description);
             case MEMO -> text(e.memo);
+            case TYPE -> text(e.type);
             case STATUS -> e.status;
             case PAYMENT -> e.amountCents < 0 ? Money.format(-e.amountCents) : "";
             case DEPOSIT -> e.amountCents > 0 ? Money.format(e.amountCents) : "";
             case BALANCE -> isSavedRow(row) ? Money.format(e.balanceCents) : "";
+            case PRINCIPAL_BALANCE -> isSavedRow(row) ? Money.format(e.principalBalanceCents) : "";
             case FILES -> e.attachments > 0 ? String.valueOf(e.attachments) : "";
             case DOWNLOAD -> e.download == null ? "" : e.download;     // drawn as an icon
             // A loan payment: how much of it was interest, and how much principal (what's owed went down by).
             case INTEREST -> e.interestCents != 0 ? Money.format(e.interestCents) : "";
-            case PRINCIPAL -> e.amountCents > 0 && isSavedRow(row) ? Money.format(e.amountCents - e.interestCents) : "";
+            case PRINCIPAL -> e.amountCents > 0 ? Money.format(e.amountCents - e.interestCents) : "";
             default -> "";
         };
     }
@@ -720,7 +793,8 @@ public class LedgerTableModel extends AbstractTableModel {
         // 2. Save it.
         try {
             if (isDraft) {
-                boolean amountEntered = (column == PAYMENT || column == DEPOSIT) && e.amountCents != 0;
+                boolean amountEntered = (column == PAYMENT || column == DEPOSIT || isLoanColumn(column))
+                        && e.amountCents != 0;
                 if (!amountEntered) {
                     fireTableRowsUpdated(row, row);      // keep filling in the blank row
                     return;
@@ -756,6 +830,7 @@ public class LedgerTableModel extends AbstractTableModel {
             case TAG -> e.tag = text.isEmpty() ? null : TagRepository.normalize(text);
             case DESCRIPTION -> e.description = text;
             case MEMO -> e.memo = text;
+            case TYPE -> e.type = TransactionRepository.normalizeType(text);
             case STATUS -> e.status = value instanceof TxnStatus s ? s : TxnStatus.NONE;
             case PAYMENT -> {
                 if (!text.isEmpty()) {
@@ -771,11 +846,44 @@ public class LedgerTableModel extends AbstractTableModel {
                     e.amountCents = 0;
                 }
             }
+            case INTEREST, PRINCIPAL -> applyInterestOrPrincipal(e, column, text);
             default -> {
                 return false;
             }
         }
         return true;
+    }
+
+    /**
+     * A loan payment's interest or principal, typed over the calculated one.
+     * With no payment yet (a new row), the typed amount is the payment, all
+     * of it interest or all principal: an interest-only or principal-only
+     * payment. Otherwise the payment stays as it is and the other part is
+     * the rest of it. Blank: back to the calculated split.
+     */
+    private static void applyInterestOrPrincipal(LedgerEntry e, int column, String text) {
+        if (text.isEmpty()) {
+            e.interestOverride = null;                  // calculated again
+            return;
+        }
+        long typed = Math.abs(Money.parseTyped(text));
+        if (e.amountCents <= 0) {
+            e.amountCents = typed;
+            e.interestOverride = column == INTEREST ? typed : 0L;
+        } else {
+            if (typed > e.amountCents) {
+                throw new IllegalArgumentException((column == INTEREST ? "Interest" : "Principal") + " of "
+                        + Money.format(typed) + " is more than the payment of " + Money.format(e.amountCents)
+                        + ". Change the payment first, or enter this on a new row.");
+            }
+            e.interestOverride = column == INTEREST ? typed : e.amountCents - typed;
+        }
+        e.interestCents = e.interestOverride;            // shown straight away; saving recalculates the rest
+    }
+
+    /** True if a row's interest and principal were typed in, not calculated. */
+    public boolean isManualInterest(int row) {
+        return isSavedRow(row) && entryAt(row).interestOverride != null;
     }
 
     // ----- Sorting ------------------------------------------------------
@@ -851,6 +959,7 @@ public class LedgerTableModel extends AbstractTableModel {
             case TAG -> by(e -> blankToNull(e.tag), String.CASE_INSENSITIVE_ORDER, ascending);
             case DESCRIPTION -> by(e -> blankToNull(e.description), String.CASE_INSENSITIVE_ORDER, ascending);
             case MEMO -> by(e -> blankToNull(e.memo), String.CASE_INSENSITIVE_ORDER, ascending);
+            case TYPE -> by(e -> blankToNull(e.type), String.CASE_INSENSITIVE_ORDER, ascending);
             case STATUS -> {
                 // Future transactions are all simply upcoming: status doesn't separate them, so the
                 // next sort level (normally Date) keeps them in date order, Scheduled or not.
@@ -861,6 +970,7 @@ public class LedgerTableModel extends AbstractTableModel {
             case PAYMENT -> amountOrder(true, ascending);
             case DEPOSIT -> amountOrder(false, ascending);
             case BALANCE -> by(e -> e.balanceCents, Comparator.<Long>naturalOrder(), ascending);
+            case PRINCIPAL_BALANCE -> by(e -> e.principalBalanceCents, Comparator.<Long>naturalOrder(), ascending);
             case FILES -> by(e -> e.attachments == 0 ? null : e.attachments, Comparator.<Integer>naturalOrder(), ascending);
             case DOWNLOAD -> by(e -> e.download, Comparator.<String>naturalOrder(), ascending);
             case INTEREST -> by(e -> e.interestCents, Comparator.<Long>naturalOrder(), ascending);
@@ -981,9 +1091,15 @@ public class LedgerTableModel extends AbstractTableModel {
             return;
         }
         long balance = account.startingBalanceCents();
+        long principal = balance;
         for (LedgerEntry e : all) {
-            balance += e.netCents();                     // a loan payment: just its principal
+            balance += e.netCents();                     // (a loan payment holding its interest: just its principal)
             e.balanceCents = balance;
+            // A loan's principal: payments lower it by their principal part; the scheduled interest isn't principal.
+            if (!e.scheduledInterest) {
+                principal += e.amountCents > 0 ? e.amountCents - e.interestCents : e.amountCents;
+            }
+            e.principalBalanceCents = principal;
         }
     }
 
@@ -992,9 +1108,9 @@ public class LedgerTableModel extends AbstractTableModel {
         if (filterText.isEmpty()) {
             return true;
         }
-        String[] fields = {
+        String[] fields = filterColumn >= 0 ? fields(e, filterColumn) : new String[] {
             e.date == null ? "" : e.date.format(DISPLAY_DATE),
-            e.checkNumber, e.payee, e.category, e.tag, e.description, e.memo,
+            e.checkNumber, e.payee, e.category, e.tag, e.description, e.memo, e.type,
             e.status == TxnStatus.NONE ? "" : e.status.label(),
             Money.format(Math.abs(e.amountCents)),          // "$1,250.50"
             plainAmount(Math.abs(e.amountCents)),            // "1250.50"
@@ -1007,6 +1123,34 @@ public class LedgerTableModel extends AbstractTableModel {
             }
         }
         return false;
+    }
+
+    /** What the filter looks at in one column: as shown, and (for amounts) as typed. */
+    private static String[] fields(LedgerEntry e, int column) {
+        return switch (column) {
+            case DATE -> new String[] {e.date == null ? "" : e.date.format(DISPLAY_DATE)};
+            case NUM -> new String[] {e.checkNumber};
+            case PAYEE -> new String[] {e.payee};
+            case CATEGORY -> new String[] {e.category};
+            case TAG -> new String[] {e.tag};
+            case DESCRIPTION -> new String[] {e.description};
+            case MEMO -> new String[] {e.memo};
+            case TYPE -> new String[] {e.type};
+            case STATUS -> new String[] {e.status == TxnStatus.NONE ? "" : e.status.label()};
+            case PAYMENT -> e.amountCents < 0 ? amounts(-e.amountCents) : new String[0];
+            case DEPOSIT -> e.amountCents > 0 ? amounts(e.amountCents) : new String[0];
+            case BALANCE -> amounts(e.balanceCents);
+            case PRINCIPAL_BALANCE -> amounts(e.principalBalanceCents);
+            case INTEREST -> e.interestCents != 0 ? amounts(e.interestCents) : new String[0];
+            case PRINCIPAL -> e.amountCents > 0 ? amounts(e.amountCents - e.interestCents) : new String[0];
+            case FILES -> new String[] {e.attachments > 0 ? String.valueOf(e.attachments) : ""};
+            case DOWNLOAD -> new String[] {"M".equals(e.download) ? "matched" : "N".equals(e.download) ? "new" : ""};
+            default -> new String[0];
+        };
+    }
+
+    private static String[] amounts(long cents) {
+        return new String[] {Money.format(cents), plainAmount(cents)};
     }
 
     /** 125050 -> "1250.50", without "$" or commas, so typed amounts match too. */

@@ -593,7 +593,14 @@ final class ManageAccountsDialog extends JDialog {
     private String totals(Loan l, long payment) {
         StringBuilder s = new StringBuilder();
         java.time.LocalDate first = l.firstPaymentDate();
-        if (l.originalCents() > 0 && first != null) {
+        LoanCalculator.Terms contract = l.contract(l.paymentMethod());
+        if (contract != null && contract.method() == LoanCalculator.Method.DAILY_SIMPLE_INTEREST) {
+            // Daily interest: the contract worked out from its actual dates.
+            LoanCalculator.Result r = LoanCalculator.withPayment(contract, java.math.BigDecimal.valueOf(payment, 2));
+            s.append("<br>Original terms: <b>").append(Money.format(r.totalOfPayments().movePointRight(2)
+                    .longValueExact())).append("</b> in all, <b>").append(Money.format(r.financeCharge()
+                    .movePointRight(2).longValueExact())).append("</b> of it interest");
+        } else if (l.originalCents() > 0 && first != null) {
             List<Loan.Payment> all = l.schedule(l.originalCents(), first, payment);
             long total = all.stream().mapToLong(Loan.Payment::paymentCents).sum();
             long interest = all.stream().mapToLong(Loan.Payment::interestCents).sum();
@@ -618,9 +625,10 @@ final class ManageAccountsDialog extends JDialog {
                 if (!rest.isEmpty() && rest.get(rest.size() - 1).balanceCents() == 0) {
                     long left = rest.stream().mapToLong(Loan.Payment::paymentCents).sum();
                     long interest = rest.stream().mapToLong(Loan.Payment::interestCents).sum();
-                    s.append("<br>Still to pay: about ").append(Money.format(left)).append(" (")
-                     .append(rest.size()).append(rest.size() == 1 ? " payment" : " payments").append(", ")
-                     .append(Money.format(interest)).append(" interest)")
+                    s.append("<br>Still to pay: about ").append(Money.format(left)).append(", ")
+                     .append(Money.format(interest)).append(" of it interest")
+                     .append("<br>&nbsp;&nbsp;(").append(rest.size())
+                     .append(rest.size() == 1 ? " payment left)" : " payments left)")
                      .append("<br>Total: about <b>").append(Money.format(paid[0] + left)).append("</b>, <b>")
                      .append(Money.format(paid[1] + interest)).append("</b> of it interest");
                 }

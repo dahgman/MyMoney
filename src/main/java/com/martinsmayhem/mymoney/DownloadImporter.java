@@ -43,8 +43,13 @@ import java.util.Set;
  */
 final class DownloadImporter {
 
-    /** One downloaded transaction. id identifies it across imports (OFX FITID, or made up for QIF). */
-    record Download(LocalDate date, long amountCents, String payee, String memo, String checkNumber, String id) {
+    /**
+     * One downloaded transaction. id identifies it across imports (OFX FITID,
+     * or made up for QIF); type is the OFX TRNTYPE (POS, DIRECTDEBIT, ...),
+     * null for QIF.
+     */
+    record Download(LocalDate date, long amountCents, String payee, String memo, String checkNumber, String id,
+                    String type) {
 
         /** The bank's text for the transaction to go in a memo: its memo, or (if none) its name. */
         String bankMemo() {
@@ -96,7 +101,7 @@ final class DownloadImporter {
             for (QifParser.QifTransaction t : b.transactions) {
                 String base = "QIF:" + t.date + "|" + t.amountCents + "|" + norm(t.payee) + "|" + norm(t.number);
                 int n = seen.merge(base, 1, Integer::sum);
-                list.add(new Download(t.date, t.amountCents, t.payee, t.memo, t.number, base + "#" + n));
+                list.add(new Download(t.date, t.amountCents, t.payee, t.memo, t.number, base + "#" + n, null));
             }
         }
         return list;
@@ -209,12 +214,13 @@ final class DownloadImporter {
             memo = memo + " - " + description;                // don't lose a memo typed by hand
         }
         try (PreparedStatement ps = conn.prepareStatement("UPDATE txn SET status = ?, memo = ?,"
-                + " download_status = ?, download_id = ? WHERE id = ?")) {
+                + " download_status = ?, download_id = ?, txn_type = COALESCE(?, txn_type) WHERE id = ?")) {
             ps.setString(1, c.alreadyCleared() ? c.status().code() : TxnStatus.CLEARED.code());
             TransactionRepository.setText(ps, 2, memo);
             ps.setString(3, MATCHED);
             TransactionRepository.setText(ps, 4, d.id());
-            ps.setLong(5, c.id());
+            TransactionRepository.setText(ps, 5, TransactionRepository.normalizeType(d.type()));   // the bank's type
+            ps.setLong(6, c.id());
             ps.executeUpdate();
         }
         if (!c.alreadyCleared()) {
@@ -258,6 +264,7 @@ final class DownloadImporter {
             e.payee = payee;
             e.checkNumber = d.checkNumber();
             e.memo = d.memo();                          // the bank's NAME is the payee (unless renamed); MEMO the memo
+            e.type = d.type();                          // its TRNTYPE
             e.category = debt != null ? debt : account.defaultCategory();
             e.amountCents = d.amountCents();
             e.status = TxnStatus.CLEARED;

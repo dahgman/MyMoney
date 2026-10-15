@@ -11,12 +11,15 @@ import javax.swing.UIManager;
 
 /**
  * Application entry point.
- * Startup flow:
+ * Startup flow (behind the splash screen, which steps aside for the dialogs):
  *   1. No databases yet          -> New Database dialog (new file becomes the default)
  *   2. A default database is set -> ask for its password and open it
  *   3. Otherwise, or if cancelled -> database selector (StartupDialog)
  */
 public class MyMoney {
+
+    /** The version shown on the startup screen. */
+    static final String VERSION = "1.0";
 
     public static void main(String[] args) {
         try {
@@ -28,10 +31,14 @@ public class MyMoney {
     }
 
     private static void start() {
+        Splash.start();
+        AppIcon.install();                    // the icon for every window, dialogs included
+        Splash.step("Reading settings…", 8);
         AppConfig config;
         try {
             config = new AppConfig();
         } catch (Exception e) {
+            Splash.finish();
             JOptionPane.showMessageDialog(null,
                     "Could not open application settings:\n" + e.getMessage(),
                     "MyMoney", JOptionPane.ERROR_MESSAGE);
@@ -50,6 +57,7 @@ public class MyMoney {
 
         if (recent.isEmpty()) {
             // 1. First run: create a database. It is marked as the default automatically.
+            Splash.pause();
             NewDatabaseDialog nd = new NewDatabaseDialog(null, true, config);
             nd.setLocationRelativeTo(null);
             nd.setVisible(true);              // modal: waits here until closed
@@ -77,6 +85,7 @@ public class MyMoney {
 
         // 3. No default, file missing, or the user cancelled: show the selector.
         if (db == null) {
+            Splash.pause();
             StartupDialog sd = new StartupDialog(null, true, config);
             sd.setLocationRelativeTo(null);
             sd.setVisible(true);
@@ -84,13 +93,16 @@ public class MyMoney {
         }
 
         if (db == null) {                     // user chose Exit
+            Splash.finish();
             config.close();
             System.exit(0);
             return;
         }
 
-        MainFrame frame = new MainFrame(db, config);
+        Splash.step("Opening " + db.getFile().getFileName() + "…", 35);
+        MainFrame frame = new MainFrame(db, config);   // reports its own steps
         frame.setLocationRelativeTo(null);
         frame.setVisible(true);
+        Splash.finish();
     }
 }

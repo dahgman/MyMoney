@@ -41,6 +41,7 @@ public final class PasswordPrompt {
                 public void ancestorMoved(AncestorEvent e) { }
             });
 
+            Splash.pause();                             // (at startup) the prompt goes on top
             int r = JOptionPane.showConfirmDialog(parent, pf,
                     "Password for " + file.getFileName(),
                     JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
@@ -50,8 +51,10 @@ public final class PasswordPrompt {
 
             char[] pw = pf.getPassword();
             try {
+                Splash.step("Unlocking " + file.getFileName() + "…", 20);   // decrypting takes a moment
                 return Database.open(file, new String(pw));
             } catch (SQLException e) {
+                Splash.pause();
                 JOptionPane.showMessageDialog(parent,
                         "Could not open the file. The password may be wrong,\n"
                         + "or it may not be a MyMoney file.\n\nPlease try again.",

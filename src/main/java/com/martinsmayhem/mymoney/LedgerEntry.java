@@ -18,13 +18,16 @@ public class LedgerEntry {
     Color tagColor;           // the tag's color (read from the database)
     String description;
     String memo;
+    String type;              // like POS or DIRECTDEBIT (a bank download's TRNTYPE, or typed); null = none
     TxnStatus status = TxnStatus.NONE;
     long amountCents;         // negative = payment, positive = deposit
-    long balanceCents;        // running balance in date order (calculated, not stored)
+    long balanceCents;
+    long principalBalanceCents; // a loan: the principal still owed after it (calculated, not stored)        // running balance in date order (calculated, not stored)
     boolean toEnvelope;       // a transfer whose other account is an envelope (read from the database)
     int attachments;          // how many files are attached (read from the database)
     String download;          // from a bank download: "M" matched, "N" new; null = entered by hand
     long interestCents;       // a loan payment's calculated interest, shown (read from the database)
+    Long interestOverride;    // a loan payment's interest as entered by hand; null = calculated
     long interestSplitCents;  // the part of it recorded in the payment, lowering its effect on the balance
     boolean scheduledInterest; // a loan's calculated scheduled-interest charge (read-only but for its status)
 
@@ -40,14 +43,17 @@ public class LedgerEntry {
         c.tagColor = tagColor;
         c.description = description;
         c.memo = memo;
+        c.type = type;
         c.status = status;
         c.amountCents = amountCents;
         c.balanceCents = balanceCents;
+        c.principalBalanceCents = principalBalanceCents;
         c.toEnvelope = toEnvelope;
         c.attachments = attachments;
         c.download = download;
         c.interestCents = interestCents;
         c.interestSplitCents = interestSplitCents;
+        c.interestOverride = interestOverride;
         c.scheduledInterest = scheduledInterest;
         return c;
     }
@@ -61,6 +67,8 @@ public class LedgerEntry {
                 && java.util.Objects.equals(blank(tag), blank(o.tag))
                 && java.util.Objects.equals(blank(description), blank(o.description))
                 && java.util.Objects.equals(blank(memo), blank(o.memo))
+                && java.util.Objects.equals(blank(type), blank(o.type))
+                && java.util.Objects.equals(interestOverride, o.interestOverride)
                 && status == o.status && amountCents == o.amountCents;
     }
 

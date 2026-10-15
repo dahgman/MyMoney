@@ -159,6 +159,8 @@ public class AppConfig implements AutoCloseable {
     public static final int DEFAULT_SCHEDULE_DAYS = 14;
     /** The ledger columns hidden from view: their numbers (LedgerTableModel), comma-separated. */
     public static final String HIDDEN_LEDGER_COLUMNS = "hidden_ledger_columns";
+    /** The same for loans' and credit cards' ledgers (chosen separately). */
+    public static final String HIDDEN_DEBT_COLUMNS = "hidden_debt_columns";
     /** Editing the ledger: Enter moves to the next field, like Tab (false: down to the next transaction). */
     public static final String ENTER_NEXT_FIELD = "enter_next_field";
     /** Typed amounts: digits with no decimal point are cents (12345 = $123.45). */
