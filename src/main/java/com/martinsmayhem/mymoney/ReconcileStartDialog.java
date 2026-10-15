@@ -20,8 +20,10 @@ import javax.swing.SwingConstants;
 
 /**
  * The first step of Reconcile Account: the statement's ending balance and
- * date. With "As of" ticked, every unreconciled transaction dated on or
- * before that date is selected (marked Reconciling) to start with.
+ * date. The statement's period runs from the last reconciliation's statement
+ * date through this date: its Cleared transactions are selected (marked
+ * Reconciling) to start with, or with "As of" ticked, all of its
+ * unreconciled ones. Transactions after the date are left as they are.
  */
 final class ReconcileStartDialog extends JDialog {
 
@@ -80,9 +82,10 @@ final class ReconcileStartDialog extends JDialog {
         c.fill = GridBagConstraints.HORIZONTAL;
         form.add(datePicker, c);
 
-        JLabel help = new JLabel("<html><div style='width:420px'>Cleared transactions are always selected to"
-                + " start with. Selecting the 'As of' option will also select every unreconciled transaction"
-                + " dated on or before the given date and mark it as 'Reconciling'. This often makes"
+        JLabel help = new JLabel("<html><div style='width:420px'>Cleared transactions from the last"
+                + " reconciliation through the statement date are selected to start with. Selecting the"
+                + " 'As of' option will select every unreconciled transaction in that period and mark it as"
+                + " 'Reconciling'. Transactions after the statement date keep their status. This often makes"
                 + " reconciling easier, but you should still check each transaction against your"
                 + " statement.</div></html>");
         c = cell(0, 4);

@@ -46,11 +46,34 @@ final class UndoLog {
         lastSeq = lastAssignedSeq();
     }
 
+    /** Where the log has got to, for dropSince. */
+    long mark() throws SQLException {
+        return lastAssignedSeq();
+    }
+
+    /**
+     * Drops what was logged since mark: those changes stay done, but no
+     * undo step will reverse them. For changes made alongside files on disk
+     * that Undo can't put back (attachments added, removed, renamed, moved),
+     * so it never leaves a listing pointing at a file that isn't there.
+     * Anything else in the same action can still be undone.
+     */
+    void dropSince(long mark) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement("DELETE FROM temp.undolog WHERE seq > ?")) {
+            ps.setLong(1, mark);
+            ps.executeUpdate();
+        }
+    }
+
     /** Groups every change since the last checkpoint into one undo step named label. */
     void checkpoint(String label) throws SQLException {
         long current = lastAssignedSeq();
         if (current <= lastSeq) {
             return;                                     // nothing changed
+        }
+        if (!anyLogged(lastSeq + 1, current)) {
+            lastSeq = current;                          // only changes that were dropped (dropSince)
+            return;
         }
         undoSteps.push(new Step(lastSeq + 1, current, label));
         lastSeq = current;
@@ -145,6 +168,18 @@ final class UndoLog {
             ps.setLong(1, s.first());
             ps.setLong(2, s.last());
             ps.executeUpdate();
+        }
+    }
+
+    private boolean anyLogged(long first, long last) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT EXISTS (SELECT 1 FROM temp.undolog WHERE seq BETWEEN ? AND ?)")) {
+            ps.setLong(1, first);
+            ps.setLong(2, last);
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                return rs.getBoolean(1);
+            }
         }
     }
 

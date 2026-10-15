@@ -135,9 +135,16 @@ public class MainFrame extends javax.swing.JFrame {
         } catch (SQLException e) {
             showError("Could not work out the interest in your loans' payments:\n" + e.getMessage());
         }
+        try {
+            attachments.fileStatementsByYear();          // statements filed by day before: up into their year
+            attachments.fileTransactionAttachments();    // transaction files named "<id>-<payee>.<ext>"
+        } catch (SQLException e) {
+            showError("Could not file the attachments in their folders:\n" + e.getMessage());
+        }
         Splash.step("Preparing undo…", 70);
         try {
             undoLog = new UndoLog(db);
+            attachments.setUndoLog(undoLog);             // attaching files isn't undone (they're on disk)
         } catch (SQLException e) {
             showError("Undo is not available for this file:\n" + e.getMessage());
         }
@@ -1079,6 +1086,7 @@ public class MainFrame extends javax.swing.JFrame {
             }
             updateUndoMenu();
         }
+        fileAttachments();                               // a new date or payee: its files follow
         if (recalculated) {
             ledgerModel.reload();
             updateSummary(selectedAccount());
@@ -1101,7 +1109,21 @@ public class MainFrame extends javax.swing.JFrame {
         } catch (SQLException e) {
             showError("Could not undo:\n" + e.getMessage());
         }
+        fileAttachments();                               // the date or payee back: the files go back too
         refreshAfterUndo();
+    }
+
+    /**
+     * Keeps transactions' attached files named and filed for them ("<id>-<payee>.<ext>"
+     * in the date's folder). Moving files isn't undone, so the paths it saves aren't kept
+     * as an undo step: Undo changes the transaction, and this files its attachments again.
+     */
+    private void fileAttachments() {
+        try {
+            attachments.fileTransactionAttachments();
+        } catch (SQLException e) {
+            // they stay where they are, and are still found there
+        }
     }
 
     /** Edit > Redo (Ctrl+Y). */
@@ -1117,6 +1139,7 @@ public class MainFrame extends javax.swing.JFrame {
         } catch (SQLException e) {
             showError("Could not redo:\n" + e.getMessage());
         }
+        fileAttachments();
         refreshAfterUndo();
     }
 
@@ -1544,8 +1567,7 @@ public class MainFrame extends javax.swing.JFrame {
             ledgerTable.getCellEditor().stopCellEditing();
         }
         if (AttachmentsDialog.show(this, a, txnId, ledgerModel.transactionDate(row), attachments)) {
-            checkpoint("Attachments");
-            ledgerModel.reload();
+            ledgerModel.reload();                        // the file count (attaching isn't undone)
         }
     }
 
@@ -1556,9 +1578,7 @@ public class MainFrame extends javax.swing.JFrame {
             showError("Select an account first.");
             return;
         }
-        if (StatementsDialog.show(this, a, attachments)) {
-            checkpoint("Statements");
-        }
+        StatementsDialog.show(this, a, attachments);    // (not undoable: see AttachmentRepository.setUndoLog)
     }
 
     /**

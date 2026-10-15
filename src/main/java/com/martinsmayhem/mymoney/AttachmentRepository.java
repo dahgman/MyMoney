@@ -20,10 +20,15 @@ import java.util.List;
  * Attached files are copied into folders next to the data file, one folder
  * per account:
  *
- *   <data file folder>/<Account>/Attachments/Transactions/YYYY/MM/DD/<transaction id>/
- *   <data file folder>/<Account>/Attachments/Statements/YYYY/MM/DD/
+ *   <data file folder>/<Account>/Attachments/Transactions/YYYY/MM/DD/<transaction id>-<payee>.<ext>
+ *   <data file folder>/<Account>/Attachments/Statements/YYYY/<file>
  *
- * (the date is the transaction's date, or the statement date). The database
+ * A transaction's files are named for it: its id and payee, with the
+ * original file's extension ("1234-Walmart.pdf"; a second one "1234-Walmart
+ * (2).jpg"; no payee, just "1234.pdf"), in its date's folder. When its date
+ * or payee changes, they're renamed or moved to match (see
+ * fileTransactionAttachments). Statements, which come once a month, are
+ * filed by the statement date's year, under their own names. The database
  * keeps each file's path relative to the data file's folder, so the whole
  * folder can be moved or backed up together.
  */
@@ -40,6 +45,29 @@ final class AttachmentRepository {
     private final Connection conn;
     private final Path root;
 
+    private UndoLog undoLog;
+
+    /**
+     * Keeps attaching, removing, renaming and moving files out of Undo: the
+     * files are copied, moved or deleted on disk, which Undo can't put back,
+     * so it mustn't change their listing either. (Rows going with a
+     * transaction or reconciliation that's deleted are still put back by its
+     * Undo: their files were never deleted.)
+     */
+    void setUndoLog(UndoLog undoLog) {
+        this.undoLog = undoLog;
+    }
+
+    private long mark() throws SQLException {
+        return undoLog == null ? -1 : undoLog.mark();
+    }
+
+    private void untrack(long mark) throws SQLException {
+        if (undoLog != null && mark >= 0) {
+            undoLog.dropSince(mark);
+        }
+    }
+
     AttachmentRepository(Database db) {
         this.conn = db.getConnection();
         this.root = db.getFile().getParent();
@@ -54,18 +82,64 @@ final class AttachmentRepository {
 
     // ----- Adding --------------------------------------------------------
 
-    /** Copies a file in as an attachment of a transaction. */
+    /**
+     * Copies a file in as an attachment of a transaction, named for it
+     * ("<id>-<payee>.<ext>") in its date's folder.
+     */
     Attachment addToTransaction(Account account, long txnId, LocalDate date, Path source)
             throws SQLException, IOException {
-        String dir = folderName(account.name()) + "/Attachments/Transactions/" + datePath(date) + "/" + txnId;
-        return add(account.id(), txnId, null, dir, source);
+        long mark = mark();                         // not an undo step: files move with it
+        try {
+            String dir = transactionDir(account.name(), date);
+            return add(account.id(), txnId, null, dir, source,
+                    transactionFileName(txnId, payeeOf(txnId), extension(source.getFileName().toString())));
+        } finally {
+            untrack(mark);
+        }
+    }
+
+    /** The folder a transaction's files go in: its account's, by its date. */
+    private static String transactionDir(String accountName, LocalDate date) {
+        return folderName(accountName) + "/Attachments/Transactions/" + datePath(date);
+    }
+
+    /** "1234-Walmart.pdf" (just "1234.pdf" with no payee). */
+    static String transactionFileName(long txnId, String payee, String ext) {
+        String p = payee == null ? "" : folderName(payee.trim());
+        if (payee == null || payee.isBlank()) {
+            p = "";
+        }
+        if (p.length() > 60) {
+            p = p.substring(0, 60).trim();               // keep paths a sensible length
+        }
+        return txnId + (p.isEmpty() ? "" : "-" + p) + ext;
+    }
+
+    /** ".pdf" from "Receipt.PDF" ("" for a name without one). */
+    private static String extension(String fileName) {
+        int dot = fileName.lastIndexOf('.');
+        return dot > 0 && dot < fileName.length() - 1 ? fileName.substring(dot).toLowerCase(java.util.Locale.ROOT) : "";
+    }
+
+    private String payeeOf(long txnId) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT p.name FROM txn t LEFT JOIN payee p ON p.id = t.payee_id WHERE t.id = ?")) {
+            ps.setLong(1, txnId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getString(1) : null;
+            }
+        }
     }
 
     /** Copies a file in as the bank statement for a reconciliation. */
     Attachment addToStatement(Account account, long reconciliationId, LocalDate statementDate, Path source)
             throws SQLException, IOException {
-        String dir = folderName(account.name()) + "/Attachments/Statements/" + datePath(statementDate);
-        return add(account.id(), null, reconciliationId, dir, source);
+        long mark = mark();                         // not an undo step: files move with it
+        try {
+            return add(account.id(), null, reconciliationId, statementDir(account, statementDate), source, null);
+        } finally {
+            untrack(mark);
+        }
     }
 
     /**
@@ -73,21 +147,26 @@ final class AttachmentRepository {
      * with the statements saved while reconciling).
      */
     Attachment addStatement(Account account, LocalDate date, Path source) throws SQLException, IOException {
-        String dir = folderName(account.name()) + "/Attachments/Statements/" + datePath(date);
-        Attachment a = add(account.id(), null, null, dir, source);
-        try (PreparedStatement ps = conn.prepareStatement("UPDATE attachment SET statement_date = ? WHERE id = ?")) {
-            ps.setString(1, date.toString());
-            ps.setLong(2, a.id());
-            ps.executeUpdate();
+        long mark = mark();                         // not an undo step: files move with it
+        try {
+            Attachment a = add(account.id(), null, null, statementDir(account, date), source, null);
+            try (PreparedStatement ps = conn.prepareStatement("UPDATE attachment SET statement_date = ? WHERE id = ?")) {
+                ps.setString(1, date.toString());
+                ps.setLong(2, a.id());
+                ps.executeUpdate();
+            }
+            return a;
+        } finally {
+            untrack(mark);
         }
-        return a;
     }
 
-    private Attachment add(long accountId, Long txnId, Long reconciliationId, String dir, Path source)
+    /** Copies source into dir, as name (null: its own name), and lists it. */
+    private Attachment add(long accountId, Long txnId, Long reconciliationId, String dir, Path source, String name)
             throws SQLException, IOException {
         Path folder = root.resolve(dir);
         Files.createDirectories(folder);
-        Path target = unusedName(folder, source.getFileName().toString());
+        Path target = unusedName(folder, name != null ? name : source.getFileName().toString());
         Files.copy(source, target, StandardCopyOption.COPY_ATTRIBUTES);
         String path = dir + "/" + target.getFileName();
         try (PreparedStatement ps = conn.prepareStatement("INSERT INTO attachment"
@@ -164,32 +243,53 @@ final class AttachmentRepository {
         return list;
     }
 
+    /** The folder a statement is filed in: its account's statements folder, by year. */
+    private static String statementDir(Account account, LocalDate date) {
+        return folderName(account.name()) + "/Attachments/Statements/" + String.format("%04d", date.getYear());
+    }
+
     /**
      * Re-dates a statement added on its own, moving its file to the new
-     * date's folder.
+     * year's folder if the year changed.
      */
     void redateStatement(Statement s, Account account, LocalDate date) throws SQLException, IOException {
-        if (s.fromReconcile()) {
-            throw new SQLException("This statement was saved while reconciling; its date is the reconciliation's.");
+        long mark = mark();                         // not an undo step: files move with it
+        try {
+            if (s.fromReconcile()) {
+                throw new SQLException("This statement was saved while reconciling; its date is the reconciliation's.");
+            }
+            String dir = statementDir(account, date);
+            if (s.attachment().path().startsWith(dir + "/")
+                    && s.attachment().path().indexOf('/', dir.length() + 1) < 0) {
+                // Same year: the file stays where it is.
+                try (PreparedStatement ps = conn.prepareStatement(
+                        "UPDATE attachment SET statement_date = ? WHERE id = ?")) {
+                    ps.setString(1, date.toString());
+                    ps.setLong(2, s.attachment().id());
+                    ps.executeUpdate();
+                }
+                return;
+            }
+            Path from = file(s.attachment(), account);
+            Path folder = root.resolve(dir);
+            Files.createDirectories(folder);
+            Path to = unusedName(folder, from.getFileName().toString());
+            Files.move(from, to);
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "UPDATE attachment SET statement_date = ?, path = ?, file_name = ? WHERE id = ?")) {
+                ps.setString(1, date.toString());
+                ps.setString(2, dir + "/" + to.getFileName());
+                ps.setString(3, to.getFileName().toString());
+                ps.setLong(4, s.attachment().id());
+                ps.executeUpdate();
+            } catch (SQLException e) {
+                Files.move(to, from);                       // put it back
+                throw e;
+            }
+            removeIfEmpty(from.getParent());
+        } finally {
+            untrack(mark);
         }
-        Path from = file(s.attachment(), account);
-        String dir = folderName(account.name()) + "/Attachments/Statements/" + datePath(date);
-        Path folder = root.resolve(dir);
-        Files.createDirectories(folder);
-        Path to = unusedName(folder, from.getFileName().toString());
-        Files.move(from, to);
-        try (PreparedStatement ps = conn.prepareStatement(
-                "UPDATE attachment SET statement_date = ?, path = ?, file_name = ? WHERE id = ?")) {
-            ps.setString(1, date.toString());
-            ps.setString(2, dir + "/" + to.getFileName());
-            ps.setString(3, to.getFileName().toString());
-            ps.setLong(4, s.attachment().id());
-            ps.executeUpdate();
-        } catch (SQLException e) {
-            Files.move(to, from);                       // put it back
-            throw e;
-        }
-        removeIfEmpty(from.getParent());
     }
 
     List<Attachment> forReconciliation(long reconciliationId) throws SQLException {
@@ -234,13 +334,118 @@ final class AttachmentRepository {
 
     /** Removes an attachment and deletes its copied file (and its folder, if now empty). */
     void remove(Attachment a, Account account) throws SQLException, IOException {
-        Path p = file(a, account);
-        try (PreparedStatement ps = conn.prepareStatement("DELETE FROM attachment WHERE id = ?")) {
-            ps.setLong(1, a.id());
-            ps.executeUpdate();
+        long mark = mark();                         // not an undo step: files move with it
+        try {
+            Path p = file(a, account);
+            try (PreparedStatement ps = conn.prepareStatement("DELETE FROM attachment WHERE id = ?")) {
+                ps.setLong(1, a.id());
+                ps.executeUpdate();
+            }
+            Files.deleteIfExists(p);
+            removeEmptyFolders(p.getParent());
+        } finally {
+            untrack(mark);
         }
-        Files.deleteIfExists(p);
-        removeIfEmpty(p.getParent());
+    }
+
+    /**
+     * Removes dir if it's empty, then each folder above it that's left
+     * empty, up to (not including) the account's Attachments folder.
+     */
+    private void removeEmptyFolders(Path dir) {
+        Path d = dir;
+        while (d != null && d.startsWith(root) && !d.equals(root)
+                && !d.getFileName().toString().equals("Attachments")) {
+            try (var s = Files.list(d)) {
+                if (s.findAny().isPresent()) {
+                    return;
+                }
+            } catch (IOException e) {
+                return;
+            }
+            try {
+                Files.delete(d);
+            } catch (IOException e) {
+                return;
+            }
+            d = d.getParent();
+        }
+    }
+
+    /**
+     * Keeps every transaction's files named and filed for it: in its date's
+     * folder, as "<id>-<payee>.<ext>". Moves and renames any that aren't
+     * (filed the old way, in a folder per transaction; or the transaction's
+     * date or payee changed since), then tidies away emptied folders. A file
+     * that can't be found is left listed as it is. Returns how many moved.
+     *
+     * The paths it saves are bookkeeping, not something to undo (see
+     * setUndoLog): run after each change (and after Undo), so the listing
+     * always follows the files.
+     */
+    int fileTransactionAttachments() throws SQLException {
+        long mark = mark();                         // not an undo step: files move with it
+        try {
+            record Filed(long id, long txnId, String path, String fileName, String account, LocalDate date,
+                         String payee) {
+            }
+            List<Filed> all = new ArrayList<>();
+            try (PreparedStatement ps = conn.prepareStatement("""
+                    SELECT at.id, at.txn_id, at.path, at.file_name, a.name, t.txn_date, p.name
+                    FROM attachment at
+                    JOIN txn t ON t.id = at.txn_id
+                    JOIN account a ON a.id = t.account_id
+                    LEFT JOIN payee p ON p.id = t.payee_id
+                    """)) {
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        all.add(new Filed(rs.getLong(1), rs.getLong(2), rs.getString(3), rs.getString(4),
+                                rs.getString(5), LocalDate.parse(rs.getString(6)), rs.getString(7)));
+                    }
+                }
+            }
+            int moved = 0;
+            for (Filed f : all) {
+                String dir = transactionDir(f.account(), f.date());
+                String ext = extension(f.fileName());
+                String base = transactionFileName(f.txnId(), f.payee(), "");
+                String current = f.path().substring(f.path().lastIndexOf('/') + 1);
+                boolean rightFolder = f.path().equals(dir + "/" + current);
+                boolean rightName = current.equals(base + ext)
+                        || current.matches(java.util.regex.Pattern.quote(base) + " \\(\\d+\\)"
+                                + java.util.regex.Pattern.quote(ext));
+                if (rightFolder && rightName) {
+                    continue;
+                }
+                Path from = root.resolve(f.path());
+                if (!Files.isRegularFile(from)) {
+                    continue;                               // missing: nothing to move
+                }
+                try {
+                    Path folder = root.resolve(dir);
+                    Files.createDirectories(folder);
+                    Path to = unusedName(folder, base + ext);
+                    Files.move(from, to);
+                    try (PreparedStatement ps = conn.prepareStatement(
+                            "UPDATE attachment SET path = ?, file_name = ? WHERE id = ?")) {
+                        ps.setString(1, dir + "/" + to.getFileName());
+                        ps.setString(2, to.getFileName().toString());
+                        ps.setLong(3, f.id());
+                        ps.executeUpdate();
+                    } catch (SQLException e) {
+                        Files.move(to, from);               // put it back
+                        throw e;
+                    }
+                    removeEmptyFolders(from.getParent());
+                    moved++;
+                } catch (IOException e) {
+                    // left where it is; it's still found there
+                }
+            }
+            return moved;
+        } finally {
+            untrack(mark);
+        }
     }
 
     private static void removeIfEmpty(Path dir) {
@@ -250,6 +455,108 @@ final class AttachmentRepository {
             }
         } catch (IOException ignored) {
             // an empty folder left behind is harmless
+        }
+    }
+
+    /**
+     * Renames an attached file (its copy, in the same folder). A name typed
+     * without an extension keeps the file's own (".pdf"). Returns it renamed.
+     * @throws IllegalArgumentException for a name that can't be a file's, or one already used there
+     */
+    Attachment rename(Attachment a, Account account, String newName) throws SQLException, IOException {
+        long mark = mark();                         // not an undo step: files move with it
+        try {
+            String name = newName == null ? "" : newName.trim();
+            if (name.isEmpty() || name.equals(".") || name.equals("..")
+                    || name.matches(".*[\\\\/:*?\"<>|\\p{Cntrl}].*") || name.endsWith(".")) {
+                throw new IllegalArgumentException("\"" + name + "\" can't be a file name. Leave out \\ / : * ? \" < > |"
+                        + " and don't end it with a dot.");
+            }
+            String oldName = a.fileName();
+            int dot = oldName.lastIndexOf('.');
+            String ext = dot > 0 ? oldName.substring(dot) : "";
+            if (!ext.isEmpty() && name.lastIndexOf('.') <= 0) {
+                name = name + ext;                          // "September" -> "September.pdf"
+            }
+            if (name.equals(oldName)) {
+                return a;
+            }
+            Path from = file(a, account);
+            Path to = from.resolveSibling(name);
+            if (Files.exists(to) && !name.equalsIgnoreCase(oldName)) {
+                throw new IllegalArgumentException("There's already a file named \"" + name + "\" there.");
+            }
+            Files.move(from, to);
+            String dir = a.path().substring(0, a.path().lastIndexOf('/') + 1);
+            String path = dir + name;
+            try (PreparedStatement ps = conn.prepareStatement("UPDATE attachment SET file_name = ?, path = ? WHERE id = ?")) {
+                ps.setString(1, name);
+                ps.setString(2, path);
+                ps.setLong(3, a.id());
+                ps.executeUpdate();
+            } catch (SQLException e) {
+                Files.move(to, from);                       // put it back
+                throw e;
+            }
+            return new Attachment(a.id(), name, path);
+        } finally {
+            untrack(mark);
+        }
+    }
+
+    /**
+     * Statements filed the old way, in YYYY/MM/DD folders, move up into
+     * their year's folder (one statement a month needs no more). Run when a
+     * file is opened; does nothing once they've moved. A file that's missing
+     * is left listed where it was. Returns how many moved.
+     */
+    int fileStatementsByYear() throws SQLException {
+        long mark = mark();                         // not an undo step: files move with it
+        try {
+            java.util.regex.Pattern old = java.util.regex.Pattern.compile(
+                    "^(.*/Attachments/Statements/\\d{4})/\\d{2}/\\d{2}/([^/]+)$");
+            List<Long> ids = new ArrayList<>();
+            List<String> paths = new ArrayList<>();
+            try (PreparedStatement ps = conn.prepareStatement("SELECT id, path FROM attachment WHERE txn_id IS NULL"
+                    + " AND path LIKE '%/Attachments/Statements/%/%/%/%'")) {
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        ids.add(rs.getLong(1));
+                        paths.add(rs.getString(2));
+                    }
+                }
+            }
+            int moved = 0;
+            for (int i = 0; i < ids.size(); i++) {
+                java.util.regex.Matcher m = old.matcher(paths.get(i));
+                Path from = root.resolve(paths.get(i));
+                if (!m.matches() || !Files.isRegularFile(from)) {
+                    continue;
+                }
+                try {
+                    Path folder = root.resolve(m.group(1));
+                    Path to = unusedName(folder, m.group(2));
+                    Files.move(from, to);
+                    try (PreparedStatement ps = conn.prepareStatement(
+                            "UPDATE attachment SET path = ?, file_name = ? WHERE id = ?")) {
+                        ps.setString(1, m.group(1) + "/" + to.getFileName());
+                        ps.setString(2, to.getFileName().toString());
+                        ps.setLong(3, ids.get(i));
+                        ps.executeUpdate();
+                    } catch (SQLException e) {
+                        Files.move(to, from);               // put it back
+                        throw e;
+                    }
+                    removeIfEmpty(from.getParent());        // the day's folder,
+                    removeIfEmpty(from.getParent().getParent());   // and the month's, once empty
+                    moved++;
+                } catch (IOException e) {
+                    // left where it was; it's still found there
+                }
+            }
+            return moved;
+        } finally {
+            untrack(mark);
         }
     }
 
@@ -265,25 +572,30 @@ final class AttachmentRepository {
      * @throws IOException if a folder with the new name already exists, or the move fails
      */
     void renameAccountFolder(String oldName, String newName) throws SQLException, IOException {
-        String from = folderName(oldName);
-        String to = folderName(newName);
-        if (from.equals(to) || !Files.isDirectory(root.resolve(from))) {
-            return;
-        }
-        if (Files.exists(root.resolve(to))) {
-            throw new IOException("A folder named \"" + to + "\" already exists next to the data file.");
-        }
-        Files.move(root.resolve(from), root.resolve(to));
-        try (PreparedStatement ps = conn.prepareStatement(
-                "UPDATE attachment SET path = ? || substr(path, ?) WHERE substr(path, 1, ?) = ?")) {
-            ps.setString(1, to + "/");
-            ps.setInt(2, from.length() + 2);
-            ps.setInt(3, from.length() + 1);
-            ps.setString(4, from + "/");
-            ps.executeUpdate();
-        } catch (SQLException e) {
-            Files.move(root.resolve(to), root.resolve(from));   // put the folder back
-            throw e;
+        long mark = mark();                         // not an undo step: files move with it
+        try {
+            String from = folderName(oldName);
+            String to = folderName(newName);
+            if (from.equals(to) || !Files.isDirectory(root.resolve(from))) {
+                return;
+            }
+            if (Files.exists(root.resolve(to))) {
+                throw new IOException("A folder named \"" + to + "\" already exists next to the data file.");
+            }
+            Files.move(root.resolve(from), root.resolve(to));
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "UPDATE attachment SET path = ? || substr(path, ?) WHERE substr(path, 1, ?) = ?")) {
+                ps.setString(1, to + "/");
+                ps.setInt(2, from.length() + 2);
+                ps.setInt(3, from.length() + 1);
+                ps.setString(4, from + "/");
+                ps.executeUpdate();
+            } catch (SQLException e) {
+                Files.move(root.resolve(to), root.resolve(from));   // put the folder back
+                throw e;
+            }
+        } finally {
+            untrack(mark);
         }
     }
 }

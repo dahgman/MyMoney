@@ -73,9 +73,14 @@ final class ReconcileRepository {
 
     /**
      * Starts a reconciliation, or changes the statement of the unfinished one.
-     * A new reconciliation starts with every Cleared transaction selected.
-     * With asOf, every unreconciled transaction dated on or before the
-     * statement date is selected as well.
+     *
+     * Only the statement's own period is selected: transactions dated from
+     * the last finished reconciliation's statement date (or the beginning,
+     * for the first one) through this statement's date. A new
+     * reconciliation selects the Cleared ones in it; with asOf, every
+     * unreconciled one in it. Anything dated after the statement date keeps
+     * its status (and when a statement's date is moved earlier, ones now
+     * after it go back to the status they had).
      */
     Reconciliation start(Account account, LocalDate statementDate, long endingBalanceCents, boolean asOf)
             throws SQLException {
@@ -90,7 +95,7 @@ final class ReconcileRepository {
                     ps.setLong(3, endingBalanceCents);
                     ps.executeUpdate();
                 }
-                select("account_id = ? AND status = '" + C + "'", account.id(), null);
+                selectPeriod(account.id(), lastStatementDate(account.id()), statementDate, true);
             } else {
                 try (PreparedStatement ps = conn.prepareStatement("UPDATE reconciliation"
                         + " SET statement_date = ?, ending_balance_cents = ? WHERE id = ?")) {
@@ -99,9 +104,10 @@ final class ReconcileRepository {
                     ps.setLong(3, r.id());
                     ps.executeUpdate();
                 }
+                deselectAfter(account.id(), statementDate);    // not this statement's any more
             }
             if (asOf) {
-                select("account_id = ? AND txn_date <= ?", account.id(), statementDate.toString());
+                selectPeriod(account.id(), lastStatementDate(account.id()), statementDate, false);
             }
             conn.commit();
         } catch (SQLException e) {
@@ -116,7 +122,7 @@ final class ReconcileRepository {
     /** Makes the given transactions Reconciling (remembering their status). Reconciled ones are left alone. */
     void select(List<Long> txnIds) throws SQLException {
         for (long id : txnIds) {
-            select("id = ?", id, null);
+            select("id = ?", id);
         }
     }
 
@@ -132,13 +138,37 @@ final class ReconcileRepository {
         deselect("account_id = ?", accountId);
     }
 
-    private void select(String where, long id, String date) throws SQLException {
+    private void select(String where, long id) throws SQLException {
         try (PreparedStatement ps = conn.prepareStatement("UPDATE txn SET pre_reconcile_status = status,"
                 + " status = '" + I + "' WHERE " + where + " AND status NOT IN ('" + R + "', '" + I + "')")) {
             ps.setLong(1, id);
-            if (date != null) {
-                ps.setString(2, date);
-            }
+            ps.executeUpdate();
+        }
+    }
+
+    /**
+     * Selects the account's unreconciled transactions dated from (null: the
+     * beginning) through to; only the Cleared ones if clearedOnly.
+     */
+    private void selectPeriod(long accountId, LocalDate from, LocalDate to, boolean clearedOnly)
+            throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement("UPDATE txn SET pre_reconcile_status = status,"
+                + " status = '" + I + "' WHERE account_id = ? AND txn_date BETWEEN ? AND ?"
+                + (clearedOnly ? " AND status = '" + C + "'" : " AND status NOT IN ('" + R + "', '" + I + "')"))) {
+            ps.setLong(1, accountId);
+            ps.setString(2, from == null ? "0000-01-01" : from.toString());
+            ps.setString(3, to.toString());
+            ps.executeUpdate();
+        }
+    }
+
+    /** Puts back the status of the account's Reconciling transactions dated after date. */
+    private void deselectAfter(long accountId, LocalDate date) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement("UPDATE txn SET status = COALESCE("
+                + "pre_reconcile_status, 'U'), pre_reconcile_status = NULL"
+                + " WHERE account_id = ? AND txn_date > ? AND status = '" + I + "'")) {
+            ps.setLong(1, accountId);
+            ps.setString(2, date.toString());
             ps.executeUpdate();
         }
     }

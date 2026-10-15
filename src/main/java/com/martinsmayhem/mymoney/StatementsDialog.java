@@ -31,11 +31,11 @@ import javax.swing.table.AbstractTableModel;
 /**
  * An account's statements (Account > Statements...), for any kind of
  * account: add one any time (a PDF from the bank, a scan, ...), open,
- * re-date or remove them. Statements saved while reconciling are listed
+ * rename, re-date or remove them. Statements saved while reconciling are listed
  * too. The files are copied into the account's folder next to the data
  * file, with the transaction attachments:
  *
- *   <Account>/Attachments/Statements/YYYY/MM/DD/
+ *   <Account>/Attachments/Statements/YYYY/
  */
 final class StatementsDialog extends JDialog {
 
@@ -45,6 +45,7 @@ final class StatementsDialog extends JDialog {
     private final JTable table = new JTable(model);
     private final JButton openButton = new JButton("Open");
     private final JButton redateButton = new JButton("Change Date...");
+    private final JButton renameButton = new JButton("Rename...");
     private final JButton removeButton = new JButton("Remove");
     private List<AttachmentRepository.Statement> rows = List.of();
     private boolean changed;
@@ -74,6 +75,7 @@ final class StatementsDialog extends JDialog {
         add.addActionListener(e -> addStatements());
         openButton.addActionListener(e -> openSelected());
         redateButton.addActionListener(e -> redateSelected());
+        renameButton.addActionListener(e -> renameSelected());
         removeButton.addActionListener(e -> removeSelected());
         JButton folder = new JButton("Open Folder");
         folder.setToolTipText("Show the folder the statements are filed in");
@@ -84,6 +86,7 @@ final class StatementsDialog extends JDialog {
         JPanel left = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
         left.add(add);
         left.add(openButton);
+        left.add(renameButton);
         left.add(redateButton);
         left.add(removeButton);
         left.add(folder);
@@ -96,7 +99,7 @@ final class StatementsDialog extends JDialog {
 
         JLabel help = new JLabel("<html><div style='width:560px'>Statements are copied into <b>"
                 + AttachmentRepository.folderName(account.name())
-                + "/Attachments/Statements</b>, next to the data file, filed by date."
+                + "/Attachments/Statements</b>, next to the data file, filed by year."
                 + " Double-click one to open it.</div></html>");
         help.setBorder(BorderFactory.createEmptyBorder(8, 8, 6, 8));
         JScrollPane scroll = new JScrollPane(table);
@@ -135,6 +138,7 @@ final class StatementsDialog extends JDialog {
         List<AttachmentRepository.Statement> chosen = selected();
         openButton.setEnabled(!chosen.isEmpty());
         removeButton.setEnabled(!chosen.isEmpty());
+        renameButton.setEnabled(chosen.size() == 1);
         redateButton.setEnabled(chosen.size() == 1 && !chosen.get(0).fromReconcile());
         redateButton.setToolTipText(chosen.size() == 1 && chosen.get(0).fromReconcile()
                 ? "Saved while reconciling: dated by the reconciliation" : null);
@@ -193,6 +197,47 @@ final class StatementsDialog extends JDialog {
             error("Could not change the date:\n" + e.getMessage());
         }
         reload();
+    }
+
+    private void renameSelected() {
+        List<AttachmentRepository.Statement> chosen = selected();
+        if (chosen.size() != 1) {
+            return;
+        }
+        AttachmentRepository.Attachment a = chosen.get(0).attachment();
+        String name = a.fileName();
+        while (true) {
+            Object typed = JOptionPane.showInputDialog(this, "New name for \"" + a.fileName() + "\":"
+                    + "\n(Leave off the extension to keep it.)", "Rename Statement", JOptionPane.PLAIN_MESSAGE,
+                    null, null, name);
+            if (typed == null) {
+                return;                                 // cancelled
+            }
+            name = typed.toString();
+            try {
+                attachments.rename(a, account, name);
+                changed = true;
+                break;
+            } catch (IllegalArgumentException e) {
+                error(e.getMessage());                  // and ask again, with what was typed
+            } catch (SQLException | IOException e) {
+                error("Could not rename \"" + a.fileName() + "\":\n" + e.getMessage());
+                break;
+            }
+        }
+        reload();
+        selectStatement(a.id());
+    }
+
+    /** Selects a statement's row (after the list is re-read). */
+    private void selectStatement(long attachmentId) {
+        for (int r = 0; r < rows.size(); r++) {
+            if (rows.get(r).attachment().id() == attachmentId) {
+                int v = table.convertRowIndexToView(r);
+                table.setRowSelectionInterval(v, v);
+                return;
+            }
+        }
     }
 
     private void removeSelected() {
