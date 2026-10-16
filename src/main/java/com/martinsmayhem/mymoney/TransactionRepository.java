@@ -453,6 +453,111 @@ public class TransactionRepository {
         recalculateLoans(loans);                        // its interest goes, and later payments change
     }
 
+    // ----- Moving to another account ---------------------------------------
+
+    /** What moving transactions did: how many moved, and why any didn't (one line each). */
+    public record Moved(int moved, List<String> skipped) {
+    }
+
+    /**
+     * Moves transactions to another account. A transfer keeps its other side,
+     * which now transfers with the account it moved to. Its attachments go
+     * with it (their files follow when they're next filed). A loan payment's
+     * calculated interest is worked out again, in both accounts. All of them
+     * or none, as one change.
+     *
+     * Not moved (said why in skipped): reconciled or reconciling ones (that
+     * would change a reconciled balance), a loan's scheduled interest (it's
+     * calculated), and a transfer into the account it transfers with.
+     */
+    public Moved moveToAccount(List<Long> txnIds, long targetAccountId) throws SQLException {
+        int[] moved = {0};
+        List<String> skipped = new ArrayList<>();
+        inTransaction(() -> {
+            java.util.Set<Long> loans = new java.util.HashSet<>();
+            loans.add(targetAccountId);
+            for (long id : txnIds) {
+                String why = cantMove(id, targetAccountId);
+                if (why != null) {
+                    skipped.add(why);
+                    continue;
+                }
+                loans.addAll(accountsOf(id));                 // where it was, and its transfers' accounts
+                long from;
+                try (PreparedStatement ps = conn.prepareStatement("SELECT account_id FROM txn WHERE id = ?")) {
+                    ps.setLong(1, id);
+                    try (ResultSet rs = ps.executeQuery()) {
+                        rs.next();
+                        from = rs.getLong(1);
+                    }
+                }
+                // It's an ordinary transaction again: no interest from the old account's loan terms.
+                try (PreparedStatement ps = conn.prepareStatement("UPDATE txn SET account_id = ?,"
+                        + " loan_interest_cents = 0, interest_override = NULL WHERE id = ?")) {
+                    ps.setLong(1, targetAccountId);
+                    ps.setLong(2, id);
+                    ps.executeUpdate();
+                }
+                try (PreparedStatement ps = conn.prepareStatement(
+                        "DELETE FROM split WHERE txn_id = ? AND loan_interest = 1")) {
+                    ps.setLong(1, id);
+                    ps.executeUpdate();
+                }
+                // The other side of each of its transfers now transfers with the account it's in.
+                try (PreparedStatement ps = conn.prepareStatement("UPDATE split SET transfer_account_id = ?"
+                        + " WHERE transfer_txn_id = ? AND transfer_account_id = ?")) {
+                    ps.setLong(1, targetAccountId);
+                    ps.setLong(2, id);
+                    ps.setLong(3, from);
+                    ps.executeUpdate();
+                }
+                try (PreparedStatement ps = conn.prepareStatement(
+                        "UPDATE attachment SET account_id = ? WHERE txn_id = ?")) {
+                    ps.setLong(1, targetAccountId);
+                    ps.setLong(2, id);
+                    ps.executeUpdate();
+                }
+                moved[0]++;
+            }
+            recalculateLoans(loans);
+        });
+        return new Moved(moved[0], skipped);
+    }
+
+    /** Why a transaction can't be moved to an account, or null if it can. */
+    private String cantMove(long txnId, long targetAccountId) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement("""
+                SELECT t.account_id, t.status, t.txn_date, COALESCE(p.name, ''),
+                       EXISTS (SELECT 1 FROM split WHERE txn_id = t.id AND loan_interest = 2),
+                       EXISTS (SELECT 1 FROM split WHERE txn_id = t.id AND transfer_account_id = ?)
+                FROM txn t LEFT JOIN payee p ON p.id = t.payee_id WHERE t.id = ?
+                """)) {
+            ps.setLong(1, targetAccountId);
+            ps.setLong(2, txnId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) {
+                    return null;                               // gone already: nothing to do
+                }
+                String what = LocalDate.parse(rs.getString(3)).format(LedgerTableModel.DISPLAY_DATE)
+                        + (rs.getString(4).isEmpty() ? "" : " " + rs.getString(4));
+                if (rs.getLong(1) == targetAccountId) {
+                    return what + ": it's in that account already.";
+                }
+                String status = rs.getString(2);
+                if (TxnStatus.RECONCILED.code().equals(status) || TxnStatus.RECONCILING.code().equals(status)) {
+                    return what + ": it's reconciled (moving it would change a reconciled balance).";
+                }
+                if (rs.getBoolean(5)) {
+                    return what + ": it's a loan's scheduled interest, worked out from the loan.";
+                }
+                if (rs.getBoolean(6)) {
+                    return what + ": it's a transfer with that account (it can't transfer to itself).";
+                }
+                return null;
+            }
+        }
+    }
+
     // ----- Loan interest ---------------------------------------------------
 
     /**

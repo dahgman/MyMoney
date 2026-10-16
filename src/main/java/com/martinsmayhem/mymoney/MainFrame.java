@@ -136,7 +136,7 @@ public class MainFrame extends javax.swing.JFrame {
             showError("Could not work out the interest in your loans' payments:\n" + e.getMessage());
         }
         try {
-            attachments.fileStatementsByYear();          // statements filed by day before: up into their year
+            attachments.fileStatements();                // statements filed by an older version: into their place
             attachments.fileTransactionAttachments();    // transaction files named "<id>-<payee>.<ext>"
         } catch (SQLException e) {
             showError("Could not file the attachments in their folders:\n" + e.getMessage());
@@ -174,6 +174,7 @@ public class MainFrame extends javax.swing.JFrame {
             showAccount(null);                 // no accounts yet
         }
         SwingUtilities.invokeLater(this::selectTransactionNearToday);   // once the window is showing
+        countUse();                                      // for the backup reminder
         Splash.step("Ready", 100);
     }
 
@@ -931,7 +932,8 @@ public class MainFrame extends javax.swing.JFrame {
         fileMenu.insert(openItem, 0);
         fileMenu.insertSeparator(1);
         fileMenu.insert(menuItem("Import...", this::importFile), 2);
-        fileMenu.insert(menuItem("Back Up File...", this::backupFile), 3);
+        fileMenu.insert(menuItem("Back Up Database...", this::backupDatabase), 3);
+        fileMenu.insert(menuItem("Rename File...", this::renameFile), 4);
 
         // Account menu: the selected account, and tags.
         javax.swing.JMenu accountMenu = new javax.swing.JMenu("Account");
@@ -965,6 +967,7 @@ public class MainFrame extends javax.swing.JFrame {
             menu.add(menuItem("Move Memo to Description", this::moveMemoToDescription));
             menu.add(menuItem("Clear Downloaded Flag", this::clearDownloadedFlag));
             menu.add(menuItem("Add to Schedule...", this::addToSchedule));
+            menu.add(menuItem("Move to Account...", this::moveToAccount));
             menu.add(new javax.swing.JSeparator());
             menu.add(menuItem("Attachments...", () -> showAttachments(ledgerTable.getSelectedRow())));
             menu.add(new javax.swing.JSeparator());
@@ -993,6 +996,15 @@ public class MainFrame extends javax.swing.JFrame {
         editMenu.add(menuItem("Preferences...", this::editPreferences));
         menuBar.add(editMenu, 1);                       // after File
         menuBar.add(accountMenu, 2);                    // after Edit
+
+        // Help: the help pages (F1), and About.
+        javax.swing.JMenu helpMenu = new javax.swing.JMenu("Help");
+        JMenuItem helpItem = menuItem("MyMoney Help", () -> HelpDialog.show(this));
+        helpItem.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_F1, 0));
+        helpMenu.add(helpItem);
+        helpMenu.addSeparator();
+        helpMenu.add(menuItem("About MyMoney", () -> AboutDialog.show(this, db.getFile())));
+        menuBar.add(helpMenu);                          // last
 
         // Right-click in the ledger: the same menu. A row outside the selection gets selected first.
         ledgerTable.addMouseListener(new MouseAdapter() {
@@ -1620,49 +1632,125 @@ public class MainFrame extends javax.swing.JFrame {
     }
 
     /**
-     * File > Back Up File...: saves a copy of the data file, suggesting the
-     * name filename_YYYYMMDD_hhmm.MyMoney in the same folder. The backup
+     * File > Back Up Database...: an encrypted copy of the database in the
+     * backup folder, named filename_YYYYMMDD_hhmm.MyMoney (see Backups). It
      * opens with the same password.
      */
-    private void backupFile() {
+    private void backupDatabase() {
+        backUpNow();
+    }
+
+    /**
+     * Makes a database backup (an encrypted copy of the data file) in the
+     * backup folder (Preferences > Backups; asked for, and kept, if none is
+     * set), then applies the retention settings to the older ones. Says where
+     * it went, and that attachments aren't in it. Returns true if it was made.
+     */
+    private boolean backUpNow() {
         if (ledgerTable.isEditing()) {
             ledgerTable.getCellEditor().stopCellEditing();   // save a half-finished cell first
         }
         resolveDraft(false);
-
-        Path dbFile = db.getFile();
-        String name = dbFile.getFileName().toString();
-        String ext = "." + Database.EXTENSION;
-        String base = name.toLowerCase().endsWith(ext.toLowerCase())
-                ? name.substring(0, name.length() - ext.length()) : name;
-        String stamp = java.time.LocalDateTime.now()
-                .format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd_HHmm"));
-
-        JFileChooser fc = new JFileChooser(dbFile.getParent().toFile());
-        fc.setDialogTitle("Back Up File");
-        fc.setFileFilter(new FileNameExtensionFilter("MyMoney files (*" + ext + ")", Database.EXTENSION));
-        fc.setSelectedFile(dbFile.resolveSibling(base + "_" + stamp + ext).toFile());
-        if (fc.showSaveDialog(this) != JFileChooser.APPROVE_OPTION) {
-            return;
+        Path folder = backupFolder();
+        if (folder == null) {
+            return false;                                    // cancelled
         }
-        Path target = fc.getSelectedFile().toPath().toAbsolutePath();
-        if (!target.getFileName().toString().toLowerCase().endsWith(ext.toLowerCase())) {
-            target = target.resolveSibling(target.getFileName() + ext);
-        }
-        if (target.equals(dbFile)) {
-            showError("Choose a different name: that is the file you have open.");
-            return;
-        }
-        if (Files.exists(target) && !confirm("\"" + target.getFileName() + "\" already exists. Replace it?")) {
-            return;
+        Path target = Backups.target(db.getFile(), folder, java.time.LocalDateTime.now());
+        try {
+            Files.createDirectories(folder);
+            db.backupTo(target);
+        } catch (SQLException | IOException e) {
+            showError("Could not back up the database:\n" + e.getMessage());
+            return false;
         }
         try {
-            db.backupTo(target);
-            JOptionPane.showMessageDialog(this, "Backed up to:\n" + target
-                    + "\n\nIt opens with the same password as this file.",
-                    "Back Up File", JOptionPane.INFORMATION_MESSAGE);
-        } catch (SQLException | IOException e) {
-            showError("Could not back up the file:\n" + e.getMessage());
+            config.setInt(AppConfig.BACKUP_USES_PREFIX + db.getFile(), 0);   // the reminder starts over
+        } catch (SQLException ignored) {
+            // the reminder may just come early
+        }
+        String removed = "";
+        try {
+            int n = Backups.prune(db.getFile(), folder, config.getInt(AppConfig.BACKUP_KEEP_PER_DAY, 0),
+                    config.getInt(AppConfig.BACKUP_THIN_AFTER_DAYS, 0), LocalDate.now());
+            if (n > 0) {
+                removed = "\n\nRemoved " + n + (n == 1 ? " older backup" : " older backups")
+                        + ", as set in Edit > Preferences > Backups.";
+            }
+        } catch (IOException e) {
+            removed = "\n\nOlder backups couldn't be tidied up: " + e.getMessage();
+        }
+        JOptionPane.showMessageDialog(this, "Database backed up to:\n" + target
+                + "\n\nIt opens with the same password as this file." + removed
+                + "\n\n" + Backups.attachmentsNote(db.getFile().getParent()),
+                "Database Backup", JOptionPane.INFORMATION_MESSAGE);
+        return true;
+    }
+
+    /**
+     * The folder backups go in: the one in Preferences, or, if none is set (or
+     * it's gone), one chosen now, which is kept as the preference. Null if
+     * cancelled.
+     */
+    private Path backupFolder() {
+        String saved = config.getString(AppConfig.BACKUP_FOLDER, "");
+        if (!saved.isBlank() && Files.isDirectory(Path.of(saved))) {
+            return Path.of(saved);
+        }
+        if (!saved.isBlank()) {
+            showError("The backup folder can't be found:\n" + saved + "\n\n(If it's on a drive that isn't"
+                    + " plugged in, plug it in and try again.) Otherwise, choose another.");
+        }
+        Path folder = chooseBackupFolder(saved.isBlank() ? db.getFile().getParent().getParent() : Path.of(saved));
+        if (folder != null) {
+            try {
+                config.setString(AppConfig.BACKUP_FOLDER, folder.toString());
+            } catch (SQLException ignored) {
+                // asked again next time
+            }
+        }
+        return folder;
+    }
+
+    /** Asks for a folder for database backups, starting at start. Null if cancelled. */
+    private Path chooseBackupFolder(Path start) {
+        JFileChooser fc = new JFileChooser(start == null ? null : start.toFile());
+        fc.setDialogTitle("Choose a Folder for Database Backups");
+        fc.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
+        fc.setApproveButtonText("Use This Folder");
+        fc.setApproveButtonToolTipText("Database backups will go here (change it in Edit > Preferences > Backups)."
+                + " Best on another drive.");
+        return fc.showOpenDialog(this) == JFileChooser.APPROVE_OPTION ? fc.getSelectedFile().toPath().toAbsolutePath()
+                : null;
+    }
+
+    /** One more use of this file since its last backup (counted each time it's opened). */
+    private void countUse() {
+        String key = AppConfig.BACKUP_USES_PREFIX + db.getFile();
+        try {
+            config.setInt(key, config.getInt(key, 0) + 1);
+        } catch (SQLException ignored) {
+            // the reminder may just come late
+        }
+    }
+
+    /**
+     * Closing: if the file's been used often enough since its last backup
+     * (Preferences > Backups), offers to back it up now, so the backup has
+     * today's work in it.
+     */
+    private void remindToBackUp() {
+        int every = config.getInt(AppConfig.BACKUP_REMIND_EVERY, AppConfig.DEFAULT_BACKUP_REMIND_EVERY);
+        int uses = config.getInt(AppConfig.BACKUP_USES_PREFIX + db.getFile(), 0);
+        if (every <= 0 || uses < every) {
+            return;
+        }
+        Object[] options = {"Back Up Now", "Not Now"};
+        int r = JOptionPane.showOptionDialog(this, "\"" + db.baseName() + "\" has been used " + uses
+                + " times since its last database backup.\nBack it up now?\n\n(How often to ask: Edit > Preferences"
+                + " > Backups.)", "Database Backup", JOptionPane.DEFAULT_OPTION, JOptionPane.QUESTION_MESSAGE, null,
+                options, options[0]);
+        if (r == 0) {
+            backUpNow();
         }
     }
 
@@ -1694,6 +1782,63 @@ public class MainFrame extends javax.swing.JFrame {
         frame.setBounds(getBounds());
         frame.setExtendedState(getExtendedState());
         dispose();                                      // not a window close: config stays open
+        frame.setVisible(true);
+    }
+
+    /**
+     * File > Rename File...: renames the data file, and its folder too when
+     * the folder is named after it (as new files' are), attachments and all.
+     * The file is closed and opened again under its new name, in a new
+     * window (so Undo starts afresh).
+     */
+    private void renameFile() {
+        if (ledgerTable.isEditing()) {
+            ledgerTable.getCellEditor().stopCellEditing();
+        }
+        resolveDraft(false);
+        String current = db.baseName();
+        String question = "New name for \"" + current + "\":"
+                + (db.hasOwnFolder() ? "\n\nIts folder, \"" + current + "\", is renamed to match, with its attachments."
+                        : "")
+                + "\n(Undo starts afresh afterwards.)";
+        String typed = current;
+        Database.Renamed renamed;
+        while (true) {
+            Object answer = JOptionPane.showInputDialog(this, question, "Rename File", JOptionPane.PLAIN_MESSAGE,
+                    null, null, typed);
+            if (answer == null || answer.toString().trim().equals(current)) {
+                return;                                  // cancelled, or the same name
+            }
+            typed = answer.toString();
+            try {
+                Path before = db.getFile();
+                renamed = db.renameTo(typed);
+                if (renamed.problem() == null) {
+                    try {
+                        config.renamed(before, renamed.database().getFile());
+                    } catch (SQLException e) {
+                        // the recent list just shows the old name until it's opened again
+                    }
+                }
+                break;
+            } catch (IllegalArgumentException e) {
+                showError(e.getMessage());               // and ask again, with what was typed
+            } catch (IllegalStateException e) {
+                showError(e.getMessage() + "\n\nMyMoney will close; open the file again with File > Open.");
+                dispose();
+                System.exit(1);
+                return;
+            }
+        }
+        if (renamed.problem() != null) {
+            showError("Could not rename the file, so it keeps its name:\n" + renamed.problem().getMessage()
+                    + "\n\n(If it's open in another program, close it there and try again.)");
+        }
+        // The file was closed and opened again: a new window works with it.
+        MainFrame frame = new MainFrame(renamed.database(), config);
+        frame.setBounds(getBounds());
+        frame.setExtendedState(getExtendedState());
+        dispose();                                       // not a window close: config stays open
         frame.setVisible(true);
     }
 
@@ -1776,18 +1921,74 @@ public class MainFrame extends javax.swing.JFrame {
         }
         if (fresh.isEmpty()) {
             checkpoint("Import " + file.getFileName());  // an account number may have been saved
+            if (dlg.madeAccount()) {
+                loadAccounts(target.id());
+            }
             JOptionPane.showMessageDialog(this, "Every transaction in this file was imported into \""
                     + target.name() + "\" before. There is nothing new to review.",
                     "Import", JOptionPane.INFORMATION_MESSAGE);
+            afterImport(file, target, dlg.fileAction(), fileAccount != null);
             return;
         }
         DownloadReviewWindow review = new DownloadReviewWindow(this, file.getFileName().toString(), target, fresh,
                 downloads.size() - fresh.size(), importer, dlg.match(), dlg.days());
         review.setVisible(true);
         checkpoint("Import " + file.getFileName());      // everything accepted or added is one undo step
-        if (review.wasChanged()) {
+        if (review.wasChanged() || dlg.madeAccount()) {
             loadAccounts(target.id());                   // show the account it went into
         }
+        afterImport(file, target, dlg.fileAction(), fileAccount != null);
+    }
+
+    /**
+     * What's done with a bank download file once it's imported, as chosen:
+     * left where it is, deleted, or moved into MyMoney's folder as
+     * <data folder>/<Account>/imports/<import date>.<ext>. Moving a QFX/OFX
+     * file asks first, since it holds the account number in plain text; if
+     * not, it can be deleted or left instead.
+     */
+    private void afterImport(Path file, Account account, String action, boolean hasAccountNumber) {
+        if (ImportFileChoice.MOVE.equals(action) && hasAccountNumber) {
+            int r = JOptionPane.showConfirmDialog(this, "QFX and OFX files contain your account number in clear"
+                    + " (unencrypted) text.\nMoving this one keeps that copy in MyMoney's folder:\n    "
+                    + importsFolder(account) + "\n\nMove it there?", "After Importing",
+                    JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
+            if (r != JOptionPane.YES_OPTION) {
+                ImportFileChoice instead = new ImportFileChoice(ImportFileChoice.DELETE);
+                instead.withoutMove();
+                if (JOptionPane.showConfirmDialog(this, new Object[] {"Then the downloaded file is:", instead},
+                        "After Importing", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE)
+                        != JOptionPane.OK_OPTION) {
+                    return;                              // left where it is
+                }
+                action = instead.choice();
+            }
+        }
+        try {
+            if (ImportFileChoice.DELETE.equals(action)) {
+                Files.deleteIfExists(file);
+            } else if (ImportFileChoice.MOVE.equals(action)) {
+                Path folder = importsFolder(account);
+                Files.createDirectories(folder);
+                String name = file.getFileName().toString();
+                int dot = name.lastIndexOf('.');
+                String ext = dot > 0 ? name.substring(dot).toLowerCase(java.util.Locale.ROOT) : "";
+                String base = LocalDate.now().toString();          // the import date: 2026-10-16.qfx
+                Path to = folder.resolve(base + ext);
+                for (int n = 2; Files.exists(to); n++) {
+                    to = folder.resolve(base + " (" + n + ")" + ext);
+                }
+                Files.move(file, to);
+            }
+        } catch (IOException e) {
+            showError("Could not " + (ImportFileChoice.DELETE.equals(action) ? "delete" : "move") + " \""
+                    + file.getFileName() + "\":\n" + e.getMessage() + "\n\nIt's still where it was.");
+        }
+    }
+
+    /** Where an account's imported bank downloads are moved: <data folder>/<Account>/imports. */
+    private Path importsFolder(Account account) {
+        return db.getFile().getParent().resolve(AttachmentRepository.folderName(account.name())).resolve("imports");
     }
 
     /**
@@ -1965,6 +2166,72 @@ public class MainFrame extends javax.swing.JFrame {
      * as downloaded (matched or new), and importing their file again offers
      * those downloads again. Status, payee and memo stay as they are.
      */
+    /**
+     * Edit > Move to Account...: moves the selected transactions to another
+     * account (see TransactionRepository.moveToAccount), as one undo step.
+     */
+    private void moveToAccount() {
+        if (ledgerTable.isEditing()) {
+            ledgerTable.getCellEditor().stopCellEditing();
+        }
+        resolveDraft(false);
+        Account from = ledgerModel.currentAccount();
+        List<Long> ids = new ArrayList<>();
+        for (int row : selectedTransactionRows()) {
+            long id = ledgerModel.transactionId(row);
+            if (id != 0) {
+                ids.add(id);
+            }
+        }
+        if (from == null || ids.isEmpty()) {
+            showError("Select one or more transactions first.\n(Ctrl+click or Shift+click to select several.)");
+            return;
+        }
+        JComboBox<Account> to = new JComboBox<>();
+        try {
+            for (Account a : accounts.findAll()) {
+                if (a.id() != from.id()) {
+                    to.addItem(a);
+                }
+            }
+        } catch (SQLException e) {
+            showError("Could not read the accounts:\n" + e.getMessage());
+            return;
+        }
+        if (to.getItemCount() == 0) {
+            showError("There's no other account to move them to. Add one first (Account > New Account).");
+            return;
+        }
+        String what = ids.size() == 1 ? "this transaction" : "these " + ids.size() + " transactions";
+        if (JOptionPane.showConfirmDialog(this, new Object[] {"Move " + what + " from \"" + from.name() + "\" to:", to,
+                "<html><div style='width:360px'>A transfer stays linked with its other account. Attachments move"
+                + " too. Reconciled transactions aren't moved.</div></html>"},
+                "Move to Account", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE) != JOptionPane.OK_OPTION) {
+            return;
+        }
+        Account target = (Account) to.getSelectedItem();
+        TransactionRepository.Moved result;
+        try {
+            result = transactionRepo.moveToAccount(ids, target.id());
+        } catch (SQLException e) {
+            showError("Could not move the transactions; nothing was changed:\n" + e.getMessage());
+            return;
+        }
+        if (result.moved() > 0) {
+            checkpoint("Move to " + target.name());
+        }
+        ledgerModel.reload();                            // they're gone from this ledger
+        refreshSummaryIfShown();
+        updateSummary(selectedAccount());
+        refreshTreeBalances();
+        if (!result.skipped().isEmpty()) {
+            JOptionPane.showMessageDialog(this, (result.moved() == 0 ? "Nothing was moved:\n\n"
+                    : result.moved() + (result.moved() == 1 ? " moved; this one wasn't" : " moved; these weren't")
+                    + ":\n\n") + String.join("\n", result.skipped()), "Move to Account",
+                    JOptionPane.INFORMATION_MESSAGE);
+        }
+    }
+
     private void clearDownloadedFlag() {
         int[] rows = selectedTransactionRows();
         if (rows.length == 0) {
@@ -2371,7 +2638,7 @@ public class MainFrame extends javax.swing.JFrame {
     /** Edit > Preferences...: application settings, saved for next time. */
     private void editPreferences() {
         javax.swing.JCheckBox balances = new javax.swing.JCheckBox(
-                "Show balances in the account tree (cleared; current for envelopes)", showTreeBalances);
+                "Show balances in the account tree (cleared; current for envelopes; remaining for loans)", showTreeBalances);
         javax.swing.JCheckBox groupTotals = new javax.swing.JCheckBox(
                 "Show totals on the account type headings", showGroupTotals);
         groupTotals.setBorder(BorderFactory.createEmptyBorder(0, 24, 0, 0));   // indented under balances
@@ -2427,13 +2694,66 @@ public class MainFrame extends javax.swing.JFrame {
         dateRow.add(new JLabel("(8 digits typed in a date field become a date in this format)"));
         JLabel scheduleHeading = new JLabel("Scheduled transactions:");
         scheduleHeading.setBorder(BorderFactory.createEmptyBorder(10, 0, 0, 0));
-        int r = JOptionPane.showConfirmDialog(this,
-                new Object[] {openOnSummary, dateRow, balances, groupTotals, editHeading, enterDown, enterRight, autoDecimal, importHeading,
-                    matchRow,
-                    scheduleHeading, scheduleRow},
-                "Preferences", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+
+        // Imports: what's done with a bank download file once it's imported.
+        JLabel afterHeading = new JLabel("After a bank download is imported, its file is:");
+        afterHeading.setBorder(BorderFactory.createEmptyBorder(10, 0, 0, 0));
+        ImportFileChoice afterImport = new ImportFileChoice(config.getString(AppConfig.IMPORT_FILE_ACTION, "leave"));
+
+        // Backups.
+        javax.swing.JTextField backupField = new javax.swing.JTextField(config.getString(AppConfig.BACKUP_FOLDER, ""), 28);
+        backupField.setToolTipText("Database backups go here. Best on another drive. Blank: asked the first time.");
+        JButton browse = new JButton("Browse...");
+        browse.addActionListener(e -> {
+            Path chosen = chooseBackupFolder(backupField.getText().isBlank() ? db.getFile().getParent().getParent()
+                    : Path.of(backupField.getText().trim()));
+            if (chosen != null) {
+                backupField.setText(chosen.toString());
+            }
+        });
+        JPanel folderRow = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 4, 0));
+        folderRow.add(new JLabel("Back up the database to:"));
+        folderRow.add(backupField);
+        folderRow.add(browse);
+        javax.swing.JSpinner remindEvery = new javax.swing.JSpinner(new javax.swing.SpinnerNumberModel(
+                config.getInt(AppConfig.BACKUP_REMIND_EVERY, AppConfig.DEFAULT_BACKUP_REMIND_EVERY), 0, 999, 1));
+        JPanel remindRow = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 4, 0));
+        remindRow.add(new JLabel("When closing, offer a backup after a file's been used"));
+        remindRow.add(remindEvery);
+        remindRow.add(new JLabel("times since its last one (0: never)"));
+        javax.swing.JSpinner keepPerDay = new javax.swing.JSpinner(new javax.swing.SpinnerNumberModel(
+                config.getInt(AppConfig.BACKUP_KEEP_PER_DAY, 0), 0, 99, 1));
+        JPanel keepRow = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 4, 0));
+        keepRow.add(new JLabel("Keep up to"));
+        keepRow.add(keepPerDay);
+        keepRow.add(new JLabel("backups a day, the latest (0: all of them)"));
+        javax.swing.JSpinner thinAfter = new javax.swing.JSpinner(new javax.swing.SpinnerNumberModel(
+                config.getInt(AppConfig.BACKUP_THIN_AFTER_DAYS, 0), 0, 3650, 1));
+        JPanel thinRow = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 4, 0));
+        thinRow.add(new JLabel("After"));
+        thinRow.add(thinAfter);
+        thinRow.add(new JLabel("days, keep only the last backup of each day (0: keep them all)"));
+        JLabel retentionHeading = new JLabel("Old backups (this file's, in that folder; nothing else there is touched):");
+        retentionHeading.setBorder(BorderFactory.createEmptyBorder(10, 0, 0, 0));
+        JLabel backupNote = new JLabel("<html><div style='width:520px'>"
+                + Backups.attachmentsNote(db.getFile().getParent()).replace("\n", "<br>") + "</div></html>");
+        backupNote.setBorder(BorderFactory.createEmptyBorder(12, 0, 0, 0));
+
+        javax.swing.JTabbedPane tabs = new javax.swing.JTabbedPane();
+        tabs.addTab("General", preferencesTab(openOnSummary, dateRow, balances, groupTotals));
+        tabs.addTab("Ledger", preferencesTab(editHeading, enterDown, enterRight, autoDecimal, scheduleHeading,
+                scheduleRow));
+        tabs.addTab("Imports", preferencesTab(importHeading, matchRow, afterHeading, afterImport));
+        tabs.addTab("Backups", preferencesTab(folderRow, remindRow, retentionHeading, keepRow, thinRow, backupNote));
+        int r = JOptionPane.showConfirmDialog(this, tabs, "Preferences", JOptionPane.OK_CANCEL_OPTION,
+                JOptionPane.PLAIN_MESSAGE);
         if (r != JOptionPane.OK_OPTION) {
             return;
+        }
+        String folderText = backupField.getText().trim();
+        if (!folderText.isEmpty() && !Files.isDirectory(Path.of(folderText))) {
+            showError("The backup folder doesn't exist:\n" + folderText + "\n\nIt's kept anyway; backups will ask for"
+                    + " another if it still can't be found then.");
         }
         try {
             config.setBoolean(AppConfig.MATCH_DOWNLOADS, match.isSelected());
@@ -2445,6 +2765,11 @@ public class MainFrame extends javax.swing.JFrame {
             config.setBoolean(AppConfig.OPEN_ON_SUMMARY, openOnSummary.isSelected());
             config.setString(AppConfig.DATE_FORMAT, LedgerTableModel.DATE_FORMATS[dateFormat.getSelectedIndex()]);
             config.setInt(AppConfig.SCHEDULE_DAYS, (Integer) scheduleDays.getValue());
+            config.setString(AppConfig.IMPORT_FILE_ACTION, afterImport.choice());
+            config.setString(AppConfig.BACKUP_FOLDER, folderText);
+            config.setInt(AppConfig.BACKUP_REMIND_EVERY, (Integer) remindEvery.getValue());
+            config.setInt(AppConfig.BACKUP_KEEP_PER_DAY, (Integer) keepPerDay.getValue());
+            config.setInt(AppConfig.BACKUP_THIN_AFTER_DAYS, (Integer) thinAfter.getValue());
         } catch (SQLException e) {
             showError("The preferences apply now, but could not be saved for next time:\n" + e.getMessage());
         }
@@ -2467,6 +2792,22 @@ public class MainFrame extends javax.swing.JFrame {
         showGroupTotals = groupTotals.isSelected();
         Account selected = selectedAccount();
         loadAccounts(selected == null ? null : selected.id());   // redraws the tree and fits its width
+    }
+
+    /** One tab of Preferences: these, one under another, at the top left. */
+    private static JPanel preferencesTab(java.awt.Component... rows) {
+        JPanel tab = new JPanel();
+        tab.setLayout(new BoxLayout(tab, BoxLayout.PAGE_AXIS));
+        tab.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+        for (java.awt.Component c : rows) {
+            if (c instanceof JComponent j) {
+                j.setAlignmentX(java.awt.Component.LEFT_ALIGNMENT);
+                j.setMaximumSize(new java.awt.Dimension(Integer.MAX_VALUE, j.getPreferredSize().height));   // no stretching
+            }
+            tab.add(c);
+        }
+        tab.add(javax.swing.Box.createVerticalGlue());
+        return tab;
     }
 
     // ----- The Summary screen -------------------------------------------------
@@ -2801,6 +3142,7 @@ public class MainFrame extends javax.swing.JFrame {
             ledgerTable.getCellEditor().stopCellEditing();
         }
         resolveDraft(false);
+        remindToBackUp();
         db.close();
         config.close();
     }//GEN-LAST:event_formWindowClosing

@@ -12,9 +12,9 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
-import java.time.Instant;
 
 /**
  * An open, SQLCipher-encrypted MyMoney data file.
@@ -47,9 +47,11 @@ public class Database implements AutoCloseable {
 
     private final Path file;
     private final Connection conn;
+    private final String password;                  // to open it again after a rename
 
     private Database(Path file, String password) throws SQLException {
         this.file = file.toAbsolutePath();
+        this.password = password;
         this.conn = DriverManager.getConnection(buildUrl(this.file, password));
         try (Statement st = conn.createStatement()) {
             st.execute("PRAGMA foreign_keys = ON");
@@ -124,6 +126,109 @@ public class Database implements AutoCloseable {
                 st.execute("ROLLBACK");             // nothing was changed; just releases the lock
             }
         }
+    }
+
+    /**
+     * What renaming a file did: the file, open again (at its new name, or,
+     * if the rename failed, its old one), and what went wrong, if anything.
+     */
+    public record Renamed(Database database, Exception problem) {
+    }
+
+    /** The file's name without ".MyMoney": "Household" for Household.MyMoney. */
+    public String baseName() {
+        String name = file.getFileName().toString();
+        String ext = "." + EXTENSION;
+        return name.toLowerCase().endsWith(ext.toLowerCase()) ? name.substring(0, name.length() - ext.length()) : name;
+    }
+
+    /**
+     * True if the file's folder is named after it (Household/Household.MyMoney,
+     * as new files are made), so renaming the file renames its folder too.
+     */
+    public boolean hasOwnFolder() {
+        Path folder = file.getParent();
+        return folder != null && folder.getFileName() != null
+                && folder.getFileName().toString().equals(baseName());
+    }
+
+    /**
+     * Renames the file to newName.MyMoney, and, if its folder is named after
+     * it, the folder too (everything in it, attachments and all, goes along:
+     * their saved paths are relative to it). The file is closed to do it,
+     * then opened again; this Database can't be used afterwards. If any step
+     * fails, the names are put back and the file is opened where it was.
+     * @throws IllegalArgumentException for a name that can't be a file's, or one already taken (nothing changed)
+     */
+    public Renamed renameTo(String newName) {
+        String name = newName == null ? "" : newName.trim();
+        String ext = "." + EXTENSION;
+        if (name.toLowerCase().endsWith(ext.toLowerCase())) {
+            name = name.substring(0, name.length() - ext.length()).trim();
+        }
+        if (name.isEmpty() || name.equals(".") || name.equals("..")
+                || name.matches(".*[\\\\/:*?\"<>|\\p{Cntrl}].*") || name.endsWith(".")) {
+            throw new IllegalArgumentException("\"" + name + "\" can't be a file name. Leave out \\ / : * ? \" < > |"
+                    + " and don't end it with a dot.");
+        }
+        Path folder = file.getParent();
+        boolean ownFolder = hasOwnFolder();
+        Path newFolder = ownFolder ? folder.resolveSibling(name) : folder;
+        Path renamedHere = folder.resolve(name + ext);              // the file renamed, before the folder is
+        Path newFile = newFolder.resolve(name + ext);
+        if (newFile.equals(file)) {
+            throw new IllegalArgumentException("That's its name already.");
+        }
+        boolean caseOnly = newFile.toString().equalsIgnoreCase(file.toString());
+        if (!caseOnly && Files.exists(renamedHere)) {
+            throw new IllegalArgumentException("There's already a file named \"" + name + ext + "\" there.");
+        }
+        if (ownFolder && !caseOnly && Files.exists(newFolder)) {
+            throw new IllegalArgumentException("There's already a folder named \"" + name + "\" in "
+                    + folder.getParent() + ".");
+        }
+
+        close();
+        List<Path[]> done = new ArrayList<>();                      // moves made, to undo on failure
+        try {
+            move(file, renamedHere, done);
+            for (String side : new String[] {"-journal", "-wal", "-shm"}) {   // SQLite's companions, if any
+                Path p = Path.of(file + side);
+                if (Files.exists(p)) {
+                    move(p, Path.of(renamedHere + side), done);
+                }
+            }
+            if (ownFolder) {
+                move(folder, newFolder, done);
+            }
+            return new Renamed(open(newFile, password), null);
+        } catch (IOException | SQLException e) {
+            for (int i = done.size() - 1; i >= 0; i--) {             // put everything back
+                try {
+                    Files.move(done.get(i)[1], done.get(i)[0]);
+                } catch (IOException ignored) {
+                    // (reported below if it can't be opened)
+                }
+            }
+            try {
+                return new Renamed(open(file, password), e);
+            } catch (SQLException again) {
+                throw new IllegalStateException("The file couldn't be renamed (" + e.getMessage()
+                        + "), and couldn't be opened again at " + file + ": " + again.getMessage(), again);
+            }
+        }
+    }
+
+    private static void move(Path from, Path to, List<Path[]> done) throws IOException {
+        if (from.toString().equalsIgnoreCase(to.toString()) && !from.equals(to)) {
+            // Only the case changes: on Windows and macOS that's the same name, so go by way of another.
+            Path step = from.resolveSibling(from.getFileName() + ".renaming");
+            Files.move(from, step);
+            Files.move(step, to);
+        } else {
+            Files.move(from, to);
+        }
+        done.add(new Path[] {from, to});
     }
 
     /** For data-access classes in this package (AccountRepository, ...). */

@@ -18,8 +18,35 @@ import javax.swing.UIManager;
  */
 public class MyMoney {
 
-    /** The version shown on the startup screen. */
-    static final String VERSION = "1.0";
+    /** The version and release date (shown on the startup screen and in Help > About): pom.xml's, via version.properties. */
+    static final String VERSION;
+    /** The release date, or null when run without a Maven build. */
+    static final java.time.LocalDate RELEASE_DATE;
+
+    static {
+        java.util.Properties p = new java.util.Properties();
+        try (java.io.InputStream in = MyMoney.class.getResourceAsStream("version.properties")) {
+            if (in != null) {
+                p.load(in);
+            }
+        } catch (java.io.IOException ignored) {
+            // shown as "dev", then
+        }
+        VERSION = filled(p.getProperty("version"), "dev");
+        String date = filled(p.getProperty("releaseDate"), null);
+        java.time.LocalDate released = null;
+        try {
+            released = date == null ? null : java.time.LocalDate.parse(date);
+        } catch (java.time.format.DateTimeParseException ignored) {
+            // not a date: left out
+        }
+        RELEASE_DATE = released;
+    }
+
+    /** A value Maven filled in, or def (unfiltered, "${...}": run without a Maven build). */
+    private static String filled(String value, String def) {
+        return value == null || value.isBlank() || value.startsWith("${") ? def : value.trim();
+    }
 
     public static void main(String[] args) {
         try {

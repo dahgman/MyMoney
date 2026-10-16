@@ -3,7 +3,7 @@
     <modelVersion>4.0.0</modelVersion>
     <groupId>com.martinsmayhem</groupId>
     <artifactId>MyMoney</artifactId>
-    <version>1.0-SNAPSHOT</version>
+    <version>1.0.3</version>
     <packaging>jar</packaging>
     <dependencies>
         <dependency>
@@ -19,15 +19,75 @@
         </dependency>
     </dependencies>
     <build>
+        <!-- target/MyMoney.jar, whatever the version (the installer scripts look for it by this name). -->
+        <finalName>MyMoney</finalName>
+        <resources>
+            <!-- Images and the rest, copied as they are. -->
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>false</filtering>
+                <excludes>
+                    <exclude>**/version.properties</exclude>
+                </excludes>
+            </resource>
+            <!-- version.properties gets this pom's <version> filled in, so the version lives in one place. -->
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>true</filtering>
+                <includes>
+                    <include>**/version.properties</include>
+                </includes>
+            </resource>
+        </resources>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>3.2.5</version>
             </plugin>
+            <!-- A runnable jar: its manifest names the main class and the libraries in lib/ beside it. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>3.4.2</version>
+                <configuration>
+                    <archive>
+                        <manifest>
+                            <mainClass>com.martinsmayhem.mymoney.MyMoney</mainClass>
+                            <addClasspath>true</addClasspath>
+                            <classpathPrefix>lib/</classpathPrefix>
+                        </manifest>
+                        <manifestEntries>
+                            <!-- SQLite (with SQLCipher) loads native code; this keeps Java from warning about it. -->
+                            <Enable-Native-Access>ALL-UNNAMED</Enable-Native-Access>
+                        </manifestEntries>
+                    </archive>
+                </configuration>
+            </plugin>
+            <!-- Copies the libraries the app needs (sqlite-jdbc) into target/lib, beside the jar. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <version>3.8.1</version>
+                <executions>
+                    <execution>
+                        <id>copy-libraries</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>copy-dependencies</goal>
+                        </goals>
+                        <configuration>
+                            <outputDirectory>${project.build.directory}/lib</outputDirectory>
+                            <includeScope>runtime</includeScope>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
         </plugins>
     </build>
     <properties>
+        <!-- The date this version is released: shown in Help > About. Set it with <version> for each release. -->
+        <release.date>2026-10-16</release.date>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.compiler.release>26</maven.compiler.release>
         <exec.mainClass>com.martinsmayhem.mymoney.MyMoney</exec.mainClass>

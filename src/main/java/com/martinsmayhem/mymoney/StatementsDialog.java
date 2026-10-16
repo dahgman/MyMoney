@@ -35,7 +35,7 @@ import javax.swing.table.AbstractTableModel;
  * too. The files are copied into the account's folder next to the data
  * file, with the transaction attachments:
  *
- *   <Account>/Attachments/Statements/YYYY/
+ *   attachments/statements/<Account>/YYYY/<Account>_statement_YYYY-MM-DD.<ext>
  */
 final class StatementsDialog extends JDialog {
 
@@ -98,8 +98,8 @@ final class StatementsDialog extends JDialog {
         buttons.add(right, BorderLayout.EAST);
 
         JLabel help = new JLabel("<html><div style='width:560px'>Statements are copied into <b>"
-                + AttachmentRepository.folderName(account.name())
-                + "/Attachments/Statements</b>, next to the data file, filed by year."
+                + AttachmentRepository.STATEMENTS + AttachmentRepository.folderName(account.name())
+                + "</b>, next to the data file, filed by year."
                 + " Double-click one to open it.</div></html>");
         help.setBorder(BorderFactory.createEmptyBorder(8, 8, 6, 8));
         JScrollPane scroll = new JScrollPane(table);

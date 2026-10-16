@@ -26,9 +26,13 @@ public class AppConfig implements AutoCloseable {
     private final Connection conn;
 
     public AppConfig() throws IOException, SQLException {
-        Path dir = configDirectory();
-        Files.createDirectories(dir);
-        conn = DriverManager.getConnection("jdbc:sqlite:" + dir.resolve("config.db").toAbsolutePath());
+        this(configDirectory().resolve("config.db"));
+    }
+
+    /** The settings kept in this file instead of the usual place (for tests). */
+    AppConfig(Path configFile) throws IOException, SQLException {
+        Files.createDirectories(configFile.toAbsolutePath().getParent());
+        conn = DriverManager.getConnection("jdbc:sqlite:" + configFile.toAbsolutePath());
         try (Statement st = conn.createStatement()) {
             st.execute("""
                 CREATE TABLE IF NOT EXISTS recent_database (
@@ -107,6 +111,17 @@ public class AppConfig implements AutoCloseable {
         }
     }
 
+    /** After a data file is renamed: the recent list and the default follow it. */
+    public void renamed(Path from, Path to) throws SQLException {
+        String old = from.toAbsolutePath().toString();
+        boolean wasDefault = old.equals(getDefaultDatabase());
+        removeRecent(old);
+        addRecent(to);
+        if (wasDefault) {
+            setDefaultDatabase(to);
+        }
+    }
+
     // ----- Default database ---------------------------------------------
 
     /** Full path of the default database, or null if none is set. */
@@ -169,6 +184,19 @@ public class AppConfig implements AutoCloseable {
     public static final String DATE_FORMAT = "date_format";
     /** Open on the Summary screen instead of the first account's ledger. */
     public static final String OPEN_ON_SUMMARY = "open_on_summary";
+    /** Where database backups go: a folder (blank: asked the first time, then kept here). */
+    public static final String BACKUP_FOLDER = "backup_folder";
+    /** Remind me to back up a file after it's been used (opened) this many times since its last backup; 0 = never. */
+    public static final String BACKUP_REMIND_EVERY = "backup_remind_every";
+    public static final int DEFAULT_BACKUP_REMIND_EVERY = 10;
+    /** Keep at most this many backups a day (the latest); 0 = all of them. */
+    public static final String BACKUP_KEEP_PER_DAY = "backup_keep_per_day";
+    /** Backups older than this many days: only the last of each day is kept; 0 = keep them all. */
+    public static final String BACKUP_THIN_AFTER_DAYS = "backup_thin_after_days";
+    /** What's done with a bank download file once it's imported: "leave", "delete" or "move". */
+    public static final String IMPORT_FILE_ACTION = "import_file_action";
+    /** A data file's uses (openings) since its last backup: this key + the file's path. */
+    public static final String BACKUP_USES_PREFIX = "backup_uses:";
 
     /** A text preference, or def if it was never set (or can't be read). */
     public String getString(String key, String def) {

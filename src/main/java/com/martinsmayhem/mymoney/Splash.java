@@ -57,16 +57,22 @@ final class Splash extends JWindow {
 
     /** Shows the startup screen (does nothing if the artwork can't be read). */
     static void start() {
-        try (InputStream in = Splash.class.getResourceAsStream("splash.png")) {
-            if (in == null) {
-                return;
-            }
-            current = new Splash(ImageIO.read(in));
-        } catch (IOException e) {
+        BufferedImage art = art();
+        if (art == null) {
             return;                                     // no splash, then; the program still starts
         }
+        current = new Splash(art);
         current.setVisible(true);
         current.paintNow();
+    }
+
+    /** The MyMoney artwork (splash.png, 900 x 520), or null if it can't be read. */
+    static BufferedImage art() {
+        try (InputStream in = Splash.class.getResourceAsStream("splash.png")) {
+            return in == null ? null : ImageIO.read(in);
+        } catch (IOException e) {
+            return null;
+        }
     }
 
     /**
@@ -110,27 +116,36 @@ final class Splash extends JWindow {
     }
 
     private void paintSplash(Graphics2D g) {
+        paintArt(g, art, status, "Version " + MyMoney.VERSION, percent);
+    }
+
+    /**
+     * The artwork, with a line of text at the bottom on each side (where the
+     * progress goes), and the progress bar above it unless percent is negative.
+     */
+    static void paintArt(Graphics2D g, BufferedImage art, String left, String right, int percent) {
         g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
         g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
         g.drawImage(art, 0, 0, null);
 
-        g.setColor(TRACK);
-        g.fillRoundRect(BAR_X, BAR_Y, BAR_WIDTH, BAR_HEIGHT, BAR_HEIGHT, BAR_HEIGHT);
-        int filled = BAR_WIDTH * percent / 100;
-        if (filled > 0) {
-            g.setColor(GOLD);
-            g.fillRoundRect(BAR_X, BAR_Y, Math.max(filled, BAR_HEIGHT), BAR_HEIGHT, BAR_HEIGHT, BAR_HEIGHT);
+        if (percent >= 0) {
+            g.setColor(TRACK);
+            g.fillRoundRect(BAR_X, BAR_Y, BAR_WIDTH, BAR_HEIGHT, BAR_HEIGHT, BAR_HEIGHT);
+            int filled = BAR_WIDTH * percent / 100;
+            if (filled > 0) {
+                g.setColor(GOLD);
+                g.fillRoundRect(BAR_X, BAR_Y, Math.max(filled, BAR_HEIGHT), BAR_HEIGHT, BAR_HEIGHT, BAR_HEIGHT);
+            }
         }
 
         g.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 15));
         g.setColor(TEXT);
         FontMetrics fm = g.getFontMetrics();
-        String version = "Version " + MyMoney.VERSION;
-        int versionX = BAR_X + BAR_WIDTH - fm.stringWidth(version);
-        g.drawString(version, versionX, TEXT_BASELINE);
-        // The step, cut short with "…" if it would run into the version.
-        String text = status;
-        int room = versionX - BAR_X - 24;
+        int rightX = BAR_X + BAR_WIDTH - fm.stringWidth(right);
+        g.drawString(right, rightX, TEXT_BASELINE);
+        // The left text, cut short with "…" if it would run into the right.
+        String text = left;
+        int room = rightX - BAR_X - 24;
         while (fm.stringWidth(text) > room && text.length() > 2) {
             text = text.substring(0, text.length() - 2) + "…";
         }

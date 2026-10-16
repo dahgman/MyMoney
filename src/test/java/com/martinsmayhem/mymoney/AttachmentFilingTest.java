@@ -14,7 +14,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-/** Transaction attachments: "<Account>/Attachments/Transactions/YYYY/MM/DD/<id>-<payee>.<ext>". */
+/** Transaction attachments: "attachments/transactions/<Account>/YYYY/MM/DD/<id>-<payee>.<ext>". */
 class AttachmentFilingTest {
 
     @TempDir
@@ -63,7 +63,7 @@ class AttachmentFilingTest {
     void namedForTheTransaction() throws Exception {
         LedgerEntry e = txn("Walmart", LocalDate.of(2026, 10, 9));
         AttachmentRepository.Attachment a = attachments.addToTransaction(checking, e.id, e.date, file("IMG_2041.PDF"));
-        assertEquals("Checking/Attachments/Transactions/2026/10/09/" + e.id + "-Walmart.pdf", a.path(),
+        assertEquals("attachments/transactions/Checking/2026/10/09/" + e.id + "-Walmart.pdf", a.path(),
                 "the original's type, in the date's folder, no folder per transaction");
         assertEquals("IMG_2041.PDF", Files.readString(data.resolve(a.path())), "its contents");
         assertTrue(Files.exists(dir.resolve("IMG_2041.PDF")), "the original is left alone");
@@ -97,11 +97,11 @@ class AttachmentFilingTest {
         transactions.update(e);
         assertEquals(1, attachments.fileTransactionAttachments());
         AttachmentRepository.Attachment after = of(e).get(0);
-        assertEquals("Checking/Attachments/Transactions/2026/10/10/" + e.id + "-Walmart Supercenter.pdf", after.path());
+        assertEquals("attachments/transactions/Checking/2026/10/10/" + e.id + "-Walmart Supercenter.pdf", after.path());
         assertTrue(Files.exists(data.resolve(after.path())));
         assertFalse(Files.exists(before));
         assertFalse(Files.exists(before.getParent()), "the emptied day folder is tidied away");
-        assertTrue(Files.exists(data.resolve("Checking/Attachments/Transactions/2026/10")), "the month's still in use");
+        assertTrue(Files.exists(data.resolve("attachments/transactions/Checking/2026/10")), "the month's still in use");
         assertEquals(0, attachments.fileTransactionAttachments(), "already in place");
     }
 
@@ -122,9 +122,9 @@ class AttachmentFilingTest {
         undo.undo();
         attachments.fileTransactionAttachments();
         AttachmentRepository.Attachment back = of(e).get(0);
-        assertEquals("Checking/Attachments/Transactions/2026/10/09/" + e.id + "-Walmart.pdf", back.path());
+        assertEquals("attachments/transactions/Checking/2026/10/09/" + e.id + "-Walmart.pdf", back.path());
         assertTrue(Files.exists(data.resolve(back.path())), "the listing and the file agree");
-        assertFalse(Files.exists(data.resolve("Checking/Attachments/Transactions/2026/11")));
+        assertFalse(Files.exists(data.resolve("attachments/transactions/Checking/2026/11")));
 
         undo.redo();
         attachments.fileTransactionAttachments();
@@ -135,7 +135,7 @@ class AttachmentFilingTest {
     @Test
     void theOldLayoutIsConverted() throws Exception {
         LedgerEntry e = txn("Costco", LocalDate.of(2026, 9, 12));
-        String old = "Checking/Attachments/Transactions/2026/09/12/" + e.id + "/Costco receipt.png";
+        String old = "Checking/Attachments/Transactions/2026/09/12/" + e.id + "/Costco receipt.png";   // filed the old way
         Files.createDirectories(data.resolve(old).getParent());
         Files.writeString(data.resolve(old), "png");
         try (PreparedStatement ps = db.getConnection().prepareStatement("INSERT INTO attachment"
@@ -147,9 +147,9 @@ class AttachmentFilingTest {
         }
         assertEquals(1, attachments.fileTransactionAttachments());
         AttachmentRepository.Attachment a = of(e).get(0);
-        assertEquals("Checking/Attachments/Transactions/2026/09/12/" + e.id + "-Costco.png", a.path());
+        assertEquals("attachments/transactions/Checking/2026/09/12/" + e.id + "-Costco.png", a.path());
         assertEquals("png", Files.readString(data.resolve(a.path())));
-        assertFalse(Files.exists(data.resolve(old).getParent()), "the per-transaction folder is gone");
+        assertFalse(Files.exists(data.resolve("Checking")), "the old account folder is tidied away");
     }
 
     @Test
@@ -190,7 +190,7 @@ class AttachmentFilingTest {
         LedgerEntry e = txn("Walmart", LocalDate.of(2026, 10, 9));
         AttachmentRepository.Attachment a = attachments.addToTransaction(checking, e.id, e.date, file("r.pdf"));
         attachments.remove(a, checking);
-        assertFalse(Files.exists(data.resolve("Checking/Attachments/Transactions")), "nothing left under it");
-        assertTrue(Files.exists(data.resolve("Checking/Attachments")), "the account's Attachments folder stays");
+        assertFalse(Files.exists(data.resolve("attachments")), "emptied folders are tidied away");
+        assertTrue(Files.exists(data.resolve("T.MyMoney")), "the data file's own folder stays, of course");
     }
 }

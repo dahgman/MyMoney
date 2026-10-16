@@ -28,9 +28,15 @@ import javax.swing.SpinnerNumberModel;
  * Preferences).
  *
  * If the file names its account (QFX / OFX: account and routing numbers),
- * the account with that number is suggested; New Account... creates one
- * with the file's numbers filled in. Otherwise every account is offered,
- * with Add Account... to make a new one.
+ * the account with that number is suggested. If none has it (or there are
+ * no accounts yet), a new account named from the file ("WF Checking 2222":
+ * the bank, the account type, the number's last four digits) is chosen,
+ * made only if the import goes ahead; New Account... makes one in the
+ * account form instead. A file that doesn't name its account (QIF) can go
+ * into any account, or a new "Imported Account".
+ *
+ * Also chosen here: whether the downloaded file is then left, deleted or
+ * moved into MyMoney's folder (see ImportFileChoice).
  */
 final class BankImportDialog extends JDialog {
 
@@ -57,6 +63,10 @@ final class BankImportDialog extends JDialog {
     private final JSpinner daysSpinner;
     private Account suggested;
     private boolean accepted;
+    /** The account to make for the import, listed until it's made (id 0); null if none is offered. */
+    private final Account newAccount;
+    private Account chosen;                              // after accept: the account (made, if new)
+    private final ImportFileChoice afterImport;
 
     /**
      * @param fileAccount   the account the file names, or null (QIF files don't)
@@ -80,8 +90,28 @@ final class BankImportDialog extends JDialog {
         } catch (SQLException e) {
             suggested = null;
         }
-        loadAccounts(suggested != null ? suggested.id() : selected == null ? null : selected.id());
+        // No account has the file's number (or there are no accounts yet): offer one made from the file.
+        List<Account> existing;
+        try {
+            existing = accounts.findAll();
+        } catch (SQLException e) {
+            existing = List.of();
+        }
+        newAccount = suggested != null ? null
+                : new Account(0, genericName(fileAccount, existing), accountType(fileAccount), 0, null, false, null);
+        loadAccounts(suggested != null ? Long.valueOf(suggested.id())
+                : newAccount != null && (hasNumber || existing.isEmpty()) ? Long.valueOf(0)
+                : selected == null ? null : selected.id());
         accountCombo.addActionListener(e -> accountChanged());
+        accountCombo.setRenderer(new javax.swing.DefaultListCellRenderer() {
+            @Override
+            public java.awt.Component getListCellRendererComponent(javax.swing.JList<?> list, Object value, int index,
+                    boolean isSelected, boolean cellHasFocus) {
+                Object shown = value == newAccount && newAccount != null ? "New account: " + newAccount.name() : value;
+                return super.getListCellRendererComponent(list, shown, index, isSelected, cellHasFocus);
+            }
+        });
+        afterImport = new ImportFileChoice(config.getString(AppConfig.IMPORT_FILE_ACTION, ImportFileChoice.LEAVE));
 
         matchBox.setSelected(config.getBoolean(AppConfig.MATCH_DOWNLOADS, true));
         daysSpinner = new JSpinner(new SpinnerNumberModel(
@@ -120,6 +150,21 @@ final class BankImportDialog extends JDialog {
         c.insets = new Insets(10, 0, 0, 0);
         form.add(matchRow, c);
 
+        JLabel afterLabel = new JLabel("Afterwards, the downloaded file is:");
+        c = new GridBagConstraints();
+        c.gridx = 0;
+        c.gridy = row++;
+        c.gridwidth = 2;
+        c.anchor = GridBagConstraints.LINE_START;
+        c.insets = new Insets(10, 0, 0, 0);
+        form.add(afterLabel, c);
+        c = new GridBagConstraints();
+        c.gridx = 0;
+        c.gridy = row++;
+        c.gridwidth = 2;
+        c.anchor = GridBagConstraints.LINE_START;
+        form.add(afterImport, c);
+
         JLabel help = new JLabel("<html><div style='width:400px'>Next, you review each downloaded"
                 + " transaction. Possible matches are existing transactions with the same amount, dated"
                 + " within that many days, that aren't already reconciled or cleared; the payee most like"
@@ -154,8 +199,50 @@ final class BankImportDialog extends JDialog {
         return accepted;
     }
 
+    /** The account chosen: after Review, a new one made for the import is the real account. */
     Account account() {
-        return (Account) accountCombo.getSelectedItem();
+        return chosen != null ? chosen : (Account) accountCombo.getSelectedItem();
+    }
+
+    /** Whether the account was made for this import (so the tree needs to show it). */
+    boolean madeAccount() {
+        return chosen != null && newAccount != null && chosen.name().equals(newAccount.name());
+    }
+
+    /** What to do with the downloaded file afterwards: "leave", "delete" or "move" (see ImportFileChoice). */
+    String fileAction() {
+        return afterImport.choice();
+    }
+
+    /**
+     * A name for an account made from a file: its bank, type and the last four
+     * digits of its number ("WF Checking 2222"), or "Imported Account"; with
+     * " (2)" and so on if an account has it already.
+     */
+    static String genericName(FileAccount f, List<Account> existing) {
+        String base;
+        if (f == null || (!f.hasNumber() && (f.bankName() == null || f.bankName().isBlank()))) {
+            base = "Imported Account";
+        } else {
+            String bank = f.bankName() == null ? "" : f.bankName().trim();
+            String digits = f.hasNumber() ? f.accountNumber().replaceAll("\\D", "") : "";
+            String last4 = digits.length() > 4 ? digits.substring(digits.length() - 4) : digits;
+            base = ((bank.isEmpty() ? "" : bank + " ") + accountType(f) + (last4.isEmpty() ? "" : " " + last4)).trim();
+        }
+        String name = base;
+        for (int n = 2; taken(name, existing); n++) {
+            name = base + " (" + n + ")";
+        }
+        return name;
+    }
+
+    private static boolean taken(String name, List<Account> existing) {
+        return existing.stream().anyMatch(a -> a.name().equalsIgnoreCase(name));
+    }
+
+    /** The account type a file says (OFX ACCTTYPE), or Checking. */
+    private static AccountType accountType(FileAccount f) {
+        return f != null && f.type() != null ? f.type() : AccountType.CHECKING;
     }
 
     boolean match() {
@@ -177,6 +264,12 @@ final class BankImportDialog extends JDialog {
                     accountCombo.setSelectedItem(a);
                 }
             }
+            if (newAccount != null) {
+                accountCombo.addItem(newAccount);       // made only if the import goes ahead
+                if (selectId != null && selectId == 0) {
+                    accountCombo.setSelectedItem(newAccount);
+                }
+            }
         } catch (SQLException e) {
             error("Could not read the accounts:\n" + e.getMessage());
         }
@@ -186,7 +279,10 @@ final class BankImportDialog extends JDialog {
     private void accountChanged() {
         Account a = account();
         boolean hasNumber = fileAccount != null && fileAccount.hasNumber();
-        if (!hasNumber) {
+        if (a != null && a == newAccount) {
+            suggestionLabel.setText("<html>A new account, \"" + newAccount.name() + "\", is made for this file"
+                    + (hasNumber ? ", with its account number" : "") + ".<br>Rename it any time in Manage Accounts.</html>");
+        } else if (!hasNumber) {
             suggestionLabel.setText("This file doesn't say which account it is for. Choose one, or add one.");
         } else if (suggested != null && a != null && a.id() == suggested.id()) {
             suggestionLabel.setText("");                 // the suggestion is chosen: nothing to say
@@ -199,7 +295,7 @@ final class BankImportDialog extends JDialog {
 
         // Offer to store the file's numbers on an account that has none, so it's suggested next time.
         boolean offer = false;
-        if (hasNumber && a != null) {
+        if (hasNumber && a != null && a != newAccount) {
             try {
                 AccountRepository.Details d = accounts.findDetails(a.id());
                 offer = d != null && (d.accountNumber() == null || d.accountNumber().isBlank());
@@ -238,6 +334,20 @@ final class BankImportDialog extends JDialog {
             error("Choose the account to import into, or add one.");
             return;
         }
+        if (a == newAccount) {
+            try {
+                a = makeNewAccount();
+            } catch (SQLException e) {
+                error("Could not create the account:\n" + e.getMessage());
+                return;
+            }
+        }
+        chosen = a;
+        try {
+            config.setString(AppConfig.IMPORT_FILE_ACTION, afterImport.choice());   // the same next time
+        } catch (SQLException ignored) {
+            // used for this import anyway
+        }
         if (rememberBox.isVisible() && rememberBox.isSelected()) {
             try {
                 accounts.setNumbers(a.id(), fileAccount.accountNumber(), fileAccount.routingNumber());
@@ -253,6 +363,22 @@ final class BankImportDialog extends JDialog {
         }
         accepted = true;
         dispose();
+    }
+
+    /** Makes the account offered for the file: its name, type, bank and numbers. */
+    private Account makeNewAccount() throws SQLException {
+        long id = accounts.insert(newAccount.name(), newAccount.type(), 0, null);
+        if (fileAccount != null && fileAccount.hasNumber()) {
+            accounts.setNumbers(id, fileAccount.accountNumber(), fileAccount.routingNumber());
+        }
+        if (fileAccount != null && fileAccount.bankName() != null && !fileAccount.bankName().isBlank()) {
+            AccountRepository.Details d = accounts.findDetails(id);
+            accounts.saveDetails(new AccountRepository.Details(d.id(), d.name(), d.type(), d.parentId(),
+                    fileAccount.bankName().trim(), d.startDate(), d.openingBalanceCents(), d.balanceAdjustmentCents(),
+                    d.accountNumber(), d.routingNumber(), d.defaultCategory(), d.comments(), d.website(), d.loan(),
+                    d.card()));
+        }
+        return accounts.findAll().stream().filter(x -> x.id() == id).findFirst().orElseThrow();
     }
 
     private void error(String message) {

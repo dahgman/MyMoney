@@ -70,18 +70,20 @@ class StatementsTest {
     void filedLikeTransactionAttachments() throws Exception {
         Account a = account("1 - Wells Fargo", AccountType.CHECKING);
         AttachmentRepository.Attachment s = attachments.addStatement(a, LocalDate.of(2026, 9, 30), pdf);
-        assertEquals("1 - Wells Fargo/Attachments/Statements/2026/Statement_2026-09-30.pdf", s.path(),
-                "filed by year only");
+        assertEquals("attachments/statements/1 - Wells Fargo/2026/1 - Wells Fargo_statement_2026-09-30.pdf",
+                s.path(), "by account and year; named for the account and date, with the original's type");
         Path copy = dir.resolve("data").resolve(s.path());
         assertTrue(Files.exists(copy), "copied next to the data file");
         assertTrue(Files.exists(pdf), "the original is left where it was");
-        // Transaction attachments live beside it, in the same account folder.
+        // Transaction attachments go beside them, under attachments/transactions.
         long txn = transaction(a, LocalDate.of(2026, 9, 12));
         AttachmentRepository.Attachment t = attachments.addToTransaction(a, txn, LocalDate.of(2026, 9, 12), pdf);
-        assertEquals("1 - Wells Fargo/Attachments/Transactions/2026/09/12/" + txn + ".pdf", t.path());
-        // Another with the same name that year doesn't overwrite the first.
-        AttachmentRepository.Attachment again = attachments.addStatement(a, LocalDate.of(2026, 10, 31), pdf);
-        assertTrue(again.fileName().endsWith("(2).pdf"), again.fileName());
+        assertEquals("attachments/transactions/1 - Wells Fargo/2026/09/12/" + txn + ".pdf", t.path());
+        // Another statement for the same date doesn't overwrite the first.
+        AttachmentRepository.Attachment again = attachments.addStatement(a, LocalDate.of(2026, 9, 30), pdf);
+        assertEquals("1 - Wells Fargo_statement_2026-09-30 (2).pdf", again.fileName());
+        assertEquals("1 - Wells Fargo_statement_2026-10-31.jpg", attachments.addStatement(a,
+                LocalDate.of(2026, 10, 31), Files.writeString(dir.resolve("scan.JPG"), "jpg")).fileName());
     }
 
     @Test
@@ -115,64 +117,72 @@ class StatementsTest {
     }
 
     @Test
-    void changingTheDateWithinTheYearLeavesTheFile() throws Exception {
+    void changingTheDateRenamesIt() throws Exception {
         Account a = account("Savings", AccountType.SAVINGS);
         attachments.addStatement(a, LocalDate.of(2026, 9, 1), pdf);
         AttachmentRepository.Statement s = attachments.statements(a.id()).get(0);
-        String path = s.attachment().path();
         attachments.redateStatement(s, a, LocalDate.of(2026, 9, 30));
         AttachmentRepository.Statement after = attachments.statements(a.id()).get(0);
         assertEquals(LocalDate.of(2026, 9, 30), after.date());
-        assertEquals(path, after.attachment().path(), "same year: same folder");
+        assertEquals("attachments/statements/Savings/2026/Savings_statement_2026-09-30.pdf", after.attachment().path(),
+                "named for its new date");
         assertTrue(Files.exists(attachments.file(after.attachment(), a)));
     }
 
     @Test
-    void changingTheYearMovesTheFile() throws Exception {
+    void changingTheYearMovesIt() throws Exception {
         Account a = account("Savings", AccountType.SAVINGS);
         attachments.addStatement(a, LocalDate.of(2026, 1, 31), pdf);
         AttachmentRepository.Statement s = attachments.statements(a.id()).get(0);
         Path before = attachments.file(s.attachment(), a);
         attachments.redateStatement(s, a, LocalDate.of(2025, 12, 31));
         AttachmentRepository.Statement moved = attachments.statements(a.id()).get(0);
-        assertEquals("Savings/Attachments/Statements/2025/Statement_2026-09-30.pdf", moved.attachment().path());
+        assertEquals("attachments/statements/Savings/2025/Savings_statement_2025-12-31.pdf", moved.attachment().path());
         assertTrue(Files.exists(attachments.file(moved.attachment(), a)));
         assertFalse(Files.exists(before));
         assertFalse(Files.exists(before.getParent()), "the empty 2026 folder is tidied away");
     }
 
     @Test
-    void statementsFiledByDayMoveUpToTheirYear() throws Exception {
+    void aStatementRenamedByHandKeepsItsNameWhenRedated() throws Exception {
+        Account a = account("Savings", AccountType.SAVINGS);
+        attachments.addStatement(a, LocalDate.of(2026, 9, 1), pdf);
+        attachments.rename(attachments.statements(a.id()).get(0).attachment(), a, "September");
+        attachments.redateStatement(attachments.statements(a.id()).get(0), a, LocalDate.of(2026, 9, 30));
+        assertEquals("September.pdf", attachments.statements(a.id()).get(0).attachment().fileName());
+    }
+
+    @Test
+    void statementsFiledTheOldWaysMoveIntoPlace() throws Exception {
         Account a = account("Visa", AccountType.CREDIT_CARD);
         Path data = dir.resolve("data");
-        // Two statements filed the old way (one each in September and October), and a transaction attachment.
+        // Filed by older versions: by day, and by year, under <Account>/Attachments; and a transaction attachment.
         String[] old = {"Visa/Attachments/Statements/2026/09/30/statement.pdf",
-                        "Visa/Attachments/Statements/2026/10/31/statement.pdf"};
+                        "Visa/Attachments/Statements/2026/October.PDF"};
         String[] dates = {"2026-09-30", "2026-10-31"};
         for (int i = 0; i < old.length; i++) {
             Files.createDirectories(data.resolve(old[i]).getParent());
             Files.writeString(data.resolve(old[i]), "month " + i);
             try (PreparedStatement ps = db.getConnection().prepareStatement("INSERT INTO attachment (account_id,"
-                    + " file_name, path, added_at, statement_date) VALUES (?, 'statement.pdf', ?, 'x', ?)")) {
+                    + " file_name, path, added_at, statement_date) VALUES (?, ?, ?, 'x', ?)")) {
                 ps.setLong(1, a.id());
-                ps.setString(2, old[i]);
-                ps.setString(3, dates[i]);
+                ps.setString(2, old[i].substring(old[i].lastIndexOf('/') + 1));
+                ps.setString(3, old[i]);
+                ps.setString(4, dates[i]);
                 ps.executeUpdate();
             }
         }
-        long txn = transaction(a, LocalDate.of(2026, 9, 12));
-        AttachmentRepository.Attachment t = attachments.addToTransaction(a, txn, LocalDate.of(2026, 9, 12), pdf);
-
-        assertEquals(2, attachments.fileStatementsByYear());
+        assertEquals(2, attachments.fileStatements());
         List<AttachmentRepository.Statement> list = attachments.statements(a.id());
-        assertEquals("Visa/Attachments/Statements/2026/statement (2).pdf", list.get(0).attachment().path(),
-                "October's, renamed so it doesn't overwrite September's");
-        assertEquals("Visa/Attachments/Statements/2026/statement.pdf", list.get(1).attachment().path());
+        assertEquals("attachments/statements/Visa/2026/Visa_statement_2026-10-31.pdf", list.get(0).attachment().path());
+        assertEquals("attachments/statements/Visa/2026/Visa_statement_2026-09-30.pdf", list.get(1).attachment().path());
         assertEquals("month 1", Files.readString(attachments.file(list.get(0).attachment(), a)));
         assertEquals(LocalDate.of(2026, 10, 31), list.get(0).date(), "dates are unchanged");
-        assertFalse(Files.exists(data.resolve("Visa/Attachments/Statements/2026/09")), "old folders tidied away");
-        assertTrue(Files.exists(data.resolve(t.path())), "transaction attachments are left alone");
-        assertEquals(0, attachments.fileStatementsByYear(), "nothing more to move the next time");
+        assertFalse(Files.exists(data.resolve("Visa")), "the old folders are tidied away");
+        assertEquals(0, attachments.fileStatements(), "nothing more to move the next time");
+        // A statement renamed by hand, in its place, is left alone.
+        attachments.rename(list.get(0).attachment(), a, "October");
+        assertEquals(0, attachments.fileStatements());
     }
 
     @Test
@@ -197,7 +207,8 @@ class StatementsTest {
         Account renamed = new Account(a.id(), "Chase Sapphire", a.type(), a.openingBalanceCents(), null, false,
                 a.parentId());
         AttachmentRepository.Statement s = attachments.statements(a.id()).get(0);
-        assertTrue(s.attachment().path().startsWith("Chase Sapphire/Attachments/Statements/"));
+        assertEquals("attachments/statements/Chase Sapphire/2026/Chase Sapphire_statement_2026-09-30.pdf",
+                s.attachment().path(), "its folder and name follow the account's");
         assertTrue(Files.exists(attachments.file(s.attachment(), renamed)));
     }
 
@@ -210,7 +221,7 @@ class StatementsTest {
 
         AttachmentRepository.Attachment renamed = attachments.rename(s, a, "  September 2026  ");
         assertEquals("September 2026.pdf", renamed.fileName(), "typed without an extension: keeps .pdf");
-        assertEquals("Visa/Attachments/Statements/2026/September 2026.pdf", renamed.path(), "same folder");
+        assertEquals("attachments/statements/Visa/2026/September 2026.pdf", renamed.path(), "same folder");
         assertFalse(Files.exists(before));
         assertTrue(Files.exists(attachments.file(renamed, a)));
         AttachmentRepository.Statement listed = attachments.statements(a.id()).get(0);
@@ -231,12 +242,12 @@ class StatementsTest {
         for (String bad : new String[] {"", "  ", "a/b", "a\\b", "what?", "x:y", "dots.", ".."}) {
             assertThrows(IllegalArgumentException.class, () -> attachments.rename(second, a, bad), bad);
         }
-        assertThrows(IllegalArgumentException.class, () -> attachments.rename(second, a, "Statement_2026-09-30"),
+        assertThrows(IllegalArgumentException.class, () -> attachments.rename(second, a, "Visa_statement_2026-09-30"),
                 "the other statement already has that name");
         assertTrue(Files.exists(attachments.file(second, a)), "nothing moved");
         // Only the case changing is fine (the same file on Windows and macOS).
-        assertEquals("STATEMENT_2026-09-30 (2).pdf",
-                attachments.rename(second, a, "STATEMENT_2026-09-30 (2)").fileName());
+        assertEquals("VISA_STATEMENT_2026-09-30 (2).pdf",
+                attachments.rename(second, a, "VISA_STATEMENT_2026-09-30 (2)").fileName());
     }
 
     @Test
@@ -272,7 +283,7 @@ class StatementsTest {
         attachments.rename(attachments.statements(a.id()).get(0).attachment(), a, "Sep");
         attachments.renameAccountFolder("Chase", "Chase Sapphire");
         AttachmentRepository.Attachment s = attachments.statements(a.id()).get(0).attachment();
-        assertEquals("Chase Sapphire/Attachments/Statements/2026/Sep.pdf", s.path());
+        assertEquals("attachments/statements/Chase Sapphire/2026/Sep.pdf", s.path(), "named by hand: kept");
         assertTrue(Files.exists(dir.resolve("data").resolve(s.path())));
     }
 

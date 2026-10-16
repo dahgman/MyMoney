@@ -1,0 +1,249 @@
+<html>
+<body style="margin: 12px 16px;">
+
+<a name="contents"></a>
+<h1>MyMoney Help</h1>
+<p>MyMoney {version} keeps your accounts, transactions, loans and statements in one
+encrypted file. This page covers the basics; hover over most fields and buttons for
+a tip about them.</p>
+
+<p><b>Contents</b></p>
+<ul>
+  <li><a href="#files">Your MyMoney file</a></li>
+  <li><a href="#backups">Backing up</a></li>
+  <li><a href="#accounts">Accounts</a></li>
+  <li><a href="#ledger">The ledger: entering transactions</a></li>
+  <li><a href="#transfers">Categories and transfers</a></li>
+  <li><a href="#filter">Finding transactions</a></li>
+  <li><a href="#import">Importing from your bank</a></li>
+  <li><a href="#scheduled">Scheduled transactions</a></li>
+  <li><a href="#reconcile">Reconciling</a></li>
+  <li><a href="#statements">Statements and attachments</a></li>
+  <li><a href="#loans">Loans and credit cards</a></li>
+  <li><a href="#undo">Undo</a></li>
+  <li><a href="#keys">Keyboard shortcuts</a></li>
+  <li><a href="#where">Where things are kept</a></li>
+</ul>
+
+<a name="files"></a>
+<h2>Your MyMoney file</h2>
+<p>Everything is kept in one file (<i>Name</i>.MyMoney), encrypted with your password.
+A new file gets a folder of its own, named after it, and its attachments are kept in
+that folder too.</p>
+<ul>
+  <li><b>Open another file, or make a new one:</b> File &gt; Open (Ctrl+O).
+      The file you open at startup is your <i>default</i>; MyMoney opens it straight away
+      next time, asking for its password.</li>
+  <li><b>Back up:</b> File &gt; Back Up Database. See <a href="#backups">Backing up</a>.</li>
+  <li><b>Rename:</b> File &gt; Rename File renames the file, and its folder with it.</li>
+  <li><b>Forget the password and the file can't be opened.</b> There's no way around the
+      encryption, so keep the password somewhere safe.</li>
+</ul>
+
+<a name="backups"></a>
+<h2>Backing up</h2>
+<p><b>File &gt; Back Up Database</b> makes an encrypted copy of your database (your accounts and
+transactions), named for the file and the time: <tt>Household_20261016_0845.MyMoney</tt>. It opens
+with the same password. Backups go in the folder set in <b>Edit &gt; Preferences &gt; Backups</b>; the
+first time, MyMoney asks for one and remembers it. Choose a folder on another drive, so a backup
+survives this one failing.</p>
+<p><b>Attachments and statements aren't in a database backup.</b> They're in the attachments folder
+beside your MyMoney file. To back up everything, back up that whole folder with a backup tool, such
+as <b>FreeFileSync</b> (free, for Linux, Windows and macOS: freefilesync.org), or your system's own:
+D&eacute;j&agrave; Dup on Linux, File History on Windows, Time Machine on macOS.</p>
+<p>Also in Preferences &gt; Backups:</p>
+<ul>
+  <li><b>A reminder:</b> when you close MyMoney after using a file a number of times since its last
+      backup, it offers to back it up (0: never ask).</li>
+  <li><b>Old backups:</b> keep only so many backups a day (the latest), and after so many days, only
+      the last backup of each day. Only this file's own backups in the backup folder are ever
+      removed. Both are off (0) to start with, keeping every backup.</li>
+</ul>
+<p>To use a backup, open it with File &gt; Open, or copy it over your MyMoney file (with MyMoney
+closed) and rename it to match.</p>
+
+<a name="accounts"></a>
+<h2>Accounts</h2>
+<p>The tree on the left lists your accounts by type (checking, savings, credit cards,
+loans, cash, other assets, envelopes), with their balances if you turn that on in
+Edit &gt; Preferences. <b>Summary</b> at the top shows your net worth and every
+account at a glance.</p>
+<ul>
+  <li><b>Add, change or remove accounts:</b> Account &gt; New Account, Edit Account,
+      Manage Accounts. Manage Accounts holds each account's details: bank, account and
+      routing numbers, website, and for loans and cards, their terms.</li>
+  <li>An account can go under another (a <i>sub-account</i>), like savings envelopes
+      under a savings account.</li>
+  <li>Right-click an account in the tree for its most-used actions.</li>
+</ul>
+
+<a name="ledger"></a>
+<h2>The ledger: entering transactions</h2>
+<p>Pick an account to see its ledger. The blank row (grey) is for a new transaction:
+type into it, and it's saved as soon as it has an amount. Ctrl+N jumps to it.</p>
+<ul>
+  <li><b>Dates</b> are typed as {dateFormat}, or as 8 digits with nothing between, or
+      without the year (this year). F4 or Alt+Down opens a calendar. The format is set
+      in Edit &gt; Preferences.</li>
+  <li><b>Amounts:</b> money out goes in Payment, money in in Deposit. You can type sums,
+      like <tt>45.10+12.99</tt>. With <i>insert the decimal point</i> on in Preferences,
+      <tt>1234</tt> means $12.34.</li>
+  <li><b>Payee, Category, Tag and Type</b> suggest as you type; Enter or Space picks the
+      highlighted one. A payee you've used before brings its last category along.</li>
+  <li><b>Status</b> (the C column): Cleared once your bank shows it, Reconciled once it's
+      on a reconciled statement; also Pending, Paid and Scheduled. Reconciled
+      transactions are locked against most changes.</li>
+  <li><b>Enter</b> saves and moves down to the next transaction (or, if you choose so in
+      Preferences, to the next field, like Tab).</li>
+  <li><b>Several at once:</b> select rows, then right-click to change their date, payee,
+      category, tag or status together, or delete them.</li>
+  <li><b>In the wrong account?</b> Right-click &gt; <b>Move to Account</b> moves the selected
+      transactions to another account. A transfer stays linked with its other account, and
+      attachments move too. Reconciled transactions aren't moved.</li>
+  <li><b>Columns:</b> right-click a column heading to choose which are shown; drag a heading
+      to move it; double-click the line between headings to fit a column to its contents;
+      click a heading to sort (Ctrl+click to sort by a second column too).</li>
+  <li>Future transactions are listed last, in grey, and don't count toward today's balance.</li>
+</ul>
+
+<a name="transfers"></a>
+<h2>Categories and transfers</h2>
+<ul>
+  <li>A category says what money was for: <tt>Food:Groceries</tt> is Groceries under Food.
+      Type a new one and it's made for you.</li>
+  <li>A <b>transfer</b> moves money between your accounts: put the other account in
+      brackets as the category, like <tt>[Savings]</tt>. The matching transaction appears
+      in the other account by itself, and the two stay in step.</li>
+  <li>Paying a loan or a card from checking is a transfer to it, like <tt>[Car Loan]</tt>.</li>
+</ul>
+
+<a name="filter"></a>
+<h2>Finding transactions</h2>
+<p>Type in the <b>Filter</b> box above the ledger (Ctrl+F) to show only transactions with
+that text in any column; Escape clears it. Balances still count everything.</p>
+<ul>
+  <li>Start with a column's name and a colon to look in just that column:
+      <tt>payee: walmart</tt>, <tt>memo: card 2549</tt>, <tt>type:pos</tt>,
+      <tt>payment: 69.00</tt>.</li>
+  <li><b>Hide reconciled</b> hides reconciled transactions.</li>
+  <li>The bar at the bottom totals whatever transactions you select.</li>
+</ul>
+
+<a name="import"></a>
+<h2>Importing from your bank</h2>
+<p>File &gt; Import reads a file downloaded from your bank's website:</p>
+<ul>
+  <li><b>QFX or OFX</b> (Quicken or Money format) and <b>QIF</b> files of one account's
+      transactions. Each download is shown to you one at a time: match it to a transaction
+      you'd already entered, or add it as new. Matches are suggested for you.</li>
+  <li><b>Which account:</b> a QFX/OFX file says which account it's for, so the account with that
+      account number is chosen. If none has it (say, in a new file with no accounts yet), a new
+      account is made for it, named for the bank, the account type and the number's last four
+      digits, like <i>WF Checking 2222</i>. Rename it any time in Manage Accounts.</li>
+  <li><b>Afterwards</b>, the downloaded file can be left where it is, deleted, or moved into
+      MyMoney's folder as <tt><i>Account</i>/imports/<i>YYYY-MM-DD</i>.qfx</tt>. QFX and OFX files
+      hold your account number in plain text, so MyMoney checks before moving one there.</li>
+  <li>A <b>QIF from Quicken</b> with every account brings in the whole file: accounts,
+      categories and transactions.</li>
+  <li>When you change a downloaded payee's name ("WALMART #1234" to "Walmart"), MyMoney
+      remembers it for next time (Account &gt; Manage Payee Renames).</li>
+  <li>The bank's transaction type (POS, DIRECTDEBIT, ...) goes in the Type column.</li>
+</ul>
+
+<a name="scheduled"></a>
+<h2>Scheduled transactions</h2>
+<p>Account &gt; Scheduled Transactions lists bills and paychecks that repeat. MyMoney puts
+each one in the ledger ahead of time (14 days, or as set in Preferences), marked
+Scheduled, so you can see what's coming. Right-click a transaction and choose
+<b>Add to Schedule</b> to make one from it.</p>
+
+<a name="reconcile"></a>
+<h2>Reconciling</h2>
+<p>Reconciling checks an account against its statement, so you know every transaction
+is right. Account &gt; Reconcile Account (Ctrl+R):</p>
+<ol>
+  <li>Enter the statement's <b>ending balance</b> and <b>date</b>. Transactions already
+      Cleared, from your last reconciliation through that date, are selected for you.
+      Tick <i>As of</i> to select every unreconciled one in that period.</li>
+  <li>Click the C box (or press Space) on each transaction that's on the statement, and
+      off any that isn't. Edit, add or delete transactions right there if you need to.</li>
+  <li>When the <b>Difference</b> is $0.00, click <b>Done</b>: they're all Reconciled.
+      Attach the statement file under Bank Statement while you're there.</li>
+</ol>
+<p>Not finished? <b>Finish Later</b> keeps your place. If the difference won't come to
+zero, check the ending balance you typed against the statement first.</p>
+
+<a name="statements"></a>
+<h2>Statements and attachments</h2>
+<ul>
+  <li><b>Statements:</b> Account &gt; Statements keeps any account's statements: add, open,
+      rename, re-date or remove them. Statements attached while reconciling are listed
+      there too.</li>
+  <li><b>Attachments:</b> receipts and other files for a transaction. Click its paperclip
+      column (or right-click &gt; Attachments) to add or open them.</li>
+  <li>Files are copied into the attachments folder beside your MyMoney file, filed and
+      named for you:
+      <br><tt>attachments/statements/<i>Account</i>/<i>YYYY</i>/<i>Account</i>_statement_<i>YYYY-MM-DD</i></tt>
+      <br><tt>attachments/transactions/<i>Account</i>/<i>YYYY/MM/DD</i>/<i>id</i>-<i>payee</i></tt>
+      <br>The file you added stays where it was. Changing a transaction's date or payee
+      renames its files to match.</li>
+  <li>Adding and removing files can't be undone (they're files on your disk).</li>
+</ul>
+
+<a name="loans"></a>
+<h2>Loans and credit cards</h2>
+<p>Enter a loan's terms in Manage Accounts (rate, original amount, term, origination and
+first payment dates, and how the lender charges interest), and MyMoney works out the
+interest in every payment.</p>
+<ul>
+  <li><b>Interest Charged:</b> <i>Monthly</i> (rate &divide; 12; many mortgages),
+      <i>Daily, from the day paid</i> (most auto and personal loans), or <i>Daily, on the
+      due dates</i> (Affirm and other pay-over-time loans).</li>
+  <li>A loan's balance is what's <b>left to pay</b>, interest included, as lenders show it.
+      The top panel also shows the principal remaining, and the total interest and amount
+      paid.</li>
+  <li>In a loan's ledger, <b>Payment</b> is money paid toward it and <b>Charge</b> is more
+      owed. The Interest and Principal columns are worked out for you; type over either
+      for an interest-only or principal-only payment, or to match the lender's figures.</li>
+  <li>Account &gt; <b>Amortization Schedule</b> shows every payment of a loan (and how much
+      sooner extra principal would pay it off); <b>Payoff Schedule</b> does the same for a
+      card; <b>Debt Snowball</b> plans paying off several debts, smallest first.</li>
+</ul>
+
+<a name="undo"></a>
+<h2>Undo</h2>
+<p>Edit &gt; Undo (Ctrl+Z) reverses your last change: an edit, a new or deleted
+transaction, an import, a reconciliation. Edit &gt; Redo (Ctrl+Y) puts it back. Undo
+starts afresh each time a file is opened.</p>
+
+<a name="keys"></a>
+<h2>Keyboard shortcuts</h2>
+<table cellpadding="3">
+  <tr><td><b>F1</b></td><td>This help</td></tr>
+  <tr><td><b>Ctrl+O</b></td><td>Open a file</td></tr>
+  <tr><td><b>Ctrl+N</b></td><td>New transaction (the blank row)</td></tr>
+  <tr><td><b>Ctrl+F</b>, <b>Escape</b></td><td>Filter the ledger; clear the filter</td></tr>
+  <tr><td><b>Ctrl+R</b></td><td>Reconcile the account</td></tr>
+  <tr><td><b>Ctrl+Z</b>, <b>Ctrl+Y</b></td><td>Undo, Redo</td></tr>
+  <tr><td><b>Enter</b>, <b>Tab</b></td><td>Save the cell and move on</td></tr>
+  <tr><td><b>Delete</b></td><td>Delete the selected transactions</td></tr>
+  <tr><td><b>F4</b>, <b>Alt+Down</b></td><td>Open the calendar in a date</td></tr>
+  <tr><td><b>Space</b></td><td>Select or deselect a transaction while reconciling</td></tr>
+</table>
+<p>(On a Mac, Cmd instead of Ctrl.)</p>
+
+<a name="where"></a>
+<h2>Where things are kept</h2>
+<ul>
+  <li><b>Your data:</b> your MyMoney file, its attachments folder, and any imported bank files
+      (<i>Account</i>/imports), all in the MyMoney file's folder, wherever you made it. Back up that
+      whole folder (see <a href="#backups">Backing up</a>).</li>
+  <li><b>Database backups:</b> in the backup folder you chose.</li>
+  <li><b>Settings</b> (recent files, preferences): in your settings folder, shown in
+      Help &gt; About. They hold no financial data.</li>
+  <li>Installing, updating or removing MyMoney never changes either.</li>
+</ul>
+
+<p><a href="#contents">Back to the contents</a></p>
+</body>
+</html>

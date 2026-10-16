@@ -1,0 +1,3 @@
+# Build output: made by Maven (target/) and the installer scripts (dist/). Not source; never commit.
+target/
+dist/
