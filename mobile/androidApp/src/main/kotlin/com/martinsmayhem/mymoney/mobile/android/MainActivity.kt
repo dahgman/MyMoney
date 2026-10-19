@@ -2,7 +2,10 @@ package com.martinsmayhem.mymoney.mobile.android
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import android.graphics.Color
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.SystemBarStyle
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.lifecycle.lifecycleScope
@@ -62,4 +65,12 @@ class MainActivity : ComponentActivity(), Platform {
     override fun syncSoon() = MyMoneyPhone.syncSoon(this)
 
     override fun today(): LocalDate = Clock.System.todayIn(TimeZone.currentSystemDefault())
+
+    override val appVersion: String = BuildConfig.VERSION_NAME
+
+    override fun systemBars(dark: Boolean) {
+        val style = if (dark) SystemBarStyle.dark(Color.TRANSPARENT)
+        else SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT)
+        enableEdgeToEdge(statusBarStyle = style, navigationBarStyle = style)
+    }
 }

@@ -1,11 +1,13 @@
 package com.martinsmayhem.mymoney.mobile.ui
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.ExtendedFloatingActionButton
@@ -25,7 +27,9 @@ import com.martinsmayhem.mymoney.mobile.LedgerView
 
 /** One account's transactions, newest first, with the balance after each. */
 @Composable
-fun LedgerScreen(view: LedgerView, accountUid: String, nav: Navigator) {
+fun LedgerScreen(view: LedgerView, accountUid: String, nav: Navigator, today: kotlinx.datetime.LocalDate) {
+    val rows = view.ledger(accountUid, today)
+    val hidden = view.ledger(accountUid, today, com.martinsmayhem.mymoney.mobile.Prefs()).size - rows.size
     val account = view.account(accountUid)
     val balance = view.accounts().flatMap { listOf(it) + it.envelopes }.firstOrNull { it.uid == accountUid }?.balanceCents
     Scaffold(
@@ -40,11 +44,12 @@ fun LedgerScreen(view: LedgerView, accountUid: String, nav: Navigator) {
                     Text("Balance", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
                     Money(balance ?: 0, bold = true)
                 }
-                Hint("Unreconciled transactions, and the last 60 days of reconciled ones (greyed: change those on the computer).")
+                Hint("By status, as on the computer: newest first. Tap one for all its details." +
+                    if (hidden > 0) " $hidden hidden (see Settings)." else "")
                 HorizontalDivider()
             }
-            items(view.ledger(accountUid), key = { it.txn.uid }) { row ->
-                Row(row, view) { if (row.txn.editable) nav.go(Screen.Edit(accountUid, row.txn.uid)) }
+            items(rows, key = { it.txn.uid }) { row ->
+                Row(row, view) { nav.go(Screen.Detail(row.txn.uid)) }
                 HorizontalDivider()
             }
         }
@@ -54,12 +59,15 @@ fun LedgerScreen(view: LedgerView, accountUid: String, nav: Navigator) {
 @Composable
 private fun Row(row: LedgerRow, view: LedgerView, open: () -> Unit) {
     val t = row.txn
-    Row(Modifier.fillMaxWidth().clickable(enabled = t.editable, onClick = open)
-        .alpha(if (t.editable || t.mirror) 1f else 0.55f).padding(horizontal = 16.dp, vertical = 10.dp)) {
-        Column(Modifier.weight(1f)) {
+    Row(Modifier.fillMaxWidth().clickable(onClick = open)
+        .alpha(if (t.editable || t.mirror) 1f else 0.55f).padding(start = 8.dp, end = 16.dp, top = 10.dp, bottom = 10.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        // The status column: the computer's colored dots.
+        Box(Modifier.width(24.dp), contentAlignment = Alignment.Center) { StatusDot(t.status) }
+        Column(Modifier.weight(1f).padding(start = 4.dp)) {
             Text(t.payee.ifBlank { "(no payee)" }, fontWeight = FontWeight.Medium, maxLines = 1)
             val details = listOfNotNull(Format.date(t.date, view.dateFormat()), view.categoryLabel(t).ifBlank { null },
-                Format.status(t.status).takeIf { t.status != "U" }, if (t.receipts > 0) "📎${t.receipts}" else null)
+                if (t.receipts > 0) "📎${t.receipts}" else null)
             Hint(details.joinToString(" · "), Modifier)
             if (t.pending) Text("not yet on the computer", style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.primary)

@@ -88,6 +88,19 @@ final class TransactionDialog extends JDialog {
             payment.setEnabled(false);
             deposit.setEnabled(false);
         }
+        // A cleared or reconciled transaction's money stays put: only what LedgerTableModel.canChange allows.
+        if (!isNew) {
+            date.setEnabled(LedgerTableModel.canChange(entry, LedgerTableModel.DATE, null));
+            number.setEnabled(LedgerTableModel.canChange(entry, LedgerTableModel.NUM, null));
+            payee.setEnabled(LedgerTableModel.canChange(entry, LedgerTableModel.PAYEE, null));
+            tag.setEnabled(LedgerTableModel.canChange(entry, LedgerTableModel.TAG, null));
+            description.setEnabled(LedgerTableModel.canChange(entry, LedgerTableModel.DESCRIPTION, null));
+            memo.setEnabled(LedgerTableModel.canChange(entry, LedgerTableModel.MEMO, null));
+            boolean money = LedgerTableModel.canChange(entry, LedgerTableModel.PAYMENT, null);
+            payment.setEnabled(payment.isEnabled() && money);
+            deposit.setEnabled(deposit.isEnabled() && money);
+            category.setEnabled(category.isEnabled() && LedgerTableModel.canChange(entry, LedgerTableModel.CATEGORY, null));
+        }
 
         JPanel form = new JPanel(new GridBagLayout());
         form.setBorder(BorderFactory.createEmptyBorder(10, 10, 4, 10));
@@ -149,6 +162,11 @@ final class TransactionDialog extends JDialog {
                 }
                 entry.amountCents = !p.isEmpty() ? -Money.parseTyped(p) : !d.isEmpty() ? Money.parseTyped(d) : 0;
                 String cat = comboText(category);
+                if (!isNew && !cat.equalsIgnoreCase(text(entry.category))
+                        && !LedgerTableModel.canChange(entry, LedgerTableModel.CATEGORY, cat)) {
+                    throw new IllegalArgumentException("A " + entry.status.label().toLowerCase() + " transaction can't"
+                            + " be made into a transfer, because that would change another account's balance.");
+                }
                 entry.category = cat.isEmpty() ? null
                         : TransactionRepository.isTransfer(cat) ? cat : CategoryRepository.normalize(cat);
             }

@@ -53,6 +53,7 @@ class DesktopInteropTest {
         sync.saveSettings(SyncRepository.Settings("folder", box.toString(), "", "", "", "",
             "https://nas:5006", "/MyMoney-Sync", 5))
         val device = sync.addDevice("Pixel")
+        SyncEngine.markMailbox(engine.plan())             // as Pair a Phone does
         val code = SyncDialog.pairingText(sync.fileId(), "Household", device, sync.settings())
         val phone = Phone(MemoryStore()) { _, _, _ -> com.martinsmayhem.mymoney.mobile.FolderMailbox(box) }
         phone.pair(phone.readCode(code), "sync", "secret")
@@ -75,12 +76,12 @@ class DesktopInteropTest {
         assertEquals(listOf("Vacation"), view.accounts()[1].envelopes.map { it.name })
         val checkingUid = view.accounts()[0].uid
         val vacationUid = view.accounts()[1].envelopes[0].uid
-        assertEquals(view.accounts()[0].balanceCents, view.ledger(checkingUid).first().balanceCents)
+        assertEquals(view.accounts()[0].balanceCents, view.ledger(checkingUid, LocalDate(today.year, today.monthValue, today.dayOfMonth)).first().balanceCents)
 
         // The phone adds (a new category), edits, deletes, and transfers to an envelope.
         val date = LocalDate(today.year, today.monthValue, today.dayOfMonth)
         val coffee = phone.add(TxnDraft(checkingUid, date, payee = "Starbucks", amountCents = -575,
-            category = CategoryRef.New("Food:Coffee")))
+            category = CategoryRef.New("Food:Coffee"), description = "Latte with Sam"))
         phone.edit(rent.uid, TxnDraft(checkingUid, date, payee = "Landlord", amountCents = -150_000, status = "C"))
         phone.delete(shell.uid)
         val save = phone.add(TxnDraft(checkingUid, date, payee = "Saving up", amountCents = -20_000,
@@ -94,6 +95,7 @@ class DesktopInteropTest {
         assertNull(ledger("Checking").firstOrNull { it.uid == shell.uid })
         val added = ledger("Checking").first { it.uid == coffee }
         assertEquals("Food:Coffee", added.category)
+        assertEquals("Latte with Sam", added.description)
         assertEquals("[Vacation]", ledger("Checking").first { it.uid == save }.category)
         assertEquals(20_000, accounts.balanceThrough(account("Vacation").id(), today))
 

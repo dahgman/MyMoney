@@ -427,6 +427,24 @@ public class LedgerTableModel extends AbstractTableModel {
     }
 
     /**
+     * Whether a field of a saved transaction may change, with a cleared or
+     * reconciled one's money left alone: a cleared transaction's payee,
+     * category and status may change; a reconciled one's tag and bank date
+     * too. Neither's category may make it into, or out of, a transfer (that
+     * would change another account's balance). Anything else: every field.
+     * newCategory: the category it would get, if known (null: just whether
+     * Category can be edited at all).
+     */
+    static boolean canChange(LedgerEntry e, int column, Object newCategory) {
+        boolean category = column == CATEGORY && reconciledCategoryChangeOk(e.category, newCategory);
+        return switch (e.status) {
+            case RECONCILED -> column == STATUS || column == TAG || column == PAYEE || column == BANK_DATE || category;
+            case CLEARED -> column == STATUS || column == PAYEE || category;
+            default -> true;
+        };
+    }
+
+    /**
      * A reconciled transaction's category may change unless the old or new
      * category is a transfer or it is a split transaction.
      */
@@ -635,9 +653,8 @@ public class LedgerTableModel extends AbstractTableModel {
                     Object value = v.getValue() instanceof LocalDate d ? d.format(DISPLAY_DATE) : v.getValue();
                     if (column == STATUS && e.status == TxnStatus.RECONCILING) {
                         reconciling++;
-                    } else if (e.status == TxnStatus.RECONCILED && column != STATUS && column != TAG
-                            && column != PAYEE && !(column == CATEGORY && reconciledCategoryChangeOk(e.category, value))) {
-                        leftReconciled = true;
+                    } else if (!canChange(e, column, value)) {
+                        leftReconciled = true;                  // cleared or reconciled: its money stays put
                     } else if (column == CATEGORY && TransactionRepository.SPLIT_LABEL.equals(e.category)) {
                         splits++;
                     } else if (e.scheduledInterest && column != STATUS) {
@@ -683,10 +700,10 @@ public class LedgerTableModel extends AbstractTableModel {
                         : "their status; use Reconcile Account to change them.");
         }
         if (reconciled > 0) {
-            note.append("\n").append(reconciled).append(" reconciled ")
+            note.append("\n").append(reconciled).append(" cleared or reconciled ")
                 .append(reconciled == 1 ? "transaction kept" : "transactions kept")
-                .append(" what can't change on a reconciled transaction (only its status, tag, payee and,"
-                        + " unless it's a transfer, category can).");
+                .append(" what can't change on it (a cleared one's payee, status and, unless it's a transfer,"
+                        + " category can change; a reconciled one's tag too).");
         }
         if (splits > 0) {
             note.append("\n").append(splits).append(" split ")
@@ -746,7 +763,7 @@ public class LedgerTableModel extends AbstractTableModel {
                 return true;                            // a principal-only or interest-only payment
             }
             LedgerEntry e = entryAt(row);
-            return !e.scheduledInterest && e.amountCents >= 0 && !isLocked(row);
+            return !e.scheduledInterest && e.amountCents >= 0 && canChange(e, column, null);
         }
         if (column == STATUS && isSavedRow(row) && entryAt(row).status == TxnStatus.RECONCILING) {
             return false;                       // only Reconcile Account changes these
@@ -754,13 +771,8 @@ public class LedgerTableModel extends AbstractTableModel {
         if (isSavedRow(row) && entryAt(row).scheduledInterest) {
             return column == STATUS;                // calculated from the loan's terms and payments
         }
-        if (isLocked(row)) {
-            // Reconciled: status, tag, payee and category only (a transfer's category stays put): none
-            // of them changes a balance.
-            return column == STATUS || column == TAG || column == PAYEE || column == BANK_DATE
-                    || (column == CATEGORY && reconciledCategoryChangeOk(entryAt(row).category, null));
-        }
-        return true;
+        // Cleared or reconciled: the money stays put (see canChange).
+        return !isSavedRow(row) || canChange(entryAt(row), column, null);
     }
 
     @Override
@@ -815,8 +827,9 @@ public class LedgerTableModel extends AbstractTableModel {
             }
         }
 
-        if (column == CATEGORY && isLocked(row) && !reconciledCategoryChangeOk(e.category, value)) {
-            onError.accept("A reconciled transaction can't be made into a transfer,"
+        if (column == CATEGORY && !isDraft && !canChange(e, CATEGORY, value)) {
+            onError.accept("A " + (e.status == TxnStatus.CLEARED ? "cleared" : "reconciled")
+                    + " transaction can't be made into a transfer, or stop being one,"
                     + " because that would change another account's balance.");
             return;
         }

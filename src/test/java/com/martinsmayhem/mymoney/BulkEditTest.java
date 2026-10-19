@@ -75,7 +75,7 @@ class BulkEditTest {
     @Test
     void severalFieldsAtOnce() throws Exception {
         LedgerEntry a = txn(checking, "WALMART #1234", -4_599, "Food", TxnStatus.NONE, 1);
-        LedgerEntry b = txn(checking, "WAL-MART 5678", -1_250, null, TxnStatus.CLEARED, 2);
+        LedgerEntry b = txn(checking, "WAL-MART 5678", -1_250, null, TxnStatus.PENDING, 2);
         show(checking);
         Map<Integer, Object> values = new LinkedHashMap<>();
         values.put(LedgerTableModel.PAYEE, "Walmart");
@@ -101,7 +101,7 @@ class BulkEditTest {
 
     @Test
     void reconciledOnesTakeOnlyWhatCantChangeABalance() throws Exception {
-        LedgerEntry open = txn(checking, "Shell", -3_000, null, TxnStatus.CLEARED, 1);
+        LedgerEntry open = txn(checking, "Shell", -3_000, null, TxnStatus.NONE, 1);
         LedgerEntry done = txn(checking, "SHELL OIL 123", -4_000, "Auto", TxnStatus.RECONCILED, 2);
         show(checking);
         Map<Integer, Object> values = new LinkedHashMap<>();
@@ -109,13 +109,45 @@ class BulkEditTest {
         values.put(LedgerTableModel.CATEGORY, "Auto:Fuel");
         values.put(LedgerTableModel.DATE, LocalDate.of(2026, 10, 20));
         String note = model.bulkSet(new int[] {rowOf(open.id), rowOf(done.id)}, values);
-        assertTrue(note != null && note.contains("1 reconciled transaction kept"), note);
+        assertTrue(note != null && note.contains("1 cleared or reconciled transaction kept"), note);
         LedgerEntry r = get(checking, done.id);
         assertEquals("Shell", r.payee, "a reconciled payee can change");
         assertEquals("Auto:Fuel", r.category, "and its (non-transfer) category");
         assertEquals(LocalDate.of(2026, 10, 2), r.date, "but not its date");
         assertEquals(TxnStatus.RECONCILED, r.status);
         assertEquals(LocalDate.of(2026, 10, 20), get(checking, open.id).date, "the unreconciled one moves");
+    }
+
+    /** A cleared transaction's money stays put: only its payee, category and status change. */
+    @Test
+    void aClearedOneKeepsItsMoney() throws Exception {
+        LedgerEntry cleared = txn(checking, "Shell", -4_000, "Auto", TxnStatus.CLEARED, 5);
+        LedgerEntry transfer = txn(checking, "Move", -1_000, "[Savings]", TxnStatus.CLEARED, 6);
+        show(checking);
+        int row = rowOf(cleared.id);
+        for (int c : new int[] {LedgerTableModel.PAYEE, LedgerTableModel.CATEGORY, LedgerTableModel.STATUS}) {
+            assertTrue(model.isCellEditable(row, c), LedgerTableModel.columnName(c));
+        }
+        for (int c : new int[] {LedgerTableModel.DATE, LedgerTableModel.NUM, LedgerTableModel.PAYMENT,
+            LedgerTableModel.DEPOSIT, LedgerTableModel.TAG, LedgerTableModel.MEMO, LedgerTableModel.DESCRIPTION,
+            LedgerTableModel.TYPE, LedgerTableModel.BANK_DATE}) {
+            assertTrue(!model.isCellEditable(row, c), LedgerTableModel.columnName(c) + " stays put");
+        }
+        assertTrue(!model.isCellEditable(rowOf(transfer.id), LedgerTableModel.CATEGORY), "a transfer stays one");
+
+        model.setValueAt("Shell Oil", row, LedgerTableModel.PAYEE);
+        model.setValueAt("Auto:Fuel", rowOf(cleared.id), LedgerTableModel.CATEGORY);
+        assertEquals("Shell Oil", get(checking, cleared.id).payee);
+        assertEquals("Auto:Fuel", get(checking, cleared.id).category);
+
+        String note = model.bulkSet(new int[] {rowOf(cleared.id)}, Map.of(LedgerTableModel.MEMO, "typed",
+                LedgerTableModel.PAYEE, "Shell"));
+        assertTrue(note != null && note.contains("1 cleared or reconciled transaction kept"), note);
+        assertEquals("Shell", get(checking, cleared.id).payee);
+        assertNull(get(checking, cleared.id).memo, "its memo stays");
+
+        model.setValueAt(TxnStatus.NONE, rowOf(cleared.id), LedgerTableModel.STATUS);   // un-cleared: editable again
+        assertTrue(model.isCellEditable(rowOf(cleared.id), LedgerTableModel.PAYMENT));
     }
 
     @Test

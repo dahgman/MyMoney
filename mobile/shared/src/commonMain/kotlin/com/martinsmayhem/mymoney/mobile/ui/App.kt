@@ -6,6 +6,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -24,6 +25,12 @@ interface Platform {
     fun syncSoon()
 
     fun today(): LocalDate
+
+    /** The app's version: the same as the computer's MyMoney it was built with, like "1.1.1". */
+    val appVersion: String
+
+    /** Draws the status and navigation bars to suit a dark (or light) app: light (or dark) icons. */
+    fun systemBars(dark: Boolean)
 }
 
 /** The screens, as a stack: back pops one. */
@@ -31,10 +38,13 @@ sealed interface Screen {
     data object Pair : Screen
     data object Accounts : Screen
     data class Ledger(val accountUid: String) : Screen
+    /** Everything about one transaction (any of them, editable or not). */
+    data class Detail(val txnUid: String) : Screen
     /** A new transaction (txnUid null), or changing one; enter: entering a scheduled one. */
     data class Edit(val accountUid: String?, val txnUid: String?, val enter: Boolean = false) : Screen
     data object Upcoming : Screen
     data object Sync : Screen
+    data object Settings : Screen
 }
 
 /** The screen stack. The Android back button calls back(); false means leave the app. */
@@ -63,7 +73,13 @@ val Positive = Color(0xFF2EA65A)
 
 @Composable
 fun App(phone: Phone, platform: Platform, nav: Navigator) {
-    val dark = isSystemInDarkTheme()
+    val theme = phone.state.collectAsState().value.prefs.theme
+    val dark = when (theme) {
+        "light" -> false
+        "dark" -> true
+        else -> isSystemInDarkTheme()
+    }
+    LaunchedEffect(dark) { platform.systemBars(dark) }
     MaterialTheme(
         colorScheme = if (dark) darkColorScheme(primary = Color(0xFF6EA8FE), background = Color(0xFF1E1F22),
             surface = Color(0xFF1E1F22)) else lightColorScheme(primary = Color(0xFF2E5BB8)),
@@ -77,10 +93,12 @@ fun App(phone: Phone, platform: Platform, nav: Navigator) {
             }
             when (val s = nav.current) {
                 Screen.Pair, Screen.Accounts -> AccountsScreen(phone, view, platform, nav)
-                is Screen.Ledger -> LedgerScreen(view, s.accountUid, nav)
+                is Screen.Ledger -> LedgerScreen(view, s.accountUid, nav, platform.today())
+                is Screen.Detail -> DetailScreen(view, s.txnUid, nav)
                 is Screen.Edit -> EditScreen(phone, view, platform, nav, s)
                 Screen.Upcoming -> UpcomingScreen(view, nav)
-                Screen.Sync -> SyncScreen(phone, view, nav)
+                Screen.Sync -> SyncScreen(phone, view, nav, platform.appVersion)
+                Screen.Settings -> SettingsScreen(phone, view, nav, platform.appVersion)
             }
         }
     }

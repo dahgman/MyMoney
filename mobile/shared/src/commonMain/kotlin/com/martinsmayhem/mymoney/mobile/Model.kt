@@ -110,6 +110,18 @@ data class SnapTxn(
 @Serializable
 data class PendingOp(val opId: String, val op: JsonObject, val sentSeq: Long? = null)
 
+/**
+ * The phone's own settings (not synced): theme is "system", "light" or
+ * "dark"; the ledger can leave out reconciled transactions, and scheduled
+ * ones dated after today.
+ */
+@Serializable
+data class Prefs(
+    val theme: String = "system",
+    val hideReconciled: Boolean = false,
+    val hideFutureScheduled: Boolean = false,
+)
+
 /** Something the phone should tell you: a change the computer refused, or kept its own value for. */
 @Serializable
 data class Notice(val opId: String, val message: String, val refused: Boolean)
@@ -129,6 +141,7 @@ data class PhoneState(
     val notices: List<Notice> = emptyList(),
     val lastSync: String? = null,        // ISO instant of the last sync that worked
     val lastError: String? = null,       // why the last sync failed, if it did
+    val prefs: Prefs = Prefs(),
 )
 
 /** Where PhoneState is kept: on Android an encrypted file, in tests memory. */

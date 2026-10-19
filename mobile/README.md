@@ -12,6 +12,14 @@ through an encrypted mailbox on the NAS.
 
 ## Building
 
+The app's version is always the desktop's: Gradle reads `<version>` from `../pom.xml`
+(1.1.1 becomes versionName 1.1.1, versionCode 10101). To build it with that version into
+`dist/` next to the desktop installer:
+
+```bash
+JAVA_HOME=/usr/lib/apache-netbeans/jdk packaging/package-android.sh
+```
+
 You need the Android SDK (Android Studio installs it in `~/Android/Sdk`; `local.properties`
 points at it) and a JDK. Use **Java 26**, the same JDK as the desktop build, so the
 end-to-end test can load the desktop's classes:

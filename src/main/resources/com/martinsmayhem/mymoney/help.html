@@ -108,9 +108,11 @@ type into it, and it's saved as soon as it has an amount. Ctrl+N jumps to it.</p
       below shows the other matches; the arrow keys and Enter (or Space) pick one of those.
       A payee you've used before brings its last category along.</li>
   <li><b>Status</b> (the C column): Cleared once your bank shows it, Reconciled once it's
-      on a reconciled statement; also Pending, Paid and Scheduled. Reconciled
-      transactions are locked against changes that would alter a balance; their payee, tag,
-      status and (unless a transfer) category can still be changed.</li>
+      on a reconciled statement; also Pending, Paid and Scheduled. <b>Cleared</b> transactions
+      are locked: only their payee, category and status can be changed (to fix one, change
+      its status to None first). <b>Reconciled</b> ones are locked the same way, but their tag
+      can change too. Neither's category can make it into, or out of, a transfer. These hold
+      here, in the transaction window, in Edit Transactions and from the phone.</li>
   <li><b>Enter</b> saves and moves down to the next transaction (or, if you choose so in
       Preferences, to the next field, like Tab).</li>
   <li><b>Several at once:</b> select rows, then right-click &gt; <b>Edit Transactions</b>: one
@@ -275,7 +277,7 @@ home, at the same time. Set it up in <b>File &gt; Sync Settings</b>:</p>
       <i>matches</i> them.</li>
   <li>If a transaction was changed in both places, this computer's values are kept, and the
       phone says so. The phone can't change reconciled transactions, splits or a loan's
-      calculated interest.</li>
+      calculated interest, and on a cleared one only the payee, category and status.</li>
   <li>Removing a phone in Sync Settings stops it syncing at once.</li>
 </ul>
 

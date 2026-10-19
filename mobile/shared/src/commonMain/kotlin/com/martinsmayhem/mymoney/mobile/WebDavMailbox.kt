@@ -63,14 +63,14 @@ class WebDavMailbox(
     override suspend fun list(folder: String, withTemp: Boolean): List<String> {
         val res = send("PROPFIND", url(folder, true), PROPFIND.encodeToByteArray(),
             mapOf("Depth" to "1", "Content-Type" to "application/xml; charset=utf-8"))
-        if (res.status.value == 404) return emptyList()
+        if (res.status.value == 404 || res.status.value == 405) return emptyList()   // 405: no such shared folder (Synology)
         check(res, "listing $folder")
         return fileNames(res.bodyAsBytes().decodeToString(), withTemp)
     }
 
     override suspend fun read(path: String): ByteArray? {
         val res = send("GET", url(path, false))
-        if (res.status.value == 404) return null
+        if (res.status.value == 404 || res.status.value == 405) return null
         check(res, "reading $path")
         return res.bodyAsBytes()
     }

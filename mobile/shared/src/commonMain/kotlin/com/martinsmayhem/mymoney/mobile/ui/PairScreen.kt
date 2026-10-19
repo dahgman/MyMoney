@@ -24,7 +24,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
-import com.martinsmayhem.mymoney.mobile.MailboxAuthException
+import com.martinsmayhem.mymoney.mobile.MailboxException
 import com.martinsmayhem.mymoney.mobile.PairingCode
 import com.martinsmayhem.mymoney.mobile.Phone
 import kotlinx.coroutines.launch
@@ -83,7 +83,7 @@ fun PairScreen(phone: Phone, platform: Platform, done: () -> Unit) {
                     try {
                         phone.pair(c, user.trim(), password)     // the accounts screen then syncs
                         done()
-                    } catch (e: MailboxAuthException) {
+                    } catch (e: MailboxException) {
                         problem = e.message
                     } catch (e: Exception) {
                         problem = "Couldn't reach the mailbox: ${e.message ?: e::class.simpleName}"

@@ -46,6 +46,9 @@ data class TxnView(
     val split: Boolean,
     val tag: String?,
     val memo: String,
+    val description: String,
+    val bankDate: LocalDate?,
+    val type: String?,
     val amountCents: Long,
     val netCents: Long,
     val status: String,
@@ -53,7 +56,20 @@ data class TxnView(
     val pending: Boolean,            // changed on the phone; the computer hasn't confirmed it yet
     val receipts: Int,
     val mirror: Boolean = false,     // the other side of a transfer added on the phone (shown, not editable)
-)
+) {
+    /**
+     * Whether a field may change, as on the computer: a cleared transaction's
+     * money stays put, so only its payee, category and status may change, and
+     * its category not into or out of a transfer.
+     */
+    fun canChange(field: String): Boolean = editable && (status != "C" || when (field) {
+        "payee", "status" -> true
+        "category" -> category !is CategoryRef.Transfer
+        else -> false
+    })
+
+    val cleared get() = status == "C"
+}
 
 data class LedgerRow(val txn: TxnView, val balanceCents: Long)
 
@@ -103,7 +119,8 @@ class LedgerView(val state: PhoneState) {
     private fun fromSnapshot(t: SnapTxn) = TxnView(
         uid = t.uid, accountUid = t.accountUid, date = LocalDate.parse(t.date), num = t.num, payee = t.payee,
         category = t.transferAccountUid?.let { CategoryRef.Transfer(it) } ?: t.categoryUid?.let { CategoryRef.Existing(it) },
-        split = t.split, tag = t.tag, memo = t.memo, amountCents = t.amountCents, netCents = t.netCents,
+        split = t.split, tag = t.tag, memo = t.memo, description = t.description,
+        bankDate = t.bankDate?.let { LocalDate.parse(it) }, type = t.type, amountCents = t.amountCents, netCents = t.netCents,
         status = t.status, editable = t.editable, pending = false, receipts = t.receipts,
     )
 
@@ -115,7 +132,8 @@ class LedgerView(val state: PhoneState) {
                 map[uid] = TxnView(
                     uid = uid, accountUid = op.str("accountUid") ?: return, date = LocalDate.parse(op.str("date") ?: return),
                     num = op.str("num") ?: "", payee = op.str("payee") ?: "", category = CategoryRef.fromJson(op["category"]),
-                    split = false, tag = op.str("tag"), memo = op.str("memo") ?: "", amountCents = amount,
+                    split = false, tag = op.str("tag"), memo = op.str("memo") ?: "",
+                    description = op.str("description") ?: "", bankDate = null, type = null, amountCents = amount,
                     netCents = amount, status = op.str("status") ?: "U", editable = true, pending = true, receipts = 0,
                 )
             }
@@ -132,6 +150,7 @@ class LedgerView(val state: PhoneState) {
                         "category" -> n.copy(category = CategoryRef.fromJson(v))
                         "tag" -> n.copy(tag = v.content()?.ifBlank { null })
                         "memo" -> n.copy(memo = v.content() ?: "")
+                        "description" -> n.copy(description = v.content() ?: "")
                         "status" -> n.copy(status = v.content() ?: "U")
                         "amountCents" -> {
                             val a = v?.jsonPrimitive?.longOrNull ?: 0
@@ -165,16 +184,44 @@ class LedgerView(val state: PhoneState) {
 
     fun account(uid: String): SnapAccount? = accountsByUid[uid]
 
-    /** An account's transactions, newest first, each with the balance after it. */
-    fun ledger(accountUid: String): List<LedgerRow> {
-        val start = accountsByUid[accountUid]?.ledgerStartCents ?: 0
-        var balance = start
-        val rows = transactions.filter { it.accountUid == accountUid }
-            .withIndex().sortedWith(compareBy({ it.value.date }, { it.index })).map { (_, t) ->
+    /**
+     * An account's transactions in the computer's ledger order (by status:
+     * Reconciled, Cleared, transfers to an envelope, Pending, Paid, Scheduled,
+     * then none; each by date; transactions dated after today last, by date),
+     * with the balance after each running in that order, so the last cleared
+     * one shows the cleared balance. Returned last first, as the phone shows
+     * it (newest at the top). The phone's settings can leave out reconciled
+     * transactions, and scheduled ones dated after today (the balances still
+     * count them).
+     */
+    fun ledger(accountUid: String, today: LocalDate, prefs: Prefs = state.prefs): List<LedgerRow> {
+        var balance = accountsByUid[accountUid]?.ledgerStartCents ?: 0
+        val rows = transactions.filter { it.accountUid == accountUid }.withIndex()
+            .sortedWith(compareBy<IndexedValue<TxnView>>({ it.value.date > today })
+                .thenBy { if (it.value.date > today) 0 else statusRank(it.value) }
+                .thenBy { it.value.date }.thenBy { it.index })
+            .map { (_, t) ->
                 balance += t.netCents
                 LedgerRow(t, balance)
             }
-        return rows.reversed()
+        return rows.reversed().filter { r ->
+            !(prefs.hideReconciled && r.txn.status == "R") &&
+                !(prefs.hideFutureScheduled && r.txn.status == "S" && r.txn.date > today)
+        }
+    }
+
+    /** As the computer ranks statuses (LedgerTableModel.statusRank); none goes last. */
+    private fun statusRank(t: TxnView): Int {
+        val target = (t.category as? CategoryRef.Transfer)?.accountUid
+        if (target != null && accountsByUid[target]?.isEnvelope == true) return 2
+        return when (t.status) {
+            "R" -> 0
+            "C", "I" -> 1
+            "P" -> 3
+            "D" -> 4
+            "S" -> 5
+            else -> 6
+        }
     }
 
     /** Scheduled transactions (if the computer sends them), soonest first. */

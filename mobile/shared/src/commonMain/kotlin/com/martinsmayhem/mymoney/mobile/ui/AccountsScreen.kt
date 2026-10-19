@@ -2,6 +2,7 @@ package com.martinsmayhem.mymoney.mobile.ui
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -11,6 +12,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -40,6 +43,7 @@ import kotlinx.datetime.toLocalDateTime
 fun AccountsScreen(phone: Phone, view: LedgerView, platform: Platform, nav: Navigator) {
     val scope = rememberCoroutineScope()
     var syncing by remember { mutableStateOf(false) }
+    var menu by remember { mutableStateOf(false) }
     val state = view.state
     val accounts = view.accounts()
     // Just paired (or never synced): sync now. Started here, not on the pairing screen, which goes
@@ -54,7 +58,6 @@ fun AccountsScreen(phone: Phone, view: LedgerView, platform: Platform, nav: Navi
     Scaffold(
         topBar = {
             Bar(state.pairing?.fileName?.ifBlank { null } ?: "MyMoney") {
-                if (view.snapshot.settings.showScheduled) TextButton(onClick = { nav.go(Screen.Upcoming) }) { Text("Upcoming") }
                 TextButton(enabled = !syncing, onClick = {
                     syncing = true
                     scope.launch {
@@ -62,6 +65,16 @@ fun AccountsScreen(phone: Phone, view: LedgerView, platform: Platform, nav: Navi
                         syncing = false
                     }
                 }) { Text(if (syncing) "Syncing…" else "Sync") }
+                Box {
+                    TextButton(onClick = { menu = true }) { Text("⋮", style = MaterialTheme.typography.titleLarge) }
+                    DropdownMenu(menu, { menu = false }) {
+                        if (view.snapshot.settings.showScheduled) {
+                            DropdownMenuItem(text = { Text("Upcoming") }, onClick = { menu = false; nav.go(Screen.Upcoming) })
+                        }
+                        DropdownMenuItem(text = { Text("Sync status") }, onClick = { menu = false; nav.go(Screen.Sync) })
+                        DropdownMenuItem(text = { Text("Settings") }, onClick = { menu = false; nav.go(Screen.Settings) })
+                    }
+                }
             }
         },
         floatingActionButton = {

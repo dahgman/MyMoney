@@ -380,6 +380,14 @@ final class SyncDialog extends JDialog {
             sync.saveSettings(s);                       // the QR code below uses them: keep them
             SyncRepository.Device d = sync.addDevice(name.trim());
             devicesModel.load();
+            SyncEngine.Plan plan = new SyncEngine(db, null).plan();
+            new Thread(() -> {                          // the phone looks for this when it pairs
+                try {
+                    SyncEngine.markMailbox(plan);
+                } catch (java.io.IOException ignored) {
+                    // the first sync writes it too
+                }
+            }, "mark mailbox").start();
             showPairingCode(d, s);
         } catch (SQLException | WriterException e) {
             JOptionPane.showMessageDialog(this, "Could not pair the phone:\n" + e.getMessage(), getTitle(),

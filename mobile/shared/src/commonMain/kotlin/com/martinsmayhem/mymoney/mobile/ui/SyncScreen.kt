@@ -29,7 +29,7 @@ import kotlinx.coroutines.launch
 
 /** How syncing is going: when it last worked, what's waiting, what the computer didn't take. And unpairing. */
 @Composable
-fun SyncScreen(phone: Phone, view: LedgerView, nav: Navigator) {
+fun SyncScreen(phone: Phone, view: LedgerView, nav: Navigator, appVersion: String) {
     val scope = rememberCoroutineScope()
     val s = view.state
     var syncing by remember { mutableStateOf(false) }
@@ -68,6 +68,7 @@ fun SyncScreen(phone: Phone, view: LedgerView, nav: Navigator) {
             OutlinedButton(onClick = { confirmUnpair = true }, modifier = Modifier.fillMaxWidth().padding(top = 24.dp)) {
                 Text("Unpair this phone", color = Negative)
             }
+            Hint("MyMoney $appVersion", Modifier.fillMaxWidth().padding(top = 16.dp))
         }
     }
     if (confirmUnpair) {

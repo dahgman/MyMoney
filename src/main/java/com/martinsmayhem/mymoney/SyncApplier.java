@@ -35,6 +35,8 @@ final class SyncApplier {
 
     /** The statuses a phone may give a transaction (not Reconciled or Reconciling). */
     private static final Set<String> PHONE_STATUSES = Set.of("U", "C", "P", "D", "S");
+    /** What may change on a cleared transaction (see LedgerTableModel.canChange). */
+    private static final Set<String> CLEARED_FIELDS = Set.of("payee", "category", "status");
     /** The fields an edit may change, as the phone names them. */
     private static final Set<String> FIELDS = Set.of("date", "num", "payee", "category", "tag", "memo",
             "description", "amountCents", "status", "type");
@@ -195,6 +197,12 @@ final class SyncApplier {
             String wanted = given(field, change.get("new"));
             if (now.equals(wanted)) {
                 continue;                                   // the computer has it already
+            }
+            if (e.status == TxnStatus.CLEARED && !CLEARED_FIELDS.contains(field)
+                    || "category".equals(field) && !LedgerTableModel.canChange(e, LedgerTableModel.CATEGORY,
+                    categoryText(change.get("new")))) {
+                throw new Refused(describe(e) + " is cleared, so only its payee, category and status can be changed"
+                        + " (and not to or from a transfer).");
             }
             if (!now.equals(old)) {
                 conflicts.add(field);                       // changed here too: the computer's stays

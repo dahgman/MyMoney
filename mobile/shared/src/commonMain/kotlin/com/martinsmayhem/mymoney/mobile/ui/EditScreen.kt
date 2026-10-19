@@ -64,6 +64,9 @@ fun EditScreen(phone: Phone, view: LedgerView, platform: Platform, nav: Navigato
     var category by remember { mutableStateOf(existing?.category) }
     var tag by remember { mutableStateOf(existing?.tag ?: "") }
     var memo by remember { mutableStateOf(existing?.memo ?: "") }
+    var description by remember { mutableStateOf(existing?.description ?: "") }
+    // A cleared transaction's money stays put: only its payee, category and status (TxnView.canChange).
+    fun can(field: String) = existing == null || existing.canChange(field)
     var num by remember { mutableStateOf(existing?.num ?: "") }
     var status by remember { mutableStateOf(if (screen.enter) "U" else existing?.status ?: "U") }
     var problem by remember { mutableStateOf<String?>(null) }
@@ -81,7 +84,7 @@ fun EditScreen(phone: Phone, view: LedgerView, platform: Platform, nav: Navigato
             problem = "Choose the account."
             return
         }
-        val d = TxnDraft(accountUid, date, num, payee, category, tag.ifBlank { null }, memo,
+        val d = TxnDraft(accountUid, date, num, payee, category, tag.ifBlank { null }, memo, description,
             if (deposit) cents else -cents, status)
         scope.launch {
             try {
@@ -110,27 +113,39 @@ fun EditScreen(phone: Phone, view: LedgerView, platform: Platform, nav: Navigato
                     accountUid = it
                 }
             }
+            if (existing?.cleared == true) {
+                Hint("Cleared: only its payee, category and status can be changed. To change the rest, set its" +
+                    " status to None and save first.", Modifier)
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(!deposit, { deposit = false }, label = { Text("Payment") })
-                FilterChip(deposit, { deposit = true }, label = { Text("Deposit") })
+                FilterChip(!deposit, { deposit = false }, label = { Text("Payment") }, enabled = can("amountCents"))
+                FilterChip(deposit, { deposit = true }, label = { Text("Deposit") }, enabled = can("amountCents"))
             }
             OutlinedTextField(amount, { amount = it }, label = { Text("Amount") }, singleLine = true, prefix = { Text("$") },
+                enabled = can("amountCents"),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth())
             Box {
                 OutlinedTextField(Format.date(date, view.dateFormat()), {}, label = { Text("Date") }, readOnly = true,
-                    modifier = Modifier.fillMaxWidth())
-                Box(Modifier.matchParentSize().clickable { pickDate = true })
+                    enabled = can("date"), modifier = Modifier.fillMaxWidth())
+                if (can("date")) Box(Modifier.matchParentSize().clickable { pickDate = true })
             }
             Suggest("Payee", payee, view.payees(), Modifier.fillMaxWidth()) { payee = it }
             Box {
                 OutlinedTextField(view.categoryLabel(category), {}, label = { Text("Category or transfer") }, readOnly = true,
-                    modifier = Modifier.fillMaxWidth())
-                Box(Modifier.matchParentSize().clickable { pickCategory = true })
+                    enabled = can("category"), modifier = Modifier.fillMaxWidth())
+                if (can("category")) Box(Modifier.matchParentSize().clickable { pickCategory = true })
             }
-            Suggest("Tag", tag, view.snapshot.tags.map { it.name }, Modifier.fillMaxWidth()) { tag = it }
-            OutlinedTextField(memo, { memo = it }, label = { Text("Memo") }, modifier = Modifier.fillMaxWidth())
+            if (can("tag")) {
+                Suggest("Tag", tag, view.snapshot.tags.map { it.name }, Modifier.fillMaxWidth()) { tag = it }
+            } else {
+                OutlinedTextField(tag, {}, label = { Text("Tag") }, enabled = false, modifier = Modifier.fillMaxWidth())
+            }
+            OutlinedTextField(memo, { memo = it }, label = { Text("Memo") }, enabled = can("memo"), modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(description, { description = it }, label = { Text("Description") }, enabled = can("description"),
+                modifier = Modifier.fillMaxWidth())
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(num, { num = it }, label = { Text("Num") }, singleLine = true, modifier = Modifier.weight(1f))
+                OutlinedTextField(num, { num = it }, label = { Text("Num") }, singleLine = true, enabled = can("num"),
+                    modifier = Modifier.weight(1f))
                 Box(Modifier.weight(1f)) {
                     Picker("Status", Format.status(status), Format.phoneStatuses.map { it to Format.status(it) }) { status = it }
                 }
@@ -157,7 +172,7 @@ fun EditScreen(phone: Phone, view: LedgerView, platform: Platform, nav: Navigato
         }
     }
     if (pickCategory) {
-        CategoryPicker(view, accountUid, { pickCategory = false }) {
+        CategoryPicker(view, accountUid, transfers = existing?.cleared != true, { pickCategory = false }) {
             category = it
             pickCategory = false
         }
@@ -174,6 +189,7 @@ fun EditScreen(phone: Phone, view: LedgerView, platform: Platform, nav: Navigato
                             phone.delete(existing.uid)
                             platform.syncSoon()
                             nav.back()
+                            if ((nav.current as? Screen.Detail)?.txnUid == existing.uid) nav.back()   // its details too
                         } catch (e: Exception) {
                             problem = e.message
                         }
@@ -231,10 +247,12 @@ fun Suggest(label: String, value: String, all: List<String>, modifier: Modifier,
 
 /** Choose a category, a transfer to another account, a new category (typed), or none. */
 @Composable
-private fun CategoryPicker(view: LedgerView, accountUid: String, dismiss: () -> Unit, chosen: (CategoryRef?) -> Unit) {
+private fun CategoryPicker(view: LedgerView, accountUid: String, transfers: Boolean, dismiss: () -> Unit,
+                           chosen: (CategoryRef?) -> Unit) {
     var search by remember { mutableStateOf("") }
     val q = search.trim()
-    val transfers = view.transferTargets(accountUid).filter { q.isEmpty() || it.name.contains(q, true) }
+    val transfers = if (!transfers) emptyList()                  // a cleared one can't become a transfer
+    else view.transferTargets(accountUid).filter { q.isEmpty() || it.name.contains(q, true) }
     val categories = view.snapshot.categories.filter { q.isEmpty() || it.path.contains(q, true) }
     val exact = view.snapshot.categories.any { it.path.equals(q, true) }
     AlertDialog(onDismissRequest = dismiss, confirmButton = { TextButton(onClick = dismiss) { Text("Cancel") } },

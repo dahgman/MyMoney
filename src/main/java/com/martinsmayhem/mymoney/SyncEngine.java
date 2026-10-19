@@ -206,8 +206,7 @@ final class SyncEngine {
         }
         sync.pruneOps();
         Map<String, byte[]> writes = new HashMap<>();
-        writes.put(plan.fileId() + "/mailbox.json", ("{ \"format\": " + SyncSnapshot.FORMAT + ", \"fileId\": \""
-                + plan.fileId() + "\" }\n").getBytes(StandardCharsets.UTF_8));
+        writes.put(plan.fileId() + "/mailbox.json", mailboxJson(plan.fileId()));
         LocalDate today = LocalDate.now();
         for (SyncRepository.Device d : sync.devices()) {      // read again: appliedThrough has moved on
             String path = snapshotPath(d);
@@ -237,6 +236,17 @@ final class SyncEngine {
             return new Summary(0, 0, 0, List.of("Sync isn't set up."));
         }
         return publish(apply(fetch(plan)));
+    }
+
+    /** What marks the file's folder in the mailbox as MyMoney's (the phone checks for it when pairing). */
+    static byte[] mailboxJson(String fileId) {
+        return ("{ \"format\": " + SyncSnapshot.FORMAT + ", \"fileId\": \"" + fileId + "\" }\n")
+                .getBytes(StandardCharsets.UTF_8);
+    }
+
+    /** Writes mailbox.json now (when a phone is paired, before any sync has). */
+    static void markMailbox(Plan plan) throws IOException {
+        plan.mailbox().write(plan.fileId() + "/mailbox.json", mailboxJson(plan.fileId()));
     }
 
     /** Deletes a removed phone's folder from the mailbox (its key is gone from the file already). */

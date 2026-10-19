@@ -368,6 +368,21 @@ class SyncTest {
     }
 
     @Test
+    void aClearedOneTakesOnlyAPayeeCategoryOrStatusFromThePhone() throws Exception {
+        LedgerEntry e = txn(checking, today, "Shell", -4_000, TxnStatus.CLEARED, null);
+        JsonObject amount = edit(e.uid, "amountCents", -4_000, -4_500);
+        JsonObject payee = edit(e.uid, "payee", "Shell", "Shell Oil");
+        phone.send(amount, payee);
+        SyncEngine.Summary sum = engine.runNow();
+        assertEquals(1, sum.rejected());
+        assertEquals(1, sum.applied());
+        LedgerEntry after = byId(checking, e.id);
+        assertEquals(-4_000, after.amountCents, "its amount stays");
+        assertEquals("Shell Oil", after.payee);
+        assertTrue(result(phone.snapshot(), amount).get("message").getAsString().contains("is cleared"));
+    }
+
+    @Test
     void aChangeSentTwiceIsAppliedOnce() throws Exception {
         JsonObject add = add(checking, "Coffee", -500);
         phone.send(add);

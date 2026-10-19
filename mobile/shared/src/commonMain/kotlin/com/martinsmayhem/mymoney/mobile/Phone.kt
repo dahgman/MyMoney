@@ -27,6 +27,7 @@ data class TxnDraft(
     val category: CategoryRef? = null,
     val tag: String? = null,
     val memo: String = "",
+    val description: String = "",
     val amountCents: Long,           // negative: a payment; positive: a deposit
     val status: String = "U",
 )
@@ -74,15 +75,26 @@ class Phone(
 
     /**
      * Pairs with a computer: checks the mailbox works with this user name and
-     * password (by reading this phone's folder), then keeps it all. Starts
-     * empty: what's there comes with the first snapshot.
+     * password, and is the computer's (its mailbox.json, which the computer
+     * writes every sync, is there), then keeps it all. Starts empty: what's
+     * there comes with the first snapshot.
+     * @throws MailboxException if the mailbox can't be used, or isn't the computer's
      */
     suspend fun pair(code: PairingCode, user: String, password: String) = lock.withLock {
-        mailboxFor(code, user, password).list("${code.fileId}/devices/${code.deviceId}")
-        save(PhoneState(pairing = code, user = user, password = password))
+        val box = mailboxFor(code, user, password)
+        if (box.read("${code.fileId}/mailbox.json") == null) {
+            throw MailboxException("MyMoney's mailbox isn't at ${code.mailbox.url}${code.mailbox.path}. On the computer, " +
+                "in File > Sync Settings, \"How phones reach the mailbox\" must be the same folder as the computer's " +
+                "mailbox (with WebDAV: press Same as above), and the computer must have synced once (File > Sync Now). " +
+                "Then pair again with the new code.")
+        }
+        save(PhoneState(pairing = code, user = user, password = password, prefs = _state.value.prefs))
     }
 
-    suspend fun unpair() = lock.withLock { save(PhoneState()) }
+    /** Forgets the pairing and everything synced (the phone's own settings stay). */
+    suspend fun unpair() = lock.withLock { save(PhoneState(prefs = _state.value.prefs)) }
+
+    suspend fun setPrefs(prefs: Prefs) = lock.withLock { save(_state.value.copy(prefs = prefs)) }
 
     // ----- Changes ---------------------------------------------------------------------
 
@@ -108,6 +120,7 @@ class Phone(
         put("category", d.category?.toJson() ?: JsonNull)
         put("tag", d.tag?.trim()?.ifEmpty { null }?.let { JsonPrimitive(it) } ?: JsonNull)
         put("memo", JsonPrimitive(d.memo.trim()))
+        put("description", JsonPrimitive(d.description.trim()))
         put("amountCents", JsonPrimitive(d.amountCents))
         put("status", JsonPrimitive(d.status))
     }
@@ -140,9 +153,16 @@ class Phone(
         field("tag", cur.tag?.let { JsonPrimitive(it) } ?: JsonNull,
             d.tag?.trim()?.ifEmpty { null }?.let { JsonPrimitive(it) } ?: JsonNull)
         field("memo", JsonPrimitive(cur.memo), JsonPrimitive(d.memo.trim()))
+        field("description", JsonPrimitive(cur.description), JsonPrimitive(d.description.trim()))
         field("amountCents", JsonPrimitive(cur.amountCents), JsonPrimitive(d.amountCents))
         field("status", JsonPrimitive(cur.status), JsonPrimitive(d.status))
         if (changes.isEmpty()) return@withLock
+        val locked = changes.keys.filter { !cur.canChange(it) ||
+            (it == "category" && d.category is CategoryRef.Transfer && cur.cleared) }
+        require(locked.isEmpty()) {
+            "This transaction is cleared, so only its payee, category and status can be changed" +
+                " (and not to a transfer). To change the rest, set its status to None first."
+        }
 
         // An unsent edit of the same transaction: fold these into it (keeping the value it started from).
         val unsentEdit = s.pending.lastOrNull { it.sentSeq == null && it.op.str("op") == "edit" && it.op.str("uid") == uid }

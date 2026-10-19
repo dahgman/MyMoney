@@ -22,6 +22,7 @@ import kotlin.test.assertTrue
 class PhoneTest {
 
     private val key = ByteArray(32) { it.toByte() }
+    private val today = LocalDate(2026, 10, 19)
     private val code = PairingCode(fileId = "file1", fileName = "Household", deviceId = "dev1",
         key = Base64.encode(key), mailbox = PairingMailbox(url = "https://nas:5006", path = "/MyMoney-Sync"))
     private val root = Files.createTempDirectory("mailbox")
@@ -36,7 +37,7 @@ class PhoneTest {
     private val vacation = SnapAccount("acc-v", "Vacation", "ENVELOPE", parentUid = "acc-s", synced = true,
         balanceCents = 0, clearedCents = 0, ledgerStartCents = 0)
     private val card = SnapAccount("acc-k", "Visa", "CREDIT_CARD")
-    private val rent = SnapTxn("t-rent", "acc-c", "2026-10-01", payee = "Rent", amountCents = -1_000, status = "C")
+    private val rent = SnapTxn("t-rent", "acc-c", "2026-10-01", payee = "Rent", amountCents = -1_000)
     private val old = SnapTxn("t-old", "acc-c", "2026-09-01", payee = "Old", amountCents = -500, status = "R", editable = false)
 
     private fun snapshot(seq: Long, vararg txns: SnapTxn, results: List<OpResult> = emptyList(), appliedThrough: Long = 0) =
@@ -60,7 +61,14 @@ class PhoneTest {
             .decodeToString()).jsonObject
     }
 
+    /** What the computer writes every sync: its mark on the mailbox. */
+    private fun computerHasSynced() {
+        Files.createDirectories(root.resolve("file1"))
+        Files.writeString(root.resolve("file1/mailbox.json"), "{ \"format\": 1, \"fileId\": \"file1\" }")
+    }
+
     private suspend fun paired(vararg txns: SnapTxn) {
+        computerHasSynced()
         phone.pair(code, "sync", "secret")
         computerWrites(snapshot(1, *txns))
         phone.sync()
@@ -124,7 +132,7 @@ class PhoneTest {
         val view0 = LedgerView(phone.state.value)
         assertEquals(listOf("Checking", "Savings"), view0.accounts().map { it.name })
         assertEquals(listOf("Vacation"), view0.accounts()[1].envelopes.map { it.name }, "envelopes under their parent")
-        val rows = view0.ledger("acc-c")
+        val rows = view0.ledger("acc-c", today)
         assertEquals(listOf("Rent", "Old"), rows.map { it.txn.payee }, "newest first")
         assertEquals(10_000, rows.first().balanceCents, "the running balance ends at the balance")
 
@@ -134,8 +142,41 @@ class PhoneTest {
         val c = view.accounts().first { it.name == "Checking" }
         assertEquals(10_000 - 575 - 200, c.balanceCents)
         assertEquals(2, c.pending)
-        assertTrue(view.ledger("acc-c").first().txn.pending)
-        assertEquals(c.balanceCents, view.ledger("acc-c").first().balanceCents)
+        assertTrue(view.ledger("acc-c", today).first().txn.pending)
+        assertEquals(c.balanceCents, view.ledger("acc-c", today).first().balanceCents)
+    }
+
+    @Test
+    fun theLedgerIsByStatusLikeTheComputers() = runTest {
+        val sched = SnapTxn("t-ins", "acc-c", "2026-10-24", payee = "Insurance", amountCents = -100, status = "S")
+        val cleared = SnapTxn("t-wal", "acc-c", "2026-10-13", payee = "Walmart", amountCents = -100, status = "C")
+        val none = SnapTxn("t-sh", "acc-c", "2026-10-16", payee = "Shell", amountCents = -100)
+        val pendingOld = SnapTxn("t-p", "acc-c", "2026-10-02", payee = "Pending", amountCents = -100, status = "P")
+        paired(rent, old, sched, cleared, none, pendingOld)
+        val view = LedgerView(phone.state.value)
+        // The computer's order is Old (R), Walmart (C), Pending (P), Rent and Shell (none, by date), then Insurance
+        // (after today); the phone shows it last first.
+        assertEquals(listOf("Insurance", "Shell", "Rent", "Pending", "Walmart", "Old"),
+            view.ledger("acc-c", today).map { it.txn.payee })
+        val walmart = view.ledger("acc-c", today).first { it.txn.payee == "Walmart" }
+        assertEquals(11_500 - 500 - 100, walmart.balanceCents, "after the reconciled and cleared ones: the cleared balance")
+
+        phone.setPrefs(Prefs(hideReconciled = true, hideFutureScheduled = true))
+        val hidden = LedgerView(phone.state.value).ledger("acc-c", today).map { it.txn.payee }
+        assertEquals(listOf("Shell", "Rent", "Pending", "Walmart"), hidden)
+        assertEquals("Insurance", LedgerView(phone.state.value).upcoming().single().payee, "still in Upcoming")
+    }
+
+    @Test
+    fun settingsOutliveUnpairing() = runTest {
+        paired(rent)
+        phone.setPrefs(Prefs(theme = "dark", hideReconciled = true))
+        phone.unpair()
+        assertNull(phone.state.value.pairing)
+        assertEquals("dark", phone.state.value.prefs.theme)
+        computerHasSynced()
+        phone.pair(code, "sync", "secret")
+        assertTrue(phone.state.value.prefs.hideReconciled)
     }
 
     @Test
@@ -144,10 +185,36 @@ class PhoneTest {
         phone.add(draft(-2_000, "Save", CategoryRef.Transfer("acc-v")))
         val view = LedgerView(phone.state.value)
         assertEquals(2_000, view.accounts()[1].envelopes[0].balanceCents)
-        val mirror = view.ledger("acc-v").single().txn
+        val mirror = view.ledger("acc-v", today).single().txn
         assertTrue(mirror.mirror)
         assertFalse(mirror.editable)
         assertEquals("[Checking]", view.categoryLabel(mirror))
+    }
+
+    @Test
+    fun aClearedOneChangesOnlyItsPayeeCategoryOrStatus() = runTest {
+        paired(rent.copy(status = "C"))
+        val t = LedgerView(phone.state.value).txn("t-rent")!!
+        assertTrue(t.canChange("payee") && t.canChange("category") && t.canChange("status"))
+        assertFalse(t.canChange("amountCents") || t.canChange("date") || t.canChange("memo") || t.canChange("description"))
+        val base = TxnDraft("acc-c", LocalDate(2026, 10, 1), payee = "Rent", amountCents = -1_000, status = "C")
+        assertFailsWith<IllegalArgumentException> { phone.edit("t-rent", base.copy(amountCents = -1_100)) }
+        assertFailsWith<IllegalArgumentException> { phone.edit("t-rent", base.copy(memo = "typed")) }
+        assertFailsWith<IllegalArgumentException> {
+            phone.edit("t-rent", base.copy(category = CategoryRef.Transfer("acc-s")))
+        }
+        assertTrue(phone.state.value.pending.isEmpty(), "none of those was kept")
+        phone.edit("t-rent", base.copy(payee = "Landlord", category = CategoryRef.Existing("cat-g")))
+        assertEquals(setOf("payee", "category"), phone.state.value.pending.single().op["changes"]!!.jsonObject.keys)
+    }
+
+    @Test
+    fun theDetailsShowEverything() = runTest {
+        paired(rent.copy(description = "October rent", memo = "check 1001", bankDate = "2026-10-03", type = "CHECK"))
+        val t = LedgerView(phone.state.value).txn("t-rent")!!
+        assertEquals("October rent", t.description)
+        assertEquals(LocalDate(2026, 10, 3), t.bankDate)
+        assertEquals("CHECK", t.type)
     }
 
     @Test
@@ -162,8 +229,8 @@ class PhoneTest {
     @Test
     fun anEditSendsOnlyWhatChangedWithWhereItStarted() = runTest {
         paired(rent)
-        phone.edit("t-rent", TxnDraft("acc-c", LocalDate(2026, 10, 1), payee = "Landlord", amountCents = -1_000, status = "C"))
-        phone.edit("t-rent", TxnDraft("acc-c", LocalDate(2026, 10, 1), payee = "Landlord", amountCents = -1_100, status = "C"))
+        phone.edit("t-rent", TxnDraft("acc-c", LocalDate(2026, 10, 1), payee = "Landlord", amountCents = -1_000))
+        phone.edit("t-rent", TxnDraft("acc-c", LocalDate(2026, 10, 1), payee = "Landlord", amountCents = -1_100))
         val op = phone.state.value.pending.single().op
         val changes = op["changes"]!!.jsonObject
         assertEquals(setOf("payee", "amountCents"), changes.keys, "two edits before sending: one change")
@@ -210,7 +277,7 @@ class PhoneTest {
         assertEquals(2, second.confirmed)
         assertTrue(phone.state.value.pending.isEmpty())
         assertEquals("Rent (10/01/2026) was reconciled on the computer.", phone.state.value.notices.single().message)
-        assertEquals(listOf("Starbucks"), LedgerView(phone.state.value).ledger("acc-c").map { it.txn.payee })
+        assertEquals(listOf("Starbucks"), LedgerView(phone.state.value).ledger("acc-c", today).map { it.txn.payee })
     }
 
     @Test
@@ -218,11 +285,19 @@ class PhoneTest {
         paired(rent)
         computerWrites(snapshot(1))                     // the same seq again, without Rent
         phone.sync()
-        assertEquals(listOf("Rent"), LedgerView(phone.state.value).ledger("acc-c").map { it.txn.payee })
+        assertEquals(listOf("Rent"), LedgerView(phone.state.value).ledger("acc-c", today).map { it.txn.payee })
+    }
+
+    @Test
+    fun pairingWithTheWrongFolderSaysSo() = runTest {
+        val e = assertFailsWith<MailboxException> { phone.pair(code, "sync", "secret") }   // no mailbox.json there
+        assertTrue(e.message!!.contains("Same as above"), e.message)
+        assertNull(phone.state.value.pairing, "not paired")
     }
 
     @Test
     fun beforeTheComputerHasWrittenAnythingItSaysSo() = runTest {
+        computerHasSynced()
         phone.pair(code, "sync", "secret")
         val r = phone.sync()
         assertTrue(r.ok)
@@ -238,7 +313,7 @@ class PhoneTest {
         assertFalse(r.ok)
         assertTrue(r.message.contains("Pair this phone again"))
         assertEquals(r.message, phone.state.value.lastError)
-        assertEquals(listOf("Rent"), LedgerView(phone.state.value).ledger("acc-c").map { it.txn.payee }, "what it had stays")
+        assertEquals(listOf("Rent"), LedgerView(phone.state.value).ledger("acc-c", today).map { it.txn.payee }, "what it had stays")
     }
 
     @Test
