@@ -182,6 +182,8 @@ public class AppConfig implements AutoCloseable {
     public static final String AUTO_DECIMAL = "auto_decimal";
     /** How dates are shown and typed: one of LedgerTableModel.DATE_FORMATS, like "MM/dd/yyyy". */
     public static final String DATE_FORMAT = "date_format";
+    /** The look: "system" (match the desktop's light or dark mode), "light" or "dark"; see Theme. */
+    public static final String THEME = "theme";
     /** Open on the Summary screen instead of the first account's ledger. */
     public static final String OPEN_ON_SUMMARY = "open_on_summary";
     /** Where database backups go: a folder (blank: asked the first time, then kept here). */

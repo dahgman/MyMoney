@@ -20,6 +20,7 @@ a tip about them.</p>
   <li><a href="#reconcile">Reconciling</a></li>
   <li><a href="#statements">Statements and attachments</a></li>
   <li><a href="#loans">Loans and credit cards</a></li>
+  <li><a href="#sync">Syncing with your phone</a></li>
   <li><a href="#undo">Undo</a></li>
   <li><a href="#keys">Keyboard shortcuts</a></li>
   <li><a href="#where">Where things are kept</a></li>
@@ -31,11 +32,17 @@ a tip about them.</p>
 A new file gets a folder of its own, named after it, and its attachments are kept in
 that folder too.</p>
 <ul>
+  <li><b>The first time MyMoney runs</b>, it asks whether to create a new file or open one
+      you already have (say, from another computer or a network share).</li>
   <li><b>Open another file, or make a new one:</b> File &gt; Open (Ctrl+O).
       The file you open at startup is your <i>default</i>; MyMoney opens it straight away
       next time, asking for its password.</li>
   <li><b>Back up:</b> File &gt; Back Up Database. See <a href="#backups">Backing up</a>.</li>
   <li><b>Rename:</b> File &gt; Rename File renames the file, and its folder with it.</li>
+  <li><b>On a network share or NAS:</b> fine. While it saves, MyMoney keeps a small
+      <tt><i>Name</i>.MyMoney.lock</tt> folder beside the file. Open a file on only one computer
+      at a time. If MyMoney ever stops while saving and leaves that lock behind, opening the
+      file says so and offers to clear it.</li>
   <li><b>Forget the password and the file can't be opened.</b> There's no way around the
       encryption, so keep the password somewhere safe.</li>
 </ul>
@@ -75,6 +82,13 @@ account at a glance.</p>
   <li>An account can go under another (a <i>sub-account</i>), like savings envelopes
       under a savings account.</li>
   <li>Right-click an account in the tree for its most-used actions.</li>
+  <li><b>Light or dark:</b> Edit &gt; Preferences &gt; General &gt; Theme. <i>Match the system</i>
+      follows your desktop's light or dark mode, as it's set when MyMoney starts. A new choice
+      applies right away.</li>
+  <li>The <b>graph</b> at the top of the ledger shows the cleared balance over the past
+      year: only reconciled and cleared transactions, each on its Bank Date (or, without
+      one, its date), as your bank's own ledger would show it. A loan's graph shows what's
+      left to pay, from the day the loan was made.</li>
 </ul>
 
 <a name="ledger"></a>
@@ -88,15 +102,21 @@ type into it, and it's saved as soon as it has an amount. Ctrl+N jumps to it.</p
   <li><b>Amounts:</b> money out goes in Payment, money in in Deposit. You can type sums,
       like <tt>45.10+12.99</tt>. With <i>insert the decimal point</i> on in Preferences,
       <tt>1234</tt> means $12.34.</li>
-  <li><b>Payee, Category, Tag and Type</b> suggest as you type; Enter or Space picks the
-      highlighted one. A payee you've used before brings its last category along.</li>
+  <li><b>Payee, Category, Tag and Type</b> fill in as you type, everywhere you enter them:
+      type <tt>wal</tt> and <i>Walmart</i> appears, with the rest selected. Keep typing to
+      narrow it, Backspace to drop what was filled in, or Enter or Tab to take it. The list
+      below shows the other matches; the arrow keys and Enter (or Space) pick one of those.
+      A payee you've used before brings its last category along.</li>
   <li><b>Status</b> (the C column): Cleared once your bank shows it, Reconciled once it's
       on a reconciled statement; also Pending, Paid and Scheduled. Reconciled
-      transactions are locked against most changes.</li>
+      transactions are locked against changes that would alter a balance; their payee, tag,
+      status and (unless a transfer) category can still be changed.</li>
   <li><b>Enter</b> saves and moves down to the next transaction (or, if you choose so in
       Preferences, to the next field, like Tab).</li>
-  <li><b>Several at once:</b> select rows, then right-click to change their date, payee,
-      category, tag or status together, or delete them.</li>
+  <li><b>Several at once:</b> select rows, then right-click &gt; <b>Edit Transactions</b>: one
+      window with the date, number, type, payee, category, tag, description, memo and status.
+      Tick the fields to change (typing in one ticks it); only those change, on all of them,
+      as one change you can undo. Fields they all share start filled in.</li>
   <li><b>In the wrong account?</b> Right-click &gt; <b>Move to Account</b> moves the selected
       transactions to another account. A transfer stays linked with its other account, and
       attachments move too. Reconciled transactions aren't moved.</li>
@@ -148,6 +168,11 @@ that text in any column; Escape clears it. Balances still count everything.</p>
   <li>When you change a downloaded payee's name ("WALMART #1234" to "Walmart"), MyMoney
       remembers it for next time (Account &gt; Manage Payee Renames).</li>
   <li>The bank's transaction type (POS, DIRECTDEBIT, ...) goes in the Type column.</li>
+  <li>The date the bank posted each transaction goes in the <b>Bank Date</b> column, next to
+      the date you entered it on. Hover over a bank date to see how many days it took. To
+      fill in bank dates for transactions imported before this column existed, import
+      their files again: nothing is added twice, and only the missing bank dates are filled in.
+      A bank date can also be typed in, or cleared.</li>
 </ul>
 
 <a name="scheduled"></a>
@@ -162,16 +187,26 @@ Scheduled, so you can see what's coming. Right-click a transaction and choose
 <p>Reconciling checks an account against its statement, so you know every transaction
 is right. Account &gt; Reconcile Account (Ctrl+R):</p>
 <ol>
-  <li>Enter the statement's <b>ending balance</b> and <b>date</b>. Transactions already
-      Cleared, from your last reconciliation through that date, are selected for you.
-      Tick <i>As of</i> to select every unreconciled one in that period.</li>
+  <li>Enter the statement's <b>ending balance</b> and <b>date</b>. The statement's period
+      runs from the <b>Statement Start Date</b> (the day after the account was last
+      reconciled, to start with; change it to match your statement, or leave it blank for
+      the first transaction) through that date. With <i>As of</i> ticked, as it is to start with, every unreconciled
+      transaction in the period is selected (marked Reconciling) for you; untick it to
+      select only the Cleared ones. Each counts on the date the bank posted it (its Bank
+      Date), or if that isn't known, its date. Transactions after the statement date keep
+      their status.</li>
   <li>Click the C box (or press Space) on each transaction that's on the statement, and
       off any that isn't. Edit, add or delete transactions right there if you need to.</li>
   <li>When the <b>Difference</b> is $0.00, click <b>Done</b>: they're all Reconciled.
       Attach the statement file under Bank Statement while you're there.</li>
 </ol>
-<p>Not finished? <b>Finish Later</b> keeps your place. If the difference won't come to
+<p>Not finished? <b>Finish Later</b> keeps your place: the next Reconcile Account opens
+the same statement, filled in, to carry on. If the difference won't come to
 zero, check the ending balance you typed against the statement first.</p>
+<p>Changed your mind? <b>Cancel</b> puts everything back as it was before you started this
+Reconcile Account: every transaction's status, any transactions added, edited or deleted in
+the window, and the statement's balance and date. Statement files attached since then are
+removed. (If you were carrying on an unfinished one, it goes back to how you left it last time.)</p>
 
 <a name="statements"></a>
 <h2>Statements and attachments</h2>
@@ -208,6 +243,40 @@ interest in every payment.</p>
   <li>Account &gt; <b>Amortization Schedule</b> shows every payment of a loan (and how much
       sooner extra principal would pay it off); <b>Payoff Schedule</b> does the same for a
       card; <b>Debt Snowball</b> plans paying off several debts, smallest first.</li>
+</ul>
+
+<a name="sync"></a>
+<h2>Syncing with your phone</h2>
+<p>The MyMoney phone app is for entering transactions on the go (with receipt photos) and
+checking balances. The computer and phone never talk directly: each leaves the other
+encrypted files in a <b>mailbox</b> folder on your NAS, so neither has to be on, or at
+home, at the same time. Set it up in <b>File &gt; Sync Settings</b>:</p>
+<ol>
+  <li><b>Mailbox:</b> a folder this computer can reach (the NAS share, as it's mounted
+      here), or the NAS's WebDAV address. <b>Test</b> checks it works.</li>
+  <li><b>How phones reach the mailbox:</b> the same folder by WebDAV, at an address that
+      works from anywhere. On a Synology, turn on <i>WebDAV Server</i> (Package Center).
+      To reach it away from home, <b>Tailscale</b> on the NAS and the phone is the safest
+      way (nothing is opened to the internet); otherwise publish WebDAV's HTTPS port
+      (5006) on your router.</li>
+  <li><b>Accounts on the phone:</b> tick the ones to sync. Envelopes go with the account
+      they're under. The phone gets their unreconciled transactions (which it can change)
+      and the last 60 days of reconciled ones (to look at).</li>
+  <li><b>Pair a Phone:</b> scan the code with the phone app, then give it a NAS user name
+      and password (best: a NAS user allowed only into the mailbox folder). The code holds
+      the phone's key, so don't share it.</li>
+</ol>
+<ul>
+  <li>MyMoney syncs when a file is opened, every few minutes while it's open (as set),
+      with <b>File &gt; Sync Now</b> (F5), and when it closes. The bottom of the window
+      shows how the last sync went.</li>
+  <li>The phone's changes arrive as one step you can <b>Undo</b>. A transfer gets its other
+      side and a loan payment its interest, just as if typed here; a bank download later
+      <i>matches</i> them.</li>
+  <li>If a transaction was changed in both places, this computer's values are kept, and the
+      phone says so. The phone can't change reconciled transactions, splits or a loan's
+      calculated interest.</li>
+  <li>Removing a phone in Sync Settings stops it syncing at once.</li>
 </ul>
 
 <a name="undo"></a>

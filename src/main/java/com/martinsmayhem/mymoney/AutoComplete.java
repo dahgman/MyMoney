@@ -21,9 +21,13 @@ import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
 
 /**
- * A suggestion drop-down for a text field (the ledger's Category and Tag
- * cells, the import's payee box). While typing, the list shrinks to the
- * entries that start with what was typed, then those that contain it.
+ * Type-ahead and a suggestion drop-down for a text field: every payee and
+ * category (and tag, and type) field. Typing at the end of the text fills in
+ * the rest of the first entry that starts with it, selected ("wal" becomes
+ * "Walmart" with "mart" selected): typing on replaces it, Backspace or
+ * Delete takes it away, and Enter, Tab or a click elsewhere keeps it.
+ * Meanwhile the list shrinks to the entries that start with what was
+ * typed, then those that contain it.
  * Up/Down or a click highlight an entry (Down with the list closed shows
  * everything); Space puts the highlighted entry in the field, and so does
  * Enter (the field's owner decides what else Enter and Escape do, using
@@ -64,16 +68,30 @@ final class AutoComplete {
         field.getDocument().addDocumentListener(new DocumentListener() {
             @Override
             public void insertUpdate(DocumentEvent e) {
-                textChanged();
+                // Typed at the end (not pasted into the middle): fill in the rest.
+                textChanged(e.getOffset() + e.getLength() == e.getDocument().getLength());
             }
 
             @Override
             public void removeUpdate(DocumentEvent e) {
-                textChanged();
+                textChanged(false);                       // deleting: never put it straight back
             }
 
             @Override
             public void changedUpdate(DocumentEvent e) {
+            }
+        });
+
+        // The suggestions are read afresh whenever the field is entered (new payees, categories...).
+        field.addFocusListener(new java.awt.event.FocusAdapter() {
+            @Override
+            public void focusGained(java.awt.event.FocusEvent e) {
+                reload();
+            }
+
+            @Override
+            public void focusLost(java.awt.event.FocusEvent e) {
+                hidePopup();
             }
         });
 
@@ -155,10 +173,52 @@ final class AutoComplete {
         });
     }
 
-    private void textChanged() {
+    private void textChanged(boolean typedAtEnd) {
         if (!adjusting) {
-            SwingUtilities.invokeLater(() -> showMatches(field.getText(), false));
+            SwingUtilities.invokeLater(() -> {
+                String typed = field.getText();
+                if (typedAtEnd) {
+                    completeInline(typed);
+                }
+                showMatches(typed, false);
+            });
         }
+    }
+
+    /**
+     * Fills in the rest of the first entry starting with typed (ignoring
+     * case), selected so that typing on replaces it. The whole entry is put
+     * in, so it reads as saved ("Walmart", not "walmart").
+     */
+    private void completeInline(String typed) {
+        if (typed.isEmpty() || !field.isFocusOwner() || field.getCaretPosition() != typed.length()
+                || field.getSelectionStart() != field.getSelectionEnd()) {
+            return;
+        }
+        String lower = typed.toLowerCase();
+        for (String s : suggestions) {
+            if (s.length() > typed.length() && s.toLowerCase().startsWith(lower)) {
+                quietly(() -> {
+                    field.setText(s);
+                    field.setCaretPosition(s.length());
+                    field.moveCaretPosition(typed.length());       // the filled-in part, selected
+                });
+                return;
+            }
+        }
+    }
+
+    /**
+     * Type-ahead and suggestions for an editable drop-down's text (as in the
+     * account form's categories). Returns null if it doesn't edit as text.
+     */
+    static AutoComplete attach(javax.swing.JComboBox<?> combo, Supplier<List<String>> source) {
+        if (combo.isEditable() && combo.getEditor().getEditorComponent() instanceof JTextField f) {
+            AutoComplete ac = new AutoComplete(f, source);
+            ac.reload();
+            return ac;
+        }
+        return null;
     }
 
     /** Fills the drop-down with entries that start with, then contain, the text. */

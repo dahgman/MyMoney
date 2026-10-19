@@ -10,6 +10,7 @@ import java.time.LocalDate;
 public class LedgerEntry {
 
     long id;                  // 0 = not saved yet (the blank row at the bottom)
+    String uid;               // the id the phone knows it by (read from the database); null until saved
     LocalDate date;
     String checkNumber;
     String payee;
@@ -18,6 +19,7 @@ public class LedgerEntry {
     Color tagColor;           // the tag's color (read from the database)
     String description;
     String memo;
+    LocalDate bankDate;       // the date the bank posted it (from a bank download, or typed); null = not known
     String type;              // like POS or DIRECTDEBIT (a bank download's TRNTYPE, or typed); null = none
     TxnStatus status = TxnStatus.NONE;
     long amountCents;         // negative = payment, positive = deposit
@@ -35,6 +37,7 @@ public class LedgerEntry {
     LedgerEntry copy() {
         LedgerEntry c = new LedgerEntry();
         c.id = id;
+        c.uid = uid;
         c.date = date;
         c.checkNumber = checkNumber;
         c.payee = payee;
@@ -44,6 +47,7 @@ public class LedgerEntry {
         c.description = description;
         c.memo = memo;
         c.type = type;
+        c.bankDate = bankDate;
         c.status = status;
         c.amountCents = amountCents;
         c.balanceCents = balanceCents;
@@ -68,6 +72,7 @@ public class LedgerEntry {
                 && java.util.Objects.equals(blank(description), blank(o.description))
                 && java.util.Objects.equals(blank(memo), blank(o.memo))
                 && java.util.Objects.equals(blank(type), blank(o.type))
+                && java.util.Objects.equals(bankDate, o.bankDate)
                 && java.util.Objects.equals(interestOverride, o.interestOverride)
                 && status == o.status && amountCents == o.amountCents;
     }

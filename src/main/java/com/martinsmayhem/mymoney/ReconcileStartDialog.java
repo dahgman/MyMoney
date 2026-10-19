@@ -20,26 +20,34 @@ import javax.swing.SwingConstants;
 
 /**
  * The first step of Reconcile Account: the statement's ending balance and
- * date. The statement's period runs from the last reconciliation's statement
- * date through this date: its Cleared transactions are selected (marked
- * Reconciling) to start with, or with "As of" ticked, all of its
- * unreconciled ones. Transactions after the date are left as they are.
+ * date. The statement's period runs from the day after the account was last
+ * reconciled through this date: with "As of" ticked (as it starts), all of
+ * its unreconciled transactions are selected (marked Reconciling); without
+ * it, just its Cleared ones. Transactions after the date are left as they are.
  */
 final class ReconcileStartDialog extends JDialog {
 
     private final JTextField endingField = new JTextField(14);
     private final JCheckBox asOfBox = new JCheckBox("As of:");
     private final DatePicker datePicker;
+    private final DatePicker startPicker;
     private boolean accepted;
     private long endingCents;
     private LocalDate statementDate;
+    private LocalDate startDate;
 
     /**
      * @param ending the ending balance to show, or null for none yet
+     * @param periodStart the statement start date to suggest (see ReconcileRepository.statementStart), or null;
+     *                    it can be changed
+     * @param asOf whether "As of" starts ticked
      */
-    ReconcileStartDialog(Window owner, Account account, long beginningCents, Long ending, LocalDate date) {
+    ReconcileStartDialog(Window owner, Account account, long beginningCents, Long ending, LocalDate date,
+                         LocalDate periodStart, boolean asOf) {
         super(owner, "Reconcile Account: " + account.name(), ModalityType.APPLICATION_MODAL);
         datePicker = new DatePicker(date);
+        asOfBox.setSelected(asOf);
+        startPicker = new DatePicker(periodStart);
 
         JLabel title = new JLabel("Reconcile Account: " + account.name(), SwingConstants.CENTER);
         title.setFont(title.getFont().deriveFont(Font.BOLD, title.getFont().getSize2D() + 6));
@@ -75,20 +83,29 @@ final class ReconcileStartDialog extends JDialog {
 
         c = cell(0, 3);
         c.anchor = GridBagConstraints.LINE_END;
-        asOfBox.setToolTipText("Select every unreconciled transaction dated on or before this date");
+        form.add(new JLabel("Statement Start Date:"), c);
+        c = cell(1, 3);
+        c.anchor = GridBagConstraints.LINE_START;
+        c.fill = GridBagConstraints.HORIZONTAL;
+        startPicker.setToolTipText("The first day of the statement. Suggested: the day after the last"
+                + " reconciliation. Blank: from the first transaction.");
+        form.add(startPicker, c);
+
+        c = cell(0, 4);
+        c.anchor = GridBagConstraints.LINE_END;
+        asOfBox.setToolTipText("Select every unreconciled transaction in the period, through this date");
         form.add(asOfBox, c);
         datePicker.setToolTipText("The statement date (also names the statement's attachment folder)");
-        c = cell(1, 3);
+        c = cell(1, 4);
         c.fill = GridBagConstraints.HORIZONTAL;
         form.add(datePicker, c);
 
-        JLabel help = new JLabel("<html><div style='width:420px'>Cleared transactions from the last"
-                + " reconciliation through the statement date are selected to start with. Selecting the"
-                + " 'As of' option will select every unreconciled transaction in that period and mark it as"
-                + " 'Reconciling'. Transactions after the statement date keep their status. This often makes"
-                + " reconciling easier, but you should still check each transaction against your"
-                + " statement.</div></html>");
-        c = cell(0, 4);
+        JLabel help = new JLabel("<html><div style='width:420px'>With 'As of' ticked, every unreconciled"
+                + " transaction from the statement start date through the statement date is marked"
+                + " 'Reconciling'; without it, only the Cleared ones. Each counts on the date the bank posted"
+                + " it (its Bank Date), or if that isn't known, its date. Transactions after the statement date"
+                + " keep their status. You should still check each one against your statement.</div></html>");
+        c = cell(0, 5);
         c.gridwidth = 2;
         c.insets = new Insets(10, 0, 0, 0);
         form.add(help, c);
@@ -120,6 +137,11 @@ final class ReconcileStartDialog extends JDialog {
         return statementDate;
     }
 
+    /** The statement start date chosen; null (left blank) for from the first transaction. */
+    LocalDate startDate() {
+        return startDate;
+    }
+
     boolean asOf() {
         return asOfBox.isSelected();
     }
@@ -131,6 +153,11 @@ final class ReconcileStartDialog extends JDialog {
             }
             endingCents = Money.parseTyped(endingField.getText());
             statementDate = datePicker.getDate();
+            startDate = startPicker.getDateOrNull();
+            if (startDate != null && statementDate.isBefore(startDate)) {
+                throw new IllegalArgumentException("The statement date can't be before the statement start date ("
+                        + startDate.format(LedgerTableModel.DISPLAY_DATE) + ").");
+            }
         } catch (IllegalArgumentException e) {
             JOptionPane.showMessageDialog(this, e.getMessage(), getTitle(), JOptionPane.ERROR_MESSAGE);
             return;

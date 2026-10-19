@@ -57,6 +57,7 @@ public class LedgerTableModel extends AbstractTableModel {
     public static final int PRINCIPAL = 14;      // loans: the rest of a payment
     public static final int TYPE = 15;           // like POS or DIRECTDEBIT (a bank download's TRNTYPE)
     public static final int PRINCIPAL_BALANCE = 16;  // loans: the principal still owed after each transaction
+    public static final int BANK_DATE = 17;      // the date the bank posted it (from a bank download, or typed)
 
     /** True for the columns only a loan's ledger has (not a credit card's). */
     public static boolean isLoanOnlyColumn(int column) {
@@ -84,7 +85,7 @@ public class LedgerTableModel extends AbstractTableModel {
     /** Column headers (Files shows as a paperclip icon, so it has no text). */
     private static final String[] COLUMNS = {
         "Date", "Num", "Payee", "Category", "Tag", "Description", "Memo", "C",
-        "Payment", "Deposit", "Balance", "", "D", "Interest", "Principal", "Type", "Principal Bal."
+        "Payment", "Deposit", "Balance", "", "D", "Interest", "Principal", "Type", "Principal Bal.", "Bank Date"
     };
     /** A column's full name (the header may be shorter, like "C" for Status). */
     public static String columnName(int column) {
@@ -95,7 +96,7 @@ public class LedgerTableModel extends AbstractTableModel {
     private static final String[] NAMES = {
         "Date", "Num", "Payee", "Category", "Tag", "Description", "Memo", "Status",
         "Payment", "Deposit", "Balance", "Files", "Downloaded", "Interest", "Principal", "Type",
-        "Principal Balance"
+        "Principal Balance", "Bank Date"
     };
 
     /**
@@ -112,6 +113,11 @@ public class LedgerTableModel extends AbstractTableModel {
     static void setDateFormat(String pattern) {
         datePattern = java.util.Arrays.asList(DATE_FORMATS).contains(pattern) ? pattern : DATE_FORMATS[0];
         DISPLAY_DATE = DateTimeFormatter.ofPattern(datePattern);
+    }
+
+    /** The date format's pattern, like "MM/dd/yyyy" (for the phone's snapshot). */
+    static String datePattern() {
+        return datePattern;
     }
 
     /** The date format as people write it: "MM/DD/YYYY". */
@@ -287,6 +293,20 @@ public class LedgerTableModel extends AbstractTableModel {
 
     public long balanceCents(int row) {
         return isSavedRow(row) ? entryAt(row).balanceCents : 0;
+    }
+
+    /**
+     * How long the bank took with a row's transaction: "Posted 3 days after
+     * the date entered", or null if its bank date isn't known.
+     */
+    public String bankDelay(int row) {
+        if (!isSavedRow(row) || entryAt(row).bankDate == null || entryAt(row).date == null) {
+            return null;
+        }
+        long days = java.time.temporal.ChronoUnit.DAYS.between(entryAt(row).date, entryAt(row).bankDate);
+        return days == 0 ? "Posted on the date entered"
+                : "Posted " + Math.abs(days) + (Math.abs(days) == 1 ? " day " : " days ")
+                        + (days > 0 ? "after" : "before") + " the date entered";
     }
 
     /** True for a saved transaction, false for the blank entry row. */
@@ -554,53 +574,83 @@ public class LedgerTableModel extends AbstractTableModel {
         onChanged.run();
     }
 
+    /** Sets one column to the same value on several rows (see the Map version). */
+    public String bulkSet(int[] rows, int column, Object value) {
+        return bulkSet(rows, java.util.Map.of(column, value));
+    }
+
     /**
-     * Sets one column (Date, Payee, Category, Tag or Status) to the same value
-     * on several rows at once, saving them all together. Reconciled rows are
-     * skipped, except for Status, Tag and (non-transfer) Category changes; split
-     * transactions are skipped when changing Category. Taking reconciled rows
-     * off Reconciled must be confirmed.
+     * Sets several fields (Date, Num, Type, Payee, Category, Tag, Description,
+     * Memo, Status) to the same values on several rows at once, saving them
+     * all together, as one change.
      *
-     * @param value the text to set, or a TxnStatus for the Status column
-     * @return a note about skipped rows, or null if every row was changed
+     * A reconciled transaction takes only what can't change a balance: its
+     * status, tag, payee, and (unless it's a transfer, or becoming one) its
+     * category; its other fields are left as they are. One being reconciled
+     * keeps its status; a split transaction keeps its categories. Taking
+     * reconciled rows off Reconciled must be confirmed.
+     *
+     * @param values each field's column and new value: text, a LocalDate for
+     *               Date, a TxnStatus for Status (blank text removes it)
+     * @return a note about what was left alone, or null if everything changed
      *         (also null if cancelled or on error)
      */
-    public String bulkSet(int[] rows, int column, Object value) {
-        List<LedgerEntry> changes = new ArrayList<>();
-        int reconciled = 0;
-        int splits = 0;
-        int reconciling = 0;
-        if (column == STATUS) {
+    public String bulkSet(int[] rows, java.util.Map<Integer, Object> values) {
+        if (account == null || values.isEmpty()) {
+            return null;
+        }
+        Object status = values.get(STATUS);
+        if (status != null) {
             int unreconciling = 0;
             for (int row : rows) {
-                if (isLocked(row) && value != TxnStatus.RECONCILED) {
+                if (isLocked(row) && status != TxnStatus.RECONCILED) {
                     unreconciling++;
                 }
             }
             if (unreconciling > 0 && !confirm.test((unreconciling == 1 ? "1 of the selected transactions is"
                     : unreconciling + " of the selected transactions are") + " reconciled. Change "
-                    + (unreconciling == 1 ? "it" : "them") + " to " + value + "?\n\n"
+                    + (unreconciling == 1 ? "it" : "them") + " to " + status + "?\n\n"
                     + (unreconciling == 1 ? "It" : "They") + " will no longer be locked, and your"
                     + " reconciled balance may no longer match your statement.")) {
                 return null;
             }
         }
+        List<LedgerEntry> changes = new ArrayList<>();
+        int selected = 0;
+        int reconciled = 0;                              // rows with a field left alone because they're reconciled
+        int splits = 0;
+        int reconciling = 0;
         try {
             for (int row : rows) {
                 if (!isSavedRow(row)) {
                     continue;
                 }
+                selected++;
                 LedgerEntry e = entryAt(row);
-                if (column == STATUS && e.status == TxnStatus.RECONCILING) {
-                    reconciling++;
-                } else if (e.status == TxnStatus.RECONCILED && column != STATUS && column != TAG
-                        && !(column == CATEGORY && reconciledCategoryChangeOk(e.category, value))) {
+                LedgerEntry changed = e.copy();
+                boolean any = false;
+                boolean leftReconciled = false;
+                for (java.util.Map.Entry<Integer, Object> v : values.entrySet()) {
+                    int column = v.getKey();
+                    Object value = v.getValue() instanceof LocalDate d ? d.format(DISPLAY_DATE) : v.getValue();
+                    if (column == STATUS && e.status == TxnStatus.RECONCILING) {
+                        reconciling++;
+                    } else if (e.status == TxnStatus.RECONCILED && column != STATUS && column != TAG
+                            && column != PAYEE && !(column == CATEGORY && reconciledCategoryChangeOk(e.category, value))) {
+                        leftReconciled = true;
+                    } else if (column == CATEGORY && TransactionRepository.SPLIT_LABEL.equals(e.category)) {
+                        splits++;
+                    } else if (e.scheduledInterest && column != STATUS) {
+                        leftReconciled = true;                  // calculated: as for a reconciled one
+                    } else {
+                        apply(changed, column, value);
+                        any = true;
+                    }
+                }
+                if (leftReconciled) {
                     reconciled++;
-                } else if (column == CATEGORY && TransactionRepository.SPLIT_LABEL.equals(e.category)) {
-                    splits++;
-                } else {
-                    LedgerEntry changed = e.copy();
-                    apply(changed, column, value);
+                }
+                if (any && !changed.sameContent(e)) {
                     changes.add(changed);
                 }
             }
@@ -609,7 +659,7 @@ public class LedgerTableModel extends AbstractTableModel {
             return null;
         }
         if (!changes.isEmpty()) {
-            lastAction = "Change " + NAMES[column];
+            lastAction = values.size() == 1 ? "Change " + NAMES[values.keySet().iterator().next()] : "Edit Transactions";
             try {
                 transactions.updateAll(changes);
             } catch (SQLException ex) {
@@ -624,19 +674,19 @@ public class LedgerTableModel extends AbstractTableModel {
             return null;
         }
         StringBuilder note = new StringBuilder(changes.isEmpty() ? "Nothing was changed."
-                : "Changed " + changes.size() + " of " + (changes.size() + reconciled + splits + reconciling)
-                        + " transactions.");
+                : "Changed " + changes.size() + " of " + selected + " transactions.");
         if (reconciling > 0) {
             note.append("\n").append(reconciling)
                 .append(reconciling == 1 ? " transaction is" : " transactions are")
-                .append(" part of an unfinished reconciliation; use Reconcile Account to change ")
-                .append(reconciling == 1 ? "it." : "them.");
+                .append(" part of an unfinished reconciliation and kept ")
+                .append(reconciling == 1 ? "its status; use Reconcile Account to change it."
+                        : "their status; use Reconcile Account to change them.");
         }
         if (reconciled > 0) {
             note.append("\n").append(reconciled).append(" reconciled ")
-                .append(reconciled == 1 ? "transaction was" : "transactions were").append(" left alone")
-                .append(column == CATEGORY ? " (a reconciled transfer, or a change to a transfer,"
-                        + " would change another account's balance)." : ".");
+                .append(reconciled == 1 ? "transaction kept" : "transactions kept")
+                .append(" what can't change on a reconciled transaction (only its status, tag, payee and,"
+                        + " unless it's a transfer, category can).");
         }
         if (splits > 0) {
             note.append("\n").append(splits).append(" split ")
@@ -705,8 +755,9 @@ public class LedgerTableModel extends AbstractTableModel {
             return column == STATUS;                // calculated from the loan's terms and payments
         }
         if (isLocked(row)) {
-            // Reconciled: status, tag and category only (a transfer's category stays put).
-            return column == STATUS || column == TAG
+            // Reconciled: status, tag, payee and category only (a transfer's category stays put): none
+            // of them changes a balance.
+            return column == STATUS || column == TAG || column == PAYEE || column == BANK_DATE
                     || (column == CATEGORY && reconciledCategoryChangeOk(entryAt(row).category, null));
         }
         return true;
@@ -717,6 +768,7 @@ public class LedgerTableModel extends AbstractTableModel {
         LedgerEntry e = isSavedRow(row) ? entryAt(row) : draft;
         return switch (column) {
             case DATE -> e.date == null ? "" : e.date.format(DISPLAY_DATE);
+            case BANK_DATE -> e.bankDate == null ? "" : e.bankDate.format(DISPLAY_DATE);
             case NUM -> text(e.checkNumber);
             case PAYEE -> text(e.payee);
             case CATEGORY -> text(e.category);
@@ -822,6 +874,7 @@ public class LedgerTableModel extends AbstractTableModel {
         String text = value == null ? "" : value.toString().trim();
         switch (column) {
             case DATE -> e.date = parseDate(text);
+            case BANK_DATE -> e.bankDate = text.isEmpty() ? null : parseDate(text);   // blank: not known
             case NUM -> e.checkNumber = text;
             case PAYEE -> e.payee = text;
             case CATEGORY -> e.category = text.isEmpty() ? null
@@ -953,6 +1006,7 @@ public class LedgerTableModel extends AbstractTableModel {
     private static Comparator<LedgerEntry> columnOrder(int column, boolean ascending) {
         return switch (column) {
             case DATE -> by(e -> e.date, Comparator.<LocalDate>naturalOrder(), ascending);
+            case BANK_DATE -> by(e -> e.bankDate, Comparator.<LocalDate>naturalOrder(), ascending);
             case NUM -> by(e -> blankToNull(e.checkNumber), LedgerTableModel::compareNumbers, ascending);
             case PAYEE -> by(e -> blankToNull(e.payee), String.CASE_INSENSITIVE_ORDER, ascending);
             case CATEGORY -> by(e -> blankToNull(e.category), String.CASE_INSENSITIVE_ORDER, ascending);
@@ -1110,6 +1164,7 @@ public class LedgerTableModel extends AbstractTableModel {
         }
         String[] fields = filterColumn >= 0 ? fields(e, filterColumn) : new String[] {
             e.date == null ? "" : e.date.format(DISPLAY_DATE),
+            e.bankDate == null ? "" : e.bankDate.format(DISPLAY_DATE),
             e.checkNumber, e.payee, e.category, e.tag, e.description, e.memo, e.type,
             e.status == TxnStatus.NONE ? "" : e.status.label(),
             Money.format(Math.abs(e.amountCents)),          // "$1,250.50"
@@ -1129,6 +1184,7 @@ public class LedgerTableModel extends AbstractTableModel {
     private static String[] fields(LedgerEntry e, int column) {
         return switch (column) {
             case DATE -> new String[] {e.date == null ? "" : e.date.format(DISPLAY_DATE)};
+            case BANK_DATE -> new String[] {e.bankDate == null ? "" : e.bankDate.format(DISPLAY_DATE)};
             case NUM -> new String[] {e.checkNumber};
             case PAYEE -> new String[] {e.payee};
             case CATEGORY -> new String[] {e.category};

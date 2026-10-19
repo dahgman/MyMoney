@@ -3,13 +3,30 @@
     <modelVersion>4.0.0</modelVersion>
     <groupId>com.martinsmayhem</groupId>
     <artifactId>MyMoney</artifactId>
-    <version>1.0.3</version>
+    <version>1.1.0</version>
     <packaging>jar</packaging>
     <dependencies>
         <dependency>
             <groupId>io.github.willena</groupId>
             <artifactId>sqlite-jdbc</artifactId>
             <version>3.53.4.0</version>
+        </dependency>
+        <!-- The Light and Dark themes (Edit > Preferences > Theme). -->
+        <dependency>
+            <groupId>com.formdev</groupId>
+            <artifactId>flatlaf</artifactId>
+            <version>3.5.4</version>
+        </dependency>
+        <!-- Sync with the phone: the JSON in the mailbox, and the QR code that pairs a phone. -->
+        <dependency>
+            <groupId>com.google.code.gson</groupId>
+            <artifactId>gson</artifactId>
+            <version>2.11.0</version>
+        </dependency>
+        <dependency>
+            <groupId>com.google.zxing</groupId>
+            <artifactId>core</artifactId>
+            <version>3.5.3</version>
         </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
@@ -87,7 +104,7 @@
     </build>
     <properties>
         <!-- The date this version is released: shown in Help > About. Set it with <version> for each release. -->
-        <release.date>2026-10-16</release.date>
+        <release.date>2026-10-19</release.date>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.compiler.release>26</maven.compiler.release>
         <exec.mainClass>com.martinsmayhem.mymoney.MyMoney</exec.mainClass>

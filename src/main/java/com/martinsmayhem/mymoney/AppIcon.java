@@ -39,6 +39,16 @@ final class AppIcon {
         return images;
     }
 
+    /** The 64-pixel icon, for a message box (null if it can't be read). */
+    static javax.swing.Icon large() {
+        for (Image i : images()) {
+            if (i.getWidth(null) == 64) {
+                return new javax.swing.ImageIcon(i);
+            }
+        }
+        return null;
+    }
+
     /**
      * Uses the icon everywhere: the taskbar or dock (where Java can set it)
      * and every window without a parent of its own (the startup dialogs and

@@ -146,6 +146,7 @@ final class ManageAccountsDialog extends JDialog {
         });
 
         categoryCombo.setEditable(true);
+        AutoComplete.attach(categoryCombo, () -> categoryPaths);           // fills in as you type
         categoryCombo.addItem("");
         for (String c : categoryPaths) {
             categoryCombo.addItem(c);
@@ -247,6 +248,7 @@ final class ManageAccountsDialog extends JDialog {
         originalField.setHorizontalAlignment(JTextField.RIGHT);
         rateField.setHorizontalAlignment(JTextField.RIGHT);
         interestCategoryCombo.setEditable(true);
+        AutoComplete.attach(interestCategoryCombo, () -> categoryPaths);   // fills in as you type
         interestCategoryCombo.addItem("");
         for (String c : categoryPaths) {
             interestCategoryCombo.addItem(c);

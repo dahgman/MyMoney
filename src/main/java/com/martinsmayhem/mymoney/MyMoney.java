@@ -7,7 +7,6 @@ import java.sql.SQLException;
 import java.util.List;
 import javax.swing.JOptionPane;
 import javax.swing.SwingUtilities;
-import javax.swing.UIManager;
 
 /**
  * Application entry point.
@@ -49,29 +48,26 @@ public class MyMoney {
     }
 
     public static void main(String[] args) {
-        try {
-            UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
-        } catch (Exception ignored) {
-            // fall back to the default look and feel
-        }
         SwingUtilities.invokeLater(MyMoney::start);
     }
 
     private static void start() {
-        Splash.start();
-        AppIcon.install();                    // the icon for every window, dialogs included
-        Splash.step("Reading settings…", 8);
+        // Settings first: they say which theme everything, the splash screen included, is drawn in.
         AppConfig config;
         try {
             config = new AppConfig();
         } catch (Exception e) {
-            Splash.finish();
+            Theme.apply(Theme.Choice.SYSTEM);
             JOptionPane.showMessageDialog(null,
                     "Could not open application settings:\n" + e.getMessage(),
                     "MyMoney", JOptionPane.ERROR_MESSAGE);
             System.exit(1);
             return;
         }
+        Theme.apply(Theme.Choice.of(config.getString(AppConfig.THEME, "system")));
+        Splash.start();
+        AppIcon.install();                    // the icon for every window, dialogs included
+        Splash.step("Reading settings…", 8);
 
         Database db = null;
 
@@ -83,12 +79,15 @@ public class MyMoney {
         }
 
         if (recent.isEmpty()) {
-            // 1. First run: create a database. It is marked as the default automatically.
+            // 1. First run: create a new file or open an existing one. Either becomes the default.
             Splash.pause();
-            NewDatabaseDialog nd = new NewDatabaseDialog(null, true, config);
-            nd.setLocationRelativeTo(null);
-            nd.setVisible(true);              // modal: waits here until closed
-            db = nd.getDatabase();
+            db = StartupDialog.firstRun(config);
+            if (db == null) {                 // Exit
+                Splash.finish();
+                config.close();
+                System.exit(0);
+                return;
+            }
         } else {
             // 2. Open the default database, if one is set and the file still exists.
             String defaultPath = null;

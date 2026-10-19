@@ -66,7 +66,7 @@ public class TransactionRepository {
                    COALESCE((SELECT -SUM(amount_cents) FROM split WHERE txn_id = t.id AND loan_interest = 1), 0),
                    t.loan_interest_cents,
                    EXISTS (SELECT 1 FROM split WHERE txn_id = t.id AND loan_interest = 2),
-                   t.txn_type, t.interest_override
+                   t.txn_type, t.interest_override, t.bank_date, t.uid
             FROM txn t
             LEFT JOIN payee p ON p.id = t.payee_id
             LEFT JOIN (SELECT txn_id, COUNT(*) AS n, SUM(amount_cents) AS total,
@@ -106,6 +106,9 @@ public class TransactionRepository {
                     e.type = rs.getString(18);
                     long override = rs.getLong(19);
                     e.interestOverride = rs.wasNull() ? null : override;
+                    String bank = rs.getString(20);
+                    e.bankDate = bank == null ? null : LocalDate.parse(bank);
+                    e.uid = rs.getString(21);
                     list.add(e);
                 }
             }
@@ -129,8 +132,8 @@ public class TransactionRepository {
     void insertInCurrentTransaction(long accountId, LedgerEntry entry) throws SQLException {
         Target target = target(entry.category);       // check the category first
         String sql = "INSERT INTO txn (account_id, txn_date, payee_id, check_number,"
-                + " memo, status, description, tag_id, txn_type, interest_override)"
-                + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+                + " memo, status, description, tag_id, txn_type, interest_override, bank_date)"
+                + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setLong(1, accountId);
             ps.setString(2, entry.date.toString());     // ISO: YYYY-MM-DD
@@ -142,6 +145,7 @@ public class TransactionRepository {
             setId(ps, 8, tagId(entry.tag));
             setText(ps, 9, normalizeType(entry.type));
             setId(ps, 10, entry.interestOverride);
+            setText(ps, 11, entry.bankDate == null ? null : entry.bankDate.toString());
             ps.executeUpdate();
         }
         long id = lastInsertId();
@@ -158,6 +162,11 @@ public class TransactionRepository {
         doDelete(txnId);
     }
 
+
+    /** As update(), for a caller that already has a database transaction open (sync): doesn't commit. */
+    void updateInCurrentTransaction(LedgerEntry entry) throws SQLException {
+        doUpdate(entry);
+    }
 
     /**
      * Saves changes to an existing transaction, keeping the matching side of
@@ -211,8 +220,8 @@ public class TransactionRepository {
                     + " can't be changed in the ledger yet.");
         }
         String sql = "UPDATE txn SET txn_date = ?, payee_id = ?, check_number = ?,"
-                + " memo = ?, status = ?, description = ?, tag_id = ?, txn_type = ?, interest_override = ?"
-                + " WHERE id = ?";
+                + " memo = ?, status = ?, description = ?, tag_id = ?, txn_type = ?, interest_override = ?,"
+                + " bank_date = ? WHERE id = ?";
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, entry.date.toString());
             setId(ps, 2, payeeId(entry.payee));
@@ -223,7 +232,8 @@ public class TransactionRepository {
             setId(ps, 7, tagId(entry.tag));
             setText(ps, 8, normalizeType(entry.type));
             setId(ps, 9, entry.interestOverride);
-            ps.setLong(10, entry.id);
+            setText(ps, 10, entry.bankDate == null ? null : entry.bankDate.toString());
+            ps.setLong(11, entry.id);
             ps.executeUpdate();
         }
 
@@ -679,11 +689,12 @@ public class TransactionRepository {
     private void syncMirrors(long txnId) throws SQLException {
         String sql = """
             SELECT s.transfer_txn_id, s.amount_cents, a.name, m.status,
-                   m.txn_date <> t.txn_date OR COALESCE(m.payee_id, -1) <> COALESCE(t.payee_id, -1)
+                   m.txn_date <> t.txn_date
                        OR (SELECT SUM(amount_cents) FROM split WHERE txn_id = m.id AND loan_interest <> 1)
                            <> -s.amount_cents,
                    COALESCE(m.description, '') <> COALESCE(t.description, '')
                        OR COALESCE(m.tag_id, -1) <> COALESCE(t.tag_id, -1)
+                       OR COALESCE(m.payee_id, -1) <> COALESCE(t.payee_id, -1)
             FROM split s
             JOIN txn t ON t.id = s.txn_id
             JOIN txn m ON m.id = s.transfer_txn_id
@@ -699,7 +710,7 @@ public class TransactionRepository {
                     if (!lockedFieldsDiffer && !rs.getBoolean(6)) {
                         continue;                               // already matches
                     }
-                    // A reconciled match may still take a new description or tag, nothing else.
+                    // A reconciled match may still take a new payee, description or tag, nothing else.
                     if (lockedFieldsDiffer && TxnStatus.RECONCILED.code().equals(rs.getString(4))) {
                         throw new SQLException("The matching transaction in \"" + rs.getString(3)
                                 + "\" is reconciled, so this transfer can't be changed.");

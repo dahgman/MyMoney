@@ -197,21 +197,47 @@ public class AccountRepository {
      * before that day, whatever its status. Index 0 is from.
      */
     public long[] dailyBalances(long accountId, java.time.LocalDate from, java.time.LocalDate to) throws SQLException {
+        return dailyBalances(accountId, from, to, false);
+    }
+
+    /**
+     * As dailyBalances, but when clearedOnly, counting only what the bank has
+     * posted: reconciled, cleared and reconciling transactions (the cleared
+     * balance, day by day), each on the date the bank posted it (its bank
+     * date, or if that isn't known, its date).
+     */
+    public long[] dailyBalances(long accountId, java.time.LocalDate from, java.time.LocalDate to, boolean clearedOnly)
+            throws SQLException {
         int days = (int) java.time.temporal.ChronoUnit.DAYS.between(from, to) + 1;
         long[] out = new long[Math.max(0, days)];
         if (days <= 0) {
             return out;
         }
-        long balance = balanceThrough(accountId, from.minusDays(1));
+        String which = clearedOnly ? " AND t.status IN (?, ?, ?)" : "";
+        String day = clearedOnly ? "COALESCE(t.bank_date, t.txn_date)" : "t.txn_date";
+        long balance;
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT a.opening_balance_cents + a.balance_adjustment_cents"
+                + " + COALESCE((SELECT SUM(s.amount_cents) FROM split s JOIN txn t ON t.id = s.txn_id"
+                + " WHERE t.account_id = a.id AND " + day + " < ?" + which + "), 0)"
+                + " FROM account a WHERE a.id = ?")) {
+            int i = 1;
+            ps.setString(i++, from.toString());
+            i = setCleared(ps, i, clearedOnly);
+            ps.setLong(i, accountId);
+            try (ResultSet rs = ps.executeQuery()) {
+                balance = rs.next() ? rs.getLong(1) : 0;
+            }
+        }
         java.util.Map<java.time.LocalDate, Long> perDay = new java.util.HashMap<>();
-        try (PreparedStatement ps = conn.prepareStatement("""
-                SELECT t.txn_date, SUM(s.amount_cents) FROM split s JOIN txn t ON t.id = s.txn_id
-                WHERE t.account_id = ? AND t.txn_date BETWEEN ? AND ?
-                GROUP BY t.txn_date
-                """)) {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT " + day + ", SUM(s.amount_cents) FROM split s JOIN txn t ON t.id = s.txn_id"
+                + " WHERE t.account_id = ? AND " + day + " BETWEEN ? AND ?" + which
+                + " GROUP BY " + day)) {
             ps.setLong(1, accountId);
             ps.setString(2, from.toString());
             ps.setString(3, to.toString());
+            setCleared(ps, 4, clearedOnly);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     perDay.put(java.time.LocalDate.parse(rs.getString(1)), rs.getLong(2));
@@ -223,6 +249,16 @@ public class AccountRepository {
             out[i] = balance;
         }
         return out;
+    }
+
+    /** Binds the cleared statuses from index i if clearedOnly; returns the next index. */
+    private static int setCleared(PreparedStatement ps, int i, boolean clearedOnly) throws SQLException {
+        if (clearedOnly) {
+            ps.setString(i++, TxnStatus.RECONCILED.code());
+            ps.setString(i++, TxnStatus.CLEARED.code());
+            ps.setString(i++, TxnStatus.RECONCILING.code());
+        }
+        return i;
     }
 
     /**

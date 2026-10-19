@@ -39,7 +39,8 @@ import java.util.Set;
  *    the choice is remembered (payee_rename) and offered the next time that
  *    bank name is downloaded, in any account.
  * Either way it is marked as downloaded (matched or new), which the ledger
- * shows in its download column.
+ * shows in its download column, and the bank's date is kept as its Bank
+ * Date (the date it posted), whatever date it was entered on.
  */
 final class DownloadImporter {
 
@@ -111,8 +112,23 @@ final class DownloadImporter {
         return s == null ? "" : s.trim().toLowerCase(Locale.ROOT);
     }
 
-    /** The downloads not imported into this account before, in date order. */
+    /**
+     * The downloads not imported into this account before, in date order.
+     * Ones imported before that have no Bank Date yet (imported before there
+     * was one) get it now.
+     */
     List<Download> notYetImported(long accountId, List<Download> downloads) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement("UPDATE txn SET bank_date = ?"
+                + " WHERE account_id = ? AND download_id = ? AND bank_date IS NULL")) {
+            for (Download d : downloads) {
+                if (d.id() != null && d.date() != null) {
+                    ps.setString(1, d.date().toString());
+                    ps.setLong(2, accountId);
+                    ps.setString(3, d.id());
+                    ps.executeUpdate();
+                }
+            }
+        }
         Set<String> imported = new HashSet<>();
         try (PreparedStatement ps = conn.prepareStatement(
                 "SELECT download_id FROM txn WHERE account_id = ? AND download_id IS NOT NULL")) {
@@ -214,13 +230,15 @@ final class DownloadImporter {
             memo = memo + " - " + description;                // don't lose a memo typed by hand
         }
         try (PreparedStatement ps = conn.prepareStatement("UPDATE txn SET status = ?, memo = ?,"
-                + " download_status = ?, download_id = ?, txn_type = COALESCE(?, txn_type) WHERE id = ?")) {
+                + " download_status = ?, download_id = ?, txn_type = COALESCE(?, txn_type), bank_date = ?"
+                + " WHERE id = ?")) {
             ps.setString(1, c.alreadyCleared() ? c.status().code() : TxnStatus.CLEARED.code());
             TransactionRepository.setText(ps, 2, memo);
             ps.setString(3, MATCHED);
             TransactionRepository.setText(ps, 4, d.id());
             TransactionRepository.setText(ps, 5, TransactionRepository.normalizeType(d.type()));   // the bank's type
-            ps.setLong(6, c.id());
+            ps.setString(6, d.date().toString());                 // when the bank posted it
+            ps.setLong(7, c.id());
             ps.executeUpdate();
         }
         if (!c.alreadyCleared()) {
@@ -268,6 +286,7 @@ final class DownloadImporter {
             e.category = debt != null ? debt : account.defaultCategory();
             e.amountCents = d.amountCents();
             e.status = TxnStatus.CLEARED;
+            e.bankDate = d.date();
             transactions.insertInCurrentTransaction(account.id(), e);
             long id = e.id;
             try (PreparedStatement ps = conn.prepareStatement(

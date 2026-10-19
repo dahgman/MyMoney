@@ -86,6 +86,21 @@ final class UndoLog {
         }
     }
 
+    /**
+     * Reverses everything changed since the last checkpoint, as if it had
+     * never happened: nothing is left to undo or redo for it (Cancel in
+     * Reconcile Account). Earlier undo steps are untouched.
+     */
+    void revertToCheckpoint() throws SQLException {
+        long current = lastAssignedSeq();
+        if (current <= lastSeq || !anyLogged(lastSeq + 1, current)) {
+            lastSeq = current;
+            return;
+        }
+        Step reversal = replay(new Step(lastSeq + 1, current, ""));
+        deleteRange(reversal);                          // what replaying it logged: no redo
+    }
+
     /** The name of the action Undo would reverse, or null if there is none. */
     String undoLabel() {
         return undoSteps.isEmpty() ? null : undoSteps.peek().label();

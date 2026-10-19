@@ -202,13 +202,10 @@ public class StartupDialog extends javax.swing.JDialog {
     }//GEN-LAST:event_newButtonActionPerformed
 
     private void browseButtonActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_browseButtonActionPerformed
-        JFileChooser fc = new JFileChooser(System.getProperty("user.home"));
-        fc.setDialogTitle("Open a MyMoney file");
-        fc.setFileFilter(new FileNameExtensionFilter(
-                "MyMoney files (*." + Database.EXTENSION + ")", Database.EXTENSION));
-        if (fc.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
-            openFile(fc.getSelectedFile().toPath());
-        }        
+        Path file = chooseFile(this);
+        if (file != null) {
+            openFile(file);
+        }
     }//GEN-LAST:event_browseButtonActionPerformed
 
     private void removeButtonActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_removeButtonActionPerformed
@@ -253,6 +250,55 @@ public class StartupDialog extends javax.swing.JDialog {
 
     public Database getDatabase() {
         return database;
+    }
+
+    /** Asks for a MyMoney file to open (starting in the home folder); null if cancelled. */
+    static Path chooseFile(java.awt.Component parent) {
+        JFileChooser fc = new JFileChooser(System.getProperty("user.home"));
+        fc.setDialogTitle("Open a MyMoney file");
+        fc.setFileFilter(new FileNameExtensionFilter(
+                "MyMoney files (*." + Database.EXTENSION + ")", Database.EXTENSION));
+        return fc.showOpenDialog(parent) == JFileChooser.APPROVE_OPTION ? fc.getSelectedFile().toPath() : null;
+    }
+
+    /**
+     * The first time MyMoney runs (no files used yet): create a new file or
+     * open an existing one, until one is open or Exit is chosen. Either way
+     * the file becomes the default, opened at startup from then on.
+     * @return the open file, or null for Exit
+     */
+    static Database firstRun(AppConfig config) {
+        Object[] options = {"Create a New File...", "Open an Existing File...", "Exit"};
+        while (true) {
+            int choice = JOptionPane.showOptionDialog(null,
+                    "<html><b>Welcome to MyMoney</b><br><br>Create a new MyMoney file to start keeping your"
+                    + " accounts,<br>or open one you already have (say, copied from another computer or"
+                    + "<br>kept on a network share).</html>",
+                    "MyMoney", JOptionPane.DEFAULT_OPTION, JOptionPane.PLAIN_MESSAGE, AppIcon.large(),
+                    options, options[0]);
+            if (choice == 0) {
+                NewDatabaseDialog nd = new NewDatabaseDialog(null, true, config);
+                nd.setLocationRelativeTo(null);
+                nd.setVisible(true);                    // made the default itself
+                if (nd.getDatabase() != null) {
+                    return nd.getDatabase();
+                }
+            } else if (choice == 1) {
+                Path file = chooseFile(null);
+                Database opened = file == null ? null : PasswordPrompt.open(null, file);
+                if (opened != null) {
+                    try {
+                        config.addRecent(file);
+                        config.setDefaultDatabase(file);
+                    } catch (SQLException ignored) {
+                        // it's open; it just won't be remembered
+                    }
+                    return opened;
+                }
+            } else {
+                return null;                            // Exit, or the window closed
+            }
+        }
     }
 
     /**

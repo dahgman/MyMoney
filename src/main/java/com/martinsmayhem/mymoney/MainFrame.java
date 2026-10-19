@@ -175,6 +175,7 @@ public class MainFrame extends javax.swing.JFrame {
         }
         SwingUtilities.invokeLater(this::selectTransactionNearToday);   // once the window is showing
         countUse();                                      // for the backup reminder
+        setupSync();
         Splash.step("Ready", 100);
     }
 
@@ -198,7 +199,7 @@ public class MainFrame extends javax.swing.JFrame {
         ledgerTable.setSurrendersFocusOnKeystroke(true);                         // typing goes straight into the cell
 
         TableColumnModel cols = ledgerTable.getColumnModel();
-        int[] widths = {110, 60, 160, 160, 110, 150, 130, 30, 90, 90, 100, 30, 30, 90, 90, 120, 110};
+        int[] widths = {110, 60, 160, 160, 110, 150, 130, 62, 90, 90, 100, 30, 30, 90, 90, 120, 110, 110};
         for (int i = 0; i < widths.length; i++) {
             cols.getColumn(i).setPreferredWidth(widths[i]);
         }
@@ -277,7 +278,19 @@ public class MainFrame extends javax.swing.JFrame {
         ledgerTable.setDefaultEditor(String.class, new AutoCompleteEditor(null, this::commitAndMoveDown));
         cols.getColumn(LedgerTableModel.CATEGORY).setCellEditor(
                 new AutoCompleteEditor(this::categoryPaths, this::commitAndMoveDown));
+        cols.getColumn(LedgerTableModel.PAYEE).setCellEditor(
+                new AutoCompleteEditor(this::payeeNames, this::commitAndMoveDown));
         cols.getColumn(LedgerTableModel.DATE).setCellEditor(new DateCellEditor(this::commitAndMoveDown));
+        cols.getColumn(LedgerTableModel.BANK_DATE).setCellEditor(new DateCellEditor(this::commitAndMoveDown));
+        // Bank Date: hovering says how long the bank took, counted from the date entered.
+        TableCellRenderer plain = ledgerTable.getDefaultRenderer(Object.class);
+        cols.getColumn(LedgerTableModel.BANK_DATE).setCellRenderer((table, value, isSelected, hasFocus, row, column) -> {
+            java.awt.Component c = plain.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
+            if (c instanceof JComponent j) {
+                j.setToolTipText(ledgerModel.bankDelay(row));
+            }
+            return c;
+        });
 
         // Tag: a colored pill; typing suggests existing tags, and a new name creates a tag.
         cols.getColumn(LedgerTableModel.TAG).setCellRenderer(muted(TagCell.renderer(ledgerModel::tagColor)));
@@ -351,6 +364,7 @@ public class MainFrame extends javax.swing.JFrame {
         order.moveColumn(order.getColumnIndex("Interest"), order.getColumnIndex("Deposit") + 1);
         order.moveColumn(order.getColumnIndex("Principal"), order.getColumnIndex("Interest") + 1);
         order.moveColumn(order.getColumnIndex("Principal Bal."), order.getColumnIndex("Balance") + 1);
+        order.moveColumn(order.getColumnIndex("Bank Date"), order.getColumnIndex("Date") + 1);
         setupColumnChooser();
     }
 
@@ -643,6 +657,7 @@ public class MainFrame extends javax.swing.JFrame {
                 BorderFactory.createMatteBorder(1, 0, 0, 0, java.awt.Color.LIGHT_GRAY),
                 BorderFactory.createEmptyBorder(4, 6, 4, 6)));
         bar.add(selectionTotalLabel, java.awt.BorderLayout.EAST);
+        bar.add(syncStatusLabel, java.awt.BorderLayout.WEST);
         ledgerTable.getSelectionModel().addListSelectionListener(e -> {
             if (!e.getValueIsAdjusting()) {
                 updateSelectionTotal();
@@ -934,6 +949,11 @@ public class MainFrame extends javax.swing.JFrame {
         fileMenu.insert(menuItem("Import...", this::importFile), 2);
         fileMenu.insert(menuItem("Back Up Database...", this::backupDatabase), 3);
         fileMenu.insert(menuItem("Rename File...", this::renameFile), 4);
+        fileMenu.insertSeparator(5);
+        JMenuItem syncItem = menuItem("Sync Now", () -> syncNow(true));
+        syncItem.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_F5, 0));
+        fileMenu.insert(syncItem, 6);
+        fileMenu.insert(menuItem("Sync Settings...", this::syncSettings), 7);
 
         // Account menu: the selected account, and tags.
         javax.swing.JMenu accountMenu = new javax.swing.JMenu("Account");
@@ -959,11 +979,7 @@ public class MainFrame extends javax.swing.JFrame {
         javax.swing.JMenu editMenu = new javax.swing.JMenu("Edit");
         JPopupMenu ledgerMenu = new JPopupMenu();
         for (javax.swing.JComponent menu : new javax.swing.JComponent[] {editMenu, ledgerMenu}) {
-            menu.add(menuItem("Change Date...", () -> bulkChange(LedgerTableModel.DATE)));
-            menu.add(menuItem("Change Payee...", () -> bulkChange(LedgerTableModel.PAYEE)));
-            menu.add(menuItem("Change Category...", () -> bulkChange(LedgerTableModel.CATEGORY)));
-            menu.add(menuItem("Change Tag...", () -> bulkChange(LedgerTableModel.TAG)));
-            menu.add(menuItem("Change Status...", () -> bulkChange(LedgerTableModel.STATUS)));
+            menu.add(menuItem("Edit Transactions...", this::editTransactions));
             menu.add(menuItem("Move Memo to Description", this::moveMemoToDescription));
             menu.add(menuItem("Clear Downloaded Flag", this::clearDownloadedFlag));
             menu.add(menuItem("Add to Schedule...", this::addToSchedule));
@@ -1607,28 +1623,294 @@ public class MainFrame extends javax.swing.JFrame {
             ledgerTable.getCellEditor().stopCellEditing();
         }
         resolveDraft(false);
+        checkpoint("Change");             // what came before stays its own undo step: Cancel puts back only this
+        java.util.Set<Long> attachmentsBefore;
         try {
+            attachmentsBefore = attachments.idsFor(a.id());
+        } catch (SQLException e) {
+            attachmentsBefore = null;      // can't tell which files are new: no Cancel
+        }
+        try {
+            // The start window every time, even to pick up an unfinished one (with its statement filled
+            // in), so the statement's period is always shown and, with As of, selected.
             ReconcileRepository.Reconciliation r = reconciles.unfinished(a.id());
-            if (r == null) {
-                LocalDate last = reconciles.lastStatementDate(a.id());
-                ReconcileStartDialog start = new ReconcileStartDialog(this, a, reconciles.beginningBalance(a),
-                        null, last == null ? LocalDate.now() : last.plusMonths(1));
-                start.setVisible(true);
-                if (!start.wasAccepted()) {
-                    return;
-                }
-                r = reconciles.start(a, start.statementDate(), start.endingCents(), start.asOf());
+            LocalDate last = reconciles.lastReconciledDate(a.id());
+            LocalDate date = r != null ? r.statementDate() : last == null ? LocalDate.now() : last.plusMonths(1);
+            ReconcileStartDialog start = new ReconcileStartDialog(this, a, reconciles.beginningBalance(a),
+                    r == null ? null : r.endingBalanceCents(), date, reconciles.statementStart(a.id()), true);
+            start.setVisible(true);
+            if (!start.wasAccepted()) {
+                return;
             }
+            r = reconciles.start(a, start.startDate(), start.statementDate(), start.endingCents(), start.asOf());
             ReconcileWindow w = new ReconcileWindow(this, a, r, reconciles, transactionRepo, attachments,
-                    this::payeeNames, this::categoryPaths, this::tagNames);
+                    this::payeeNames, this::categoryPaths, this::tagNames,
+                    undoLog != null && attachmentsBefore != null);
             w.setVisible(true);
-            checkpoint(w.wasFinished() ? "Reconcile" : "Reconcile (unfinished)");
+            if (w.wasCancelled()) {
+                cancelReconcile(a, attachmentsBefore);
+            } else {
+                checkpoint(w.wasFinished() ? "Reconcile" : "Reconcile (unfinished)");
+            }
         } catch (SQLException e) {
             showError("Could not reconcile the account:\n" + e.getMessage());
         }
         ledgerModel.reload();
         updateSummary(a);
         refreshTreeBalances();
+    }
+
+    // ----- Sync with phones (docs/SYNC-DESIGN.md) ---------------------------------
+
+    private SyncEngine syncEngine;
+    private javax.swing.Timer syncTimer;
+    private boolean syncRunning;
+    private boolean closing;                     // the window is closing: no more syncs touch the file
+    private final JLabel syncStatusLabel = new JLabel(" ");
+
+    /** Syncs now (if it's set up), then every few minutes while the file is open. */
+    private void setupSync() {
+        syncEngine = new SyncEngine(db, attachments);
+        syncTimer = new javax.swing.Timer(5 * 60_000, e -> syncNow(false));
+        restartSyncTimer();
+        SwingUtilities.invokeLater(() -> syncNow(false));
+    }
+
+    private void restartSyncTimer() {
+        syncTimer.stop();
+        try {
+            SyncRepository.Settings s = new SyncRepository(db).settings();
+            if (s.isSetUp()) {
+                syncTimer.setDelay(s.minutes() * 60_000);
+                syncTimer.setInitialDelay(s.minutes() * 60_000);
+                syncTimer.start();
+            } else {
+                syncStatusLabel.setText(" ");
+            }
+        } catch (SQLException e) {
+            // no automatic sync this time
+        }
+    }
+
+    /** File > Sync Settings... */
+    private void syncSettings() {
+        if (SyncDialog.show(this, db)) {
+            restartSyncTimer();
+            syncNow(false);
+        }
+    }
+
+    /** True while a modal dialog of this window is open (an automatic sync waits for it). */
+    private boolean dialogOpen() {
+        for (java.awt.Window w : getOwnedWindows()) {
+            if (w.isShowing() && w instanceof java.awt.Dialog d && d.isModal()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Syncs with the phones: the mailbox is read and written in the
+     * background, and the phones' changes are applied here, on the window's
+     * thread, as one undo step. manual: File > Sync Now (says how it went,
+     * and offers the settings if sync isn't set up); otherwise it quietly
+     * waits while a cell is being typed in or a dialog is open.
+     */
+    private void syncNow(boolean manual) {
+        if (closing || syncEngine == null) {
+            return;
+        }
+        if (syncRunning) {
+            if (manual) {
+                syncStatusLabel.setText("Syncing… (already)");
+            }
+            return;
+        }
+        if (!manual && (ledgerTable.isEditing() || dialogOpen())) {
+            return;                                      // next time
+        }
+        SyncEngine.Plan plan;
+        try {
+            plan = syncEngine.plan();
+        } catch (SQLException e) {
+            syncFailed("Could not read the sync settings: " + e.getMessage(), manual);
+            return;
+        }
+        if (plan == null) {
+            if (manual && JOptionPane.showConfirmDialog(this, "Syncing with phones isn't set up for this file."
+                    + " Set it up now?", "Sync Now", JOptionPane.YES_NO_OPTION) == JOptionPane.YES_OPTION) {
+                syncSettings();
+            }
+            return;
+        }
+        syncRunning = true;
+        syncStatusLabel.setText("Syncing…");
+        new javax.swing.SwingWorker<SyncEngine.Summary, Void>() {
+            @Override
+            protected SyncEngine.Summary doInBackground() throws Exception {
+                SyncEngine.Fetched fetched = syncEngine.fetch(plan);
+                SyncEngine.Outgoing[] out = new SyncEngine.Outgoing[1];
+                Exception[] failed = new Exception[1];
+                SwingUtilities.invokeAndWait(() -> {
+                    try {
+                        out[0] = applySync(fetched, manual);
+                    } catch (Exception e) {
+                        failed[0] = e;
+                    }
+                });
+                if (failed[0] != null) {
+                    throw failed[0];
+                }
+                return out[0] == null ? null : syncEngine.publish(out[0]);
+            }
+
+            @Override
+            protected void done() {
+                syncRunning = false;
+                if (closing) {
+                    return;
+                }
+                try {
+                    SyncEngine.Summary s = get();
+                    if (s != null) {
+                        syncDone(s, manual);
+                    } else {
+                        syncStatusLabel.setText(" ");
+                    }
+                } catch (java.util.concurrent.ExecutionException e) {
+                    Throwable cause = e.getCause() == null ? e : e.getCause();
+                    syncFailed(cause.getMessage(), manual);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        }.execute();
+    }
+
+    /**
+     * The window-thread part of a sync: applies the phones' changes (one undo
+     * step) and makes their new snapshots. Null if it has to wait (closing, or
+     * being typed in).
+     */
+    private SyncEngine.Outgoing applySync(SyncEngine.Fetched fetched, boolean manual) throws SQLException {
+        if (closing || !isDisplayable()) {
+            return null;
+        }
+        if (ledgerTable.isEditing()) {
+            if (!manual || !ledgerTable.getCellEditor().stopCellEditing()) {
+                return null;
+            }
+        }
+        checkpoint("Change");                            // whatever came before stays its own undo step
+        SyncEngine.Outgoing out = syncEngine.apply(fetched);
+        SyncEngine.Summary s = out.summary();
+        if (s.applied() + s.conflicts() > 0) {
+            checkpoint("Sync from Phone");
+            ledgerModel.reload();
+            updateSummary(selectedAccount());
+            refreshTreeBalances();
+            refreshSummaryIfShown();
+        }
+        return out;
+    }
+
+    private void syncDone(SyncEngine.Summary s, boolean manual) {
+        String time = java.time.LocalTime.now().format(java.time.format.DateTimeFormatter.ofPattern("h:mm a"));
+        int fromPhones = s.applied() + s.conflicts();
+        String text = "Synced " + time + (fromPhones > 0 ? " · " + fromPhones + " from phones" : "")
+                + (s.rejected() > 0 ? " · " + s.rejected() + " refused" : "");
+        syncStatusLabel.setText(s.ok() ? text : "⚠ " + text);
+        syncStatusLabel.setToolTipText(s.ok() ? null : "<html>" + String.join("<br>", s.problems()) + "</html>");
+        if (manual) {
+            StringBuilder m = new StringBuilder("Synced with the phones.");
+            if (fromPhones > 0) {
+                m.append("\n\n").append(fromPhones).append(fromPhones == 1 ? " change" : " changes")
+                        .append(" from phones applied").append(s.conflicts() > 0 ? " (" + s.conflicts()
+                        + " changed here too; this computer's values were kept)" : "").append('.');
+            }
+            if (s.rejected() > 0) {
+                m.append("\n").append(s.rejected()).append(" refused; the phone shows why.");
+            }
+            for (String p : s.problems()) {
+                m.append("\n\n").append(p);
+            }
+            JOptionPane.showMessageDialog(this, m.toString(), "Sync Now",
+                    s.ok() ? JOptionPane.INFORMATION_MESSAGE : JOptionPane.WARNING_MESSAGE);
+        }
+    }
+
+    private void syncFailed(String why, boolean manual) {
+        syncStatusLabel.setText("⚠ Sync failed");
+        syncStatusLabel.setToolTipText(why);
+        if (manual) {
+            showError("Could not sync with the phones:\n" + why);
+        }
+    }
+
+    /**
+     * On closing: sends the phones a last snapshot of what changed here
+     * (their own changes wait for next time), waiting up to 8 seconds.
+     */
+    private void finalSync() {
+        closing = true;
+        if (syncTimer != null) {
+            syncTimer.stop();
+        }
+        if (syncEngine == null) {
+            return;
+        }
+        try {
+            SyncEngine.Plan plan = syncEngine.plan();
+            if (plan == null || plan.devices().isEmpty()) {
+                return;
+            }
+            SyncEngine.Outgoing out = syncEngine.apply(SyncEngine.Fetched.nothing(plan));
+            Thread t = new Thread(() -> {
+                try {
+                    syncEngine.publish(out);
+                } catch (java.io.IOException ignored) {
+                    // the phones get it next time
+                }
+            }, "final sync");
+            t.setDaemon(true);
+            t.start();
+            t.join(8_000);
+        } catch (SQLException | InterruptedException ignored) {
+            // the phones get it next time
+        }
+    }
+
+    @Override
+    public void dispose() {
+        closing = true;                                  // switching files: this one's sync stops
+        if (syncTimer != null) {
+            syncTimer.stop();
+        }
+        super.dispose();
+    }
+
+    /**
+     * Cancel in Reconcile Account: removes the files attached since it was
+     * started (they're on disk, so not in the undo log), then reverses every
+     * other change since then, leaving no undo step for it.
+     */
+    private void cancelReconcile(Account a, java.util.Set<Long> attachmentsBefore) {
+        try {
+            for (AttachmentRepository.Attachment x : attachments.addedSince(a.id(), attachmentsBefore)) {
+                attachments.remove(x, a);
+            }
+        } catch (SQLException | java.io.IOException e) {
+            showError("Could not remove a file attached while reconciling:\n" + e.getMessage());
+        }
+        try {
+            undoLog.revertToCheckpoint();
+        } catch (SQLException e) {
+            showError("Could not put everything back:\n" + e.getMessage()
+                    + "\n\nNothing was changed; use Edit > Undo to reverse the reconcile instead.");
+            checkpoint("Reconcile (unfinished)");
+        }
+        updateUndoMenu();
     }
 
     /**
@@ -2130,42 +2412,44 @@ public class MainFrame extends javax.swing.JFrame {
                 .filter(ledgerModel::isSavedRow).toArray();
     }
 
-    /** Edit menu / right-click: set Date, Payee, Category, Tag or Status on every selected transaction. */
-    private void bulkChange(int column) {
-        int[] rows = selectedTransactionRows();
-        if (rows.length == 0) {
-            showError("Select one or more transactions first.\n"
-                    + "(Ctrl+click or Shift+click to select several.)");
-            return;
-        }
-        String what = rows.length == 1 ? "1 transaction" : rows.length + " transactions";
-        Object value = switch (column) {
-            case LedgerTableModel.DATE -> askDate(what);
-            case LedgerTableModel.PAYEE -> askChoice("Change Payee", "New payee for " + what + ":",
-                    payeeNames(), "Leave it blank to remove the payee.");
-            case LedgerTableModel.CATEGORY -> askChoice("Change Category", "New category for " + what + ":",
-                    categoryPaths(), "Use Parent:Child for a child category, [Account] for a transfer.\n"
-                    + "Leave it blank to remove the category.");
-            case LedgerTableModel.TAG -> askChoice("Change Tag", "New tag for " + what + ":",
-                    tagNames(), "A new name creates a new tag. Leave it blank to remove the tag.");
-            case LedgerTableModel.STATUS -> askStatus(what);
-            default -> null;
-        };
-        if (value == null) {
-            return;                                     // cancelled
-        }
-        String note = ledgerModel.bulkSet(rows, column, value);
-        if (note != null) {
-            JOptionPane.showMessageDialog(this, note, "MyMoney", JOptionPane.INFORMATION_MESSAGE);
-        }
-    }
-
     /** Edit menu / right-click: moves the selected transactions' memos into their descriptions. */
     /**
      * Edit > Clear Downloaded Flag: the selected transactions no longer show
      * as downloaded (matched or new), and importing their file again offers
      * those downloads again. Status, payee and memo stay as they are.
      */
+    /**
+     * Edit > Edit Transactions...: one window to change any of the selected
+     * transactions' fields at once (see BulkEditDialog), as one undo step.
+     */
+    private void editTransactions() {
+        if (ledgerTable.isEditing()) {
+            ledgerTable.getCellEditor().stopCellEditing();
+        }
+        resolveDraft(false);
+        int[] rows = selectedTransactionRows();
+        List<LedgerEntry> selected = new ArrayList<>();
+        for (int row : rows) {
+            LedgerEntry e = ledgerModel.entryCopy(row);
+            if (e != null) {
+                selected.add(e);
+            }
+        }
+        if (selected.isEmpty()) {
+            showError("Select one or more transactions first.\n(Ctrl+click or Shift+click to select several.)");
+            return;
+        }
+        Map<Integer, Object> values = BulkEditDialog.ask(this, selected, payeeNames(), categoryPaths(), tagNames(),
+                typeNames());
+        if (values == null) {
+            return;                                      // cancelled
+        }
+        String note = ledgerModel.bulkSet(rows, values);
+        if (note != null) {
+            JOptionPane.showMessageDialog(this, note, "Edit Transactions", JOptionPane.INFORMATION_MESSAGE);
+        }
+    }
+
     /**
      * Edit > Move to Account...: moves the selected transactions to another
      * account (see TransactionRepository.moveToAccount), as one undo step.
@@ -2282,51 +2566,6 @@ public class MainFrame extends javax.swing.JFrame {
             append = choice == 1;
         }
         ledgerModel.moveMemoToDescription(rows, append);
-    }
-
-    /** Asks for a status from the same drop-down as the Status column. Null if cancelled. */
-    private TxnStatus askStatus(String what) {
-        JComboBox<TxnStatus> combo = StatusCell.comboBox();
-        combo.setSelectedItem(TxnStatus.CLEARED);
-        int r = JOptionPane.showConfirmDialog(this, new Object[] {"New status for " + what + ":", combo},
-                "Change Status", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
-        return r == JOptionPane.OK_OPTION ? (TxnStatus) combo.getSelectedItem() : null;
-    }
-
-    /** Asks for a date by typing or with the calendar. Null if cancelled. */
-    private String askDate(String what) {
-        javax.swing.JTextField field = new javax.swing.JTextField(
-                java.time.LocalDate.now().format(LedgerTableModel.DISPLAY_DATE), 12);
-        CalendarPanel calendar = new CalendarPanel(d -> field.setText(d.format(LedgerTableModel.DISPLAY_DATE)));
-        calendar.setSelected(java.time.LocalDate.now());
-        while (true) {
-            int r = JOptionPane.showConfirmDialog(this,
-                    new Object[] {"New date for " + what + ":", field, calendar},
-                    "Change Date", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
-            if (r != JOptionPane.OK_OPTION) {
-                return null;
-            }
-            try {
-                LedgerTableModel.parseDate(field.getText().trim());
-                return field.getText().trim();
-            } catch (IllegalArgumentException e) {
-                showError(e.getMessage());
-            }
-        }
-    }
-
-    /** Asks for a value, offering the existing ones in an editable list. Null if cancelled. */
-    private String askChoice(String title, String prompt, List<String> choices, String hint) {
-        JComboBox<String> combo = new JComboBox<>(choices.toArray(new String[0]));
-        combo.setEditable(true);
-        combo.setSelectedItem("");
-        int r = JOptionPane.showConfirmDialog(this, new Object[] {prompt, combo, hint},
-                title, JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
-        if (r != JOptionPane.OK_OPTION) {
-            return null;
-        }
-        Object value = combo.getEditor().getItem();
-        return value == null ? "" : value.toString().trim();
     }
 
     /** The category a payee had last time, or null. */
@@ -2688,6 +2927,13 @@ public class MainFrame extends javax.swing.JFrame {
         String currentFormat = config.getString(AppConfig.DATE_FORMAT, LedgerTableModel.DATE_FORMATS[0]);
         dateFormat.setSelectedIndex(Math.max(0, java.util.Arrays.asList(LedgerTableModel.DATE_FORMATS)
                 .indexOf(currentFormat)));
+        Theme.Choice oldTheme = Theme.Choice.of(config.getString(AppConfig.THEME, "system"));
+        JComboBox<Theme.Choice> theme = new JComboBox<>(Theme.Choice.values());
+        theme.setSelectedItem(oldTheme);
+        JPanel themeRow = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 4, 0));
+        themeRow.add(new JLabel("Theme:"));
+        themeRow.add(theme);
+        themeRow.add(new JLabel("(Match the system: light or dark, as the desktop is set when MyMoney starts)"));
         JPanel dateRow = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 4, 0));
         dateRow.add(new JLabel("Dates:"));
         dateRow.add(dateFormat);
@@ -2740,7 +2986,7 @@ public class MainFrame extends javax.swing.JFrame {
         backupNote.setBorder(BorderFactory.createEmptyBorder(12, 0, 0, 0));
 
         javax.swing.JTabbedPane tabs = new javax.swing.JTabbedPane();
-        tabs.addTab("General", preferencesTab(openOnSummary, dateRow, balances, groupTotals));
+        tabs.addTab("General", preferencesTab(themeRow, openOnSummary, dateRow, balances, groupTotals));
         tabs.addTab("Ledger", preferencesTab(editHeading, enterDown, enterRight, autoDecimal, scheduleHeading,
                 scheduleRow));
         tabs.addTab("Imports", preferencesTab(importHeading, matchRow, afterHeading, afterImport));
@@ -2764,6 +3010,7 @@ public class MainFrame extends javax.swing.JFrame {
             config.setBoolean(AppConfig.AUTO_DECIMAL, autoDecimal.isSelected());
             config.setBoolean(AppConfig.OPEN_ON_SUMMARY, openOnSummary.isSelected());
             config.setString(AppConfig.DATE_FORMAT, LedgerTableModel.DATE_FORMATS[dateFormat.getSelectedIndex()]);
+            config.setString(AppConfig.THEME, ((Theme.Choice) theme.getSelectedItem()).key);
             config.setInt(AppConfig.SCHEDULE_DAYS, (Integer) scheduleDays.getValue());
             config.setString(AppConfig.IMPORT_FILE_ACTION, afterImport.choice());
             config.setString(AppConfig.BACKUP_FOLDER, folderText);
@@ -2774,6 +3021,9 @@ public class MainFrame extends javax.swing.JFrame {
             showError("The preferences apply now, but could not be saved for next time:\n" + e.getMessage());
         }
         enterNextField = enterRight.isSelected();
+        if (theme.getSelectedItem() != oldTheme) {
+            Theme.switchTo((Theme.Choice) theme.getSelectedItem());   // every open window, now
+        }
         Money.setAutoDecimal(autoDecimal.isSelected());
         String newFormat = LedgerTableModel.DATE_FORMATS[dateFormat.getSelectedIndex()];
         if (!newFormat.equals(currentFormat)) {
@@ -3027,7 +3277,8 @@ public class MainFrame extends javax.swing.JFrame {
                 }
                 balanceChart.setData(from, owed);
             } else {
-                balanceChart.setData(from, accounts.dailyBalances(a.id(), from, today));
+                // What the bank has posted: the cleared balance, day by day.
+                balanceChart.setData(from, accounts.dailyBalances(a.id(), from, today, true));
             }
         } catch (SQLException e) {
             balanceChart.setData(null, null);
@@ -3142,6 +3393,7 @@ public class MainFrame extends javax.swing.JFrame {
             ledgerTable.getCellEditor().stopCellEditing();
         }
         resolveDraft(false);
+        finalSync();
         remindToBackUp();
         db.close();
         config.close();

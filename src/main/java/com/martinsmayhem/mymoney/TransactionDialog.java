@@ -246,6 +246,7 @@ final class TransactionDialog extends JDialog {
         JComboBox<String> combo = new JComboBox<>(items.toArray(String[]::new));
         combo.setEditable(true);
         combo.setSelectedItem(text(value));
+        AutoComplete.attach(combo, () -> items);      // fills in as you type, like the ledger
         return combo;
     }
 

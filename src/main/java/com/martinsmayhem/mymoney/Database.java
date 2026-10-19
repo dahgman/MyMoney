@@ -43,7 +43,7 @@ public class Database implements AutoCloseable {
      *  12 - loans: the lender's monthly payment and first payment date
      * When changing the schema: bump this, update createSchema(), and add a step to upgrade().
      */
-    public static final int SCHEMA_VERSION = 19;
+    public static final int SCHEMA_VERSION = 21;
 
     private final Path file;
     private final Connection conn;
@@ -249,7 +249,106 @@ public class Database implements AutoCloseable {
     private static String buildUrl(Path file, String password) {
         // Path.toUri() produces a correctly escaped file:/// URI on Windows and Linux.
         String key = URLEncoder.encode(password, StandardCharsets.UTF_8).replace("+", "%20");
-        return "jdbc:sqlite:" + file.toUri() + "?cipher=sqlcipher&legacy=4&key=" + key;
+        String vfs = vfsFor(file);
+        return "jdbc:sqlite:" + file.toUri() + "?" + (vfs == null ? "" : "vfs=" + vfs + "&")
+                + "cipher=sqlcipher&legacy=4&key=" + key;
+    }
+
+    /**
+     * How SQLite locks a file on a network share (SMB/CIFS, NFS, ...), on
+     * Linux and macOS: with a "<file>.lock" folder made beside it while it
+     * writes, rather than byte-range locks, which those shares often don't
+     * honour the way SQLite needs ("database is locked", even on a new file).
+     * "multipleciphers-" keeps the encryption on top. On a local disk, and
+     * on Windows (whose SMB locks work), null: SQLite's usual locking.
+     */
+    static String vfsFor(Path file) {
+        String type;
+        try {
+            Path p = file.toAbsolutePath();
+            while (p != null && !Files.exists(p)) {
+                p = p.getParent();                      // a new file: the folder it's going in
+            }
+            type = p == null ? "" : Files.getFileStore(p).type();
+            if (p != null && Files.isReadable(Path.of("/proc/self/mounts"))) {
+                // Linux: an automounted share shows as "autofs"; the mount table has what's under it.
+                type = mountType(Files.readAllLines(Path.of("/proc/self/mounts")), p.toRealPath().toString(), type);
+            }
+        } catch (IOException | RuntimeException e) {
+            type = "";
+        }
+        return vfsForType(type, System.getProperty("os.name"));
+    }
+
+    /**
+     * From Linux's mount table (/proc/self/mounts lines: "what where type
+     * options ..."), the type of the file system path is on: the mount with
+     * the longest mount point that holds it, past any "autofs" there. def if
+     * none is found.
+     */
+    static String mountType(java.util.List<String> mounts, String path, String def) {
+        String best = null;
+        String bestType = def;
+        for (String line : mounts) {
+            String[] f = line.split(" ");
+            if (f.length < 3) {
+                continue;
+            }
+            String where = f[1].replace("\\040", " ").replace("\\011", "\t").replace("\\134", "\\");
+            boolean holds = path.equals(where) || path.startsWith(where.endsWith("/") ? where : where + "/");
+            if (!holds) {
+                continue;
+            }
+            boolean longer = best == null || where.length() > best.length();
+            boolean sameButReal = best != null && where.length() == best.length() && "autofs".equals(bestType);
+            if (longer || sameButReal) {
+                best = where;
+                bestType = f[2];
+            }
+        }
+        return bestType;
+    }
+
+    /** vfsFor, given the file system's type ("cifs", "ext4", ...) and the operating system's name. */
+    static String vfsForType(String fileSystemType, String osName) {
+        if (osName == null || osName.toLowerCase().contains("win")) {
+            return null;
+        }
+        String t = fileSystemType == null ? "" : fileSystemType.toLowerCase();
+        for (String network : new String[] {"cifs", "smb", "nfs", "afp", "dav", "sshfs", "9p", "ceph", "gluster",
+                "rclone"}) {
+            if (t.contains(network)) {
+                return "multipleciphers-unix-dotfile";
+            }
+        }
+        return null;
+    }
+
+    /** True if opening failed because the file is locked (in use, or a lock left behind). */
+    public static boolean isLocked(SQLException e) {
+        String m = String.valueOf(e.getMessage());
+        return m.contains("SQLITE_BUSY") || m.contains("database is locked");
+    }
+
+    /**
+     * A lock left behind by a MyMoney that stopped mid-save on a network
+     * share ("<file>.lock", see vfsFor), or null if there's none.
+     */
+    public static Path leftoverLock(Path file) {
+        Path lock = Path.of(file.toAbsolutePath() + ".lock");
+        return vfsFor(file) != null && Files.exists(lock) ? lock : null;
+    }
+
+    /** Clears a lock left behind (see leftoverLock). */
+    public static void clearLock(Path lock) throws IOException {
+        if (Files.isDirectory(lock)) {
+            try (var s = Files.list(lock)) {
+                for (Path p : (Iterable<Path>) s::iterator) {
+                    Files.deleteIfExists(p);
+                }
+            }
+        }
+        Files.deleteIfExists(lock);
     }
 
     private int readSchemaVersion() throws SQLException {
@@ -297,6 +396,71 @@ public class Database implements AutoCloseable {
                 ps.executeUpdate();
             }
         }
+    }
+
+    /** The tables that get a uid: an id the phone and the desktop agree on (see docs/SYNC-DESIGN.md). */
+    static final String[] UID_TABLES = {"account", "category", "payee", "tag", "txn", "schedule"};
+
+    /** SQL for a new random UUID (version 4), like "1b4e28ba-2fa1-41d2-883f-0016d3cca427". */
+    static final String NEW_UUID = "lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4'"
+            + " || substr(hex(randomblob(2)), 2) || '-' || substr('89AB', 1 + abs(random()) % 4, 1)"
+            + " || substr(hex(randomblob(2)), 2) || '-' || hex(randomblob(6)))";
+
+    /**
+     * Schema 21, for syncing with the phone (docs/SYNC-DESIGN.md): a uid on
+     * each synced table (every row gets one now, and every new row as it's
+     * added); which accounts sync; paired phones; changes already applied;
+     * and the file's own id. Safe to run again: what's there already is kept.
+     */
+    private static void addSyncSchema(Statement st) throws SQLException {
+        for (String table : UID_TABLES) {
+            if (!hasColumn(st, table, "uid")) {
+                st.execute("ALTER TABLE " + table + " ADD COLUMN uid TEXT");
+            }
+            st.execute("UPDATE " + table + " SET uid = " + NEW_UUID + " WHERE uid IS NULL");
+            st.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_" + table + "_uid ON " + table + "(uid)");
+            st.execute("CREATE TRIGGER IF NOT EXISTS " + table + "_uid AFTER INSERT ON " + table
+                    + " WHEN NEW.uid IS NULL BEGIN UPDATE " + table + " SET uid = " + NEW_UUID
+                    + " WHERE id = NEW.id; END");
+        }
+        if (!hasColumn(st, "account", "sync")) {
+            st.execute("ALTER TABLE account ADD COLUMN sync INTEGER NOT NULL DEFAULT 0");
+        }
+        st.execute("""
+                CREATE TABLE IF NOT EXISTS sync_device (
+                    id                INTEGER PRIMARY KEY,
+                    uid               TEXT    NOT NULL UNIQUE,     -- the phone's device id (its mailbox folder)
+                    name              TEXT    NOT NULL,
+                    key               TEXT    NOT NULL,            -- its 256-bit AES key, base64
+                    include_scheduled INTEGER NOT NULL DEFAULT 1,  -- send it Scheduled transactions
+                    applied_through   INTEGER NOT NULL DEFAULT 0,  -- the last change file applied
+                    last_seen         TEXT,                        -- ISO instant of its last change file
+                    paired_at         TEXT    NOT NULL
+                )
+                """);
+        st.execute("""
+                CREATE TABLE IF NOT EXISTS sync_op (
+                    id         INTEGER PRIMARY KEY,
+                    device_id  INTEGER NOT NULL REFERENCES sync_device(id) ON DELETE CASCADE,
+                    op_id      TEXT    NOT NULL UNIQUE,            -- the phone's id for the change
+                    applied_at TEXT    NOT NULL,
+                    result     TEXT    NOT NULL,                   -- applied, applied-with-conflicts, rejected
+                    conflicts  TEXT,                               -- comma-separated field names
+                    message    TEXT
+                )
+                """);
+        st.execute("INSERT OR IGNORE INTO meta (key, value) VALUES ('sync_file_id', " + NEW_UUID + ")");
+    }
+
+    private static boolean hasColumn(Statement st, String table, String column) throws SQLException {
+        try (java.sql.ResultSet rs = st.executeQuery("PRAGMA table_info(" + table + ")")) {
+            while (rs.next()) {
+                if (column.equalsIgnoreCase(rs.getString("name"))) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /** Brings an older file up to SCHEMA_VERSION, one step at a time, all-or-nothing. */
@@ -446,7 +610,19 @@ public class Database implements AutoCloseable {
             if (fromVersion < 19) {
                 st.execute("ALTER TABLE attachment ADD COLUMN statement_date TEXT");
             }
-            // Future: if (fromVersion < 20) { ... }
+            if (fromVersion < 20) {
+                st.execute("ALTER TABLE txn ADD COLUMN bank_date TEXT");
+                // What's known of it already: a download added as new is on the bank's date, and a
+                // QIF download's id starts with its date ("QIF:2026-10-01|..."). Matched QFX ones
+                // get theirs when their file is imported again.
+                st.execute("UPDATE txn SET bank_date = txn_date WHERE download_status = 'N'");
+                st.execute("UPDATE txn SET bank_date = substr(download_id, 5, 10)"
+                        + " WHERE download_status = 'M' AND download_id GLOB 'QIF:[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*'");
+            }
+            if (fromVersion < 21) {
+                addSyncSchema(st);
+            }
+            // Future: if (fromVersion < 22) { ... }
 
             try (PreparedStatement ps = conn.prepareStatement(
                     "UPDATE meta SET value = ? WHERE key = 'schema_version'")) {
@@ -540,7 +716,8 @@ public class Database implements AutoCloseable {
                 schedule_date   TEXT,                            -- the scheduled date it was created for
                 loan_interest_cents INTEGER NOT NULL DEFAULT 0,  -- loans charged on due dates: this payment's interest (shown only)
                 txn_type        TEXT,                            -- its type, like POS or DIRECTDEBIT (from a bank download's TRNTYPE)
-                interest_override INTEGER                        -- loans: a payment's interest as entered by hand (NULL = calculated)
+                interest_override INTEGER,                       -- loans: a payment's interest as entered by hand (NULL = calculated)
+                bank_date       TEXT                             -- ISO: the date the bank posted it (from a bank download), or NULL
             )
             """,
             """
@@ -620,6 +797,7 @@ public class Database implements AutoCloseable {
             for (String sql : ddl) {
                 st.execute(sql);
             }
+            addSyncSchema(st);
             try (PreparedStatement ps = conn.prepareStatement(
                     "INSERT INTO meta (key, value) VALUES (?, ?)")) {
                 ps.setString(1, "schema_version");

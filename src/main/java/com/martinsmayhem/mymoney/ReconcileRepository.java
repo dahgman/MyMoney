@@ -28,6 +28,9 @@ final class ReconcileRepository {
     private static final String C = TxnStatus.CLEARED.code();
     private static final String I = TxnStatus.RECONCILING.code();
 
+    /** The date a transaction counts on for a statement: when the bank posted it, if known. */
+    private static final String DAY = "COALESCE(bank_date, txn_date)";
+
     private final Connection conn;
 
     ReconcileRepository(Database db) {
@@ -72,18 +75,76 @@ final class ReconcileRepository {
     }
 
     /**
+     * Where the account was last reconciled to: the later of the last
+     * finished reconciliation's statement date and the latest reconciled
+     * transaction's date (reconciled some other way, like in Quicken before
+     * it was imported, or by hand); null if it never has been.
+     */
+    LocalDate lastReconciledDate(long accountId) throws SQLException {
+        LocalDate statement = lastStatementDate(accountId);
+        LocalDate latest = null;
+        try (PreparedStatement ps = conn.prepareStatement("SELECT MAX(" + DAY + ") FROM txn"
+                + " WHERE account_id = ? AND status = ?")) {
+            ps.setLong(1, accountId);
+            ps.setString(2, R);
+            try (ResultSet rs = ps.executeQuery()) {
+                String d = rs.next() ? rs.getString(1) : null;
+                latest = d == null ? null : LocalDate.parse(d);
+            }
+        }
+        return statement == null ? latest : latest == null || statement.isAfter(latest) ? statement : latest;
+    }
+
+    /** The first day of the next statement's period: the day after lastReconciledDate (null: the beginning). */
+    LocalDate periodStart(long accountId) throws SQLException {
+        LocalDate last = lastReconciledDate(accountId);
+        return last == null ? null : last.plusDays(1);
+    }
+
+    /**
+     * The statement's first day, as the start window shows it: periodStart,
+     * or for an account never reconciled, its first transaction's date
+     * (null if it has none).
+     */
+    LocalDate statementStart(long accountId) throws SQLException {
+        LocalDate start = periodStart(accountId);
+        if (start != null) {
+            return start;
+        }
+        try (PreparedStatement ps = conn.prepareStatement("SELECT MIN(" + DAY + ") FROM txn WHERE account_id = ?")) {
+            ps.setLong(1, accountId);
+            try (ResultSet rs = ps.executeQuery()) {
+                String d = rs.next() ? rs.getString(1) : null;
+                return d == null ? null : LocalDate.parse(d);
+            }
+        }
+    }
+
+    /**
      * Starts a reconciliation, or changes the statement of the unfinished one.
      *
-     * Only the statement's own period is selected: transactions dated from
-     * the last finished reconciliation's statement date (or the beginning,
-     * for the first one) through this statement's date. A new
-     * reconciliation selects the Cleared ones in it; with asOf, every
-     * unreconciled one in it. Anything dated after the statement date keeps
-     * its status (and when a statement's date is moved earlier, ones now
-     * after it go back to the status they had).
+     * Only the statement's own period is selected: transactions from the day
+     * after the account was last reconciled (see periodStart; the beginning,
+     * for the first one) through this statement's date, each by the date the
+     * bank posted it (its Bank Date, or else its date). A new reconciliation
+     * selects the Cleared ones in it; with asOf, every unreconciled one in it.
+     * Anything after the statement date keeps its status (and when a
+     * statement's date is moved earlier, ones now after it go back to the
+     * status they had).
      */
     Reconciliation start(Account account, LocalDate statementDate, long endingBalanceCents, boolean asOf)
             throws SQLException {
+        return start(account, periodStart(account.id()), statementDate, endingBalanceCents, asOf);
+    }
+
+    /**
+     * As start, with the statement's period starting on periodStart (as
+     * chosen in the start window; null: from the first transaction) instead
+     * of the day after the last reconciliation. It only decides what's
+     * selected for you: anything selected already stays selected.
+     */
+    Reconciliation start(Account account, LocalDate periodStart, LocalDate statementDate, long endingBalanceCents,
+                         boolean asOf) throws SQLException {
         conn.setAutoCommit(false);
         try {
             Reconciliation r = unfinished(account.id());
@@ -95,7 +156,7 @@ final class ReconcileRepository {
                     ps.setLong(3, endingBalanceCents);
                     ps.executeUpdate();
                 }
-                selectPeriod(account.id(), lastStatementDate(account.id()), statementDate, true);
+                selectPeriod(account.id(), periodStart, statementDate, true);
             } else {
                 try (PreparedStatement ps = conn.prepareStatement("UPDATE reconciliation"
                         + " SET statement_date = ?, ending_balance_cents = ? WHERE id = ?")) {
@@ -107,7 +168,7 @@ final class ReconcileRepository {
                 deselectAfter(account.id(), statementDate);    // not this statement's any more
             }
             if (asOf) {
-                selectPeriod(account.id(), lastStatementDate(account.id()), statementDate, false);
+                selectPeriod(account.id(), periodStart, statementDate, false);
             }
             conn.commit();
         } catch (SQLException e) {
@@ -147,13 +208,13 @@ final class ReconcileRepository {
     }
 
     /**
-     * Selects the account's unreconciled transactions dated from (null: the
-     * beginning) through to; only the Cleared ones if clearedOnly.
+     * Selects the account's unreconciled transactions from (null: the
+     * beginning) through to, by bank date; only the Cleared ones if clearedOnly.
      */
     private void selectPeriod(long accountId, LocalDate from, LocalDate to, boolean clearedOnly)
             throws SQLException {
         try (PreparedStatement ps = conn.prepareStatement("UPDATE txn SET pre_reconcile_status = status,"
-                + " status = '" + I + "' WHERE account_id = ? AND txn_date BETWEEN ? AND ?"
+                + " status = '" + I + "' WHERE account_id = ? AND " + DAY + " BETWEEN ? AND ?"
                 + (clearedOnly ? " AND status = '" + C + "'" : " AND status NOT IN ('" + R + "', '" + I + "')"))) {
             ps.setLong(1, accountId);
             ps.setString(2, from == null ? "0000-01-01" : from.toString());
@@ -162,11 +223,11 @@ final class ReconcileRepository {
         }
     }
 
-    /** Puts back the status of the account's Reconciling transactions dated after date. */
+    /** Puts back the status of the account's Reconciling transactions after date (by bank date). */
     private void deselectAfter(long accountId, LocalDate date) throws SQLException {
         try (PreparedStatement ps = conn.prepareStatement("UPDATE txn SET status = COALESCE("
                 + "pre_reconcile_status, 'U'), pre_reconcile_status = NULL"
-                + " WHERE account_id = ? AND txn_date > ? AND status = '" + I + "'")) {
+                + " WHERE account_id = ? AND " + DAY + " > ? AND status = '" + I + "'")) {
             ps.setLong(1, accountId);
             ps.setString(2, date.toString());
             ps.executeUpdate();

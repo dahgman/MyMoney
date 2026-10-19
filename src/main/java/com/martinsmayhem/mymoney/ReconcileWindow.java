@@ -50,7 +50,8 @@ import javax.swing.table.TableRowSorter;
  * Space) selects it for this statement, marking it Reconciling; again
  * deselects it. The totals follow along, and Done is only enabled once the
  * Difference is $0.00. Finish Later (or closing the window) keeps the
- * selections for next time.
+ * selections for next time. Cancel asks the caller (see wasCancelled) to
+ * put back everything changed since Reconcile Account was started.
  */
 final class ReconcileWindow extends JDialog {
 
@@ -79,12 +80,15 @@ final class ReconcileWindow extends JDialog {
     private AttachmentsPanel statementFiles;            // set by statementPanel()
     private long beginningCents;
     private boolean finished;
+    private boolean cancelled;
+    private final boolean canCancel;
 
     ReconcileWindow(Window owner, Account account, ReconcileRepository.Reconciliation reconciliation,
                     ReconcileRepository reconciles, TransactionRepository transactions,
                     AttachmentRepository attachments, Supplier<List<String>> payees,
-                    Supplier<List<String>> categories, Supplier<List<String>> tags) {
+                    Supplier<List<String>> categories, Supplier<List<String>> tags, boolean canCancel) {
         super(owner, "Reconcile Account: " + account.name(), ModalityType.APPLICATION_MODAL);
+        this.canCancel = canCancel;
         this.account = account;
         this.reconciliation = reconciliation;
         this.reconciles = reconciles;
@@ -127,6 +131,11 @@ final class ReconcileWindow extends JDialog {
         return finished;
     }
 
+    /** True if Cancel was pressed: everything changed while reconciling is to be put back. */
+    boolean wasCancelled() {
+        return cancelled;
+    }
+
     // ----- Layout ----------------------------------------------------------
 
     /** Left of the buttons: the statement's details and its attached files. */
@@ -163,8 +172,13 @@ final class ReconcileWindow extends JDialog {
         return p;
     }
 
-    /** Right: Finish Later / Deselect All / Done, the transaction buttons, and the balances. */
+    /** Right: Cancel / Finish Later / Deselect All / Done, the transaction buttons, and the balances. */
     private JPanel controlsPanel() {
+        JButton cancel = new JButton("Cancel");
+        cancel.setToolTipText(canCancel ? "Put everything back as it was before this reconcile was started"
+                : "Undo isn't available for this file, so changes can't be put back");
+        cancel.setEnabled(canCancel);
+        cancel.addActionListener(e -> cancel());
         JButton later = new JButton("Finish Later");
         later.addActionListener(e -> dispose());
         JButton deselectAll = new JButton("Deselect All");
@@ -172,6 +186,7 @@ final class ReconcileWindow extends JDialog {
         doneButton.setFont(doneButton.getFont().deriveFont(Font.BOLD));
         doneButton.addActionListener(e -> done());
         JPanel main = new JPanel(new FlowLayout(FlowLayout.CENTER, 8, 0));
+        main.add(cancel);
         main.add(later);
         main.add(deselectAll);
         main.add(doneButton);
@@ -312,15 +327,37 @@ final class ReconcileWindow extends JDialog {
         dispose();
     }
 
+    /** Cancel: after a yes, closes the window for the caller to put everything back. */
+    private void cancel() {
+        int r = JOptionPane.showConfirmDialog(this, "Cancel this reconcile and put back everything changed since"
+                + " you started it?\n\nEvery transaction's status, any transactions added, edited or deleted here,"
+                + "\nand the statement's balance and date go back as they were. Files attached since then are"
+                + "\nremoved. (Any you removed or renamed can't be put back.)",
+                getTitle(), JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
+        if (r != JOptionPane.YES_OPTION) {
+            return;
+        }
+        cancelled = true;
+        dispose();
+    }
+
     private void changeStatement() {
+        LocalDate periodStart;
+        try {
+            periodStart = reconciles.statementStart(account.id());
+        } catch (SQLException ex) {
+            error("Could not read the last reconciliation:\n" + ex.getMessage());
+            return;
+        }
         ReconcileStartDialog dlg = new ReconcileStartDialog(this, account, beginningCents,
-                reconciliation.endingBalanceCents(), reconciliation.statementDate());
+                reconciliation.endingBalanceCents(), reconciliation.statementDate(), periodStart, true);
         dlg.setVisible(true);
         if (!dlg.wasAccepted()) {
             return;
         }
         try {
-            reconciliation = reconciles.start(account, dlg.statementDate(), dlg.endingCents(), dlg.asOf());
+            reconciliation = reconciles.start(account, dlg.startDate(), dlg.statementDate(), dlg.endingCents(),
+                    dlg.asOf());
         } catch (SQLException ex) {
             error("Could not change the statement:\n" + ex.getMessage());
         }

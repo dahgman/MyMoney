@@ -310,6 +310,27 @@ final class AttachmentRepository {
         }
     }
 
+    /** The ids of an account's attachments (its statements' and its transactions'). */
+    java.util.Set<Long> idsFor(long accountId) throws SQLException {
+        java.util.Set<Long> ids = new java.util.HashSet<>();
+        for (Attachment a : list("SELECT id, file_name, path FROM attachment WHERE account_id = ?", accountId)) {
+            ids.add(a.id());
+        }
+        return ids;
+    }
+
+    /** An account's attachments that aren't among these ids (added since they were read). */
+    List<Attachment> addedSince(long accountId, java.util.Set<Long> ids) throws SQLException {
+        List<Attachment> added = new ArrayList<>();
+        for (Attachment a : list("SELECT id, file_name, path FROM attachment WHERE account_id = ? ORDER BY id",
+                accountId)) {
+            if (!ids.contains(a.id())) {
+                added.add(a);
+            }
+        }
+        return added;
+    }
+
     List<Attachment> forReconciliation(long reconciliationId) throws SQLException {
         return list("SELECT id, file_name, path FROM attachment WHERE reconciliation_id = ? ORDER BY id",
                 reconciliationId);
