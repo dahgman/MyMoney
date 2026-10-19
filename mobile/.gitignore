@@ -1,0 +1,7 @@
+# Build output and local settings: never commit.
+.gradle/
+.kotlin/
+build/
+local.properties
+*.apk
+.idea/

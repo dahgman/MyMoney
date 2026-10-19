@@ -32,6 +32,13 @@ come first, then the code.
 > since the settings belong to the data file) and **File > Sync Now** (F5).
 > Tests: `SyncTest`, with a pretend phone. Edits are checked field by field
 > against the `old` values the phone sends, so rows need no "changed" stamp.
+>
+> Phase 2 (Android) is built in `mobile/` (see its README). Differences from
+> the plan below: the phone keeps its state in one AES-GCM file with the key in
+> the Android Keystore (no SQLCipher database; it holds only a snapshot and
+> pending changes); each sync reads the snapshot *before* sending, and numbers
+> its change file after the computer's `appliedThrough`, so a phone paired
+> again with the same code never reuses a number. App lock isn't in yet.
 
 ---
 
