@@ -24,7 +24,7 @@ import javax.swing.event.DocumentListener;
  * Type-ahead and a suggestion drop-down for a text field: every payee and
  * category (and tag, and type) field. Typing at the end of the text fills in
  * the rest of the first entry that starts with it, selected ("wal" becomes
- * "Walmart" with "mart" selected): typing on replaces it, Backspace or
+ * "walmart" with "mart" selected; what was typed keeps its case): typing on replaces it, Backspace or
  * Delete takes it away, and Enter, Tab or a click elsewhere keeps it.
  * Meanwhile the list shrinks to the entries that start with what was
  * typed, then those that contain it.
@@ -187,8 +187,9 @@ final class AutoComplete {
 
     /**
      * Fills in the rest of the first entry starting with typed (ignoring
-     * case), selected so that typing on replaces it. The whole entry is put
-     * in, so it reads as saved ("Walmart", not "walmart").
+     * case), selected so that typing on replaces it. What was typed keeps
+     * its case: only the rest comes from the entry ("WALm" + "art"). Picking
+     * an entry from the list puts it in as it's written.
      */
     private void completeInline(String typed) {
         if (typed.isEmpty() || !field.isFocusOwner() || field.getCaretPosition() != typed.length()
@@ -198,9 +199,10 @@ final class AutoComplete {
         String lower = typed.toLowerCase();
         for (String s : suggestions) {
             if (s.length() > typed.length() && s.toLowerCase().startsWith(lower)) {
+                String filled = typed + s.substring(typed.length());
                 quietly(() -> {
-                    field.setText(s);
-                    field.setCaretPosition(s.length());
+                    field.setText(filled);
+                    field.setCaretPosition(filled.length());
                     field.moveCaretPosition(typed.length());       // the filled-in part, selected
                 });
                 return;
