@@ -44,7 +44,7 @@ import javax.swing.SwingWorker;
 import javax.swing.table.AbstractTableModel;
 
 /**
- * File > Sync Settings...: where the mailbox is, which accounts go to the
+ * Sync > Settings...: where the mailbox is, which accounts go to the
  * phone, and the paired phones (docs/SYNC-DESIGN.md). Pairing and removing a
  * phone happen at once; everything else is saved with OK.
  */
@@ -187,7 +187,7 @@ final class SyncDialog extends JDialog {
         row.add(test);
         row.add(new JLabel("   Sync every"));
         row.add(minutes);
-        row.add(new JLabel("minutes while MyMoney is open (and with File > Sync Now)"));
+        row.add(new JLabel("minutes while MyMoney is open (and with Sync > Sync Now)"));
         c = cell(0, 4);
         c.gridwidth = 5;
         p.add(row, c);

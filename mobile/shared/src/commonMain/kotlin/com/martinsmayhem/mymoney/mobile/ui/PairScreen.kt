@@ -30,7 +30,7 @@ import com.martinsmayhem.mymoney.mobile.Phone
 import kotlinx.coroutines.launch
 
 /**
- * Pairing with a computer: scan the code from File > Sync Settings > Pair a
+ * Pairing with a computer: scan the code from Sync > Settings > Pair a
  * Phone (or paste it), then the NAS user name and password.
  */
 @Composable
@@ -58,7 +58,7 @@ fun PairScreen(phone: Phone, platform: Platform, done: () -> Unit) {
         val c = code
         if (c == null) {
             Text("Pair with your computer", style = MaterialTheme.typography.titleMedium)
-            Text("On the computer, open MyMoney and choose File > Sync Settings > Pair a Phone. Then scan the code it shows.")
+            Text("On the computer, open MyMoney and choose Sync > Settings > Pair a Phone. Then scan the code it shows.")
             Button(onClick = { platform.scanQr { it?.let(::read) } }, modifier = Modifier.fillMaxWidth()) {
                 Text("Scan the code")
             }

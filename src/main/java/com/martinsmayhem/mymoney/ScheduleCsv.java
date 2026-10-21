@@ -26,7 +26,8 @@ import java.util.Map;
 final class ScheduleCsv {
 
     static final String[] COLUMNS = {"Account", "Payee", "Category", "Tag", "Description", "Memo", "Payment",
-        "Deposit", "Repeats", "Every", "Unit", "Second Day", "First Date", "End Date", "Times"};
+        "Deposit", "Repeats", "Every", "Unit", "Second Day", "First Date", "End Date", "Times", "Per Weekday",
+        "Paycheck"};
 
     private static final DateTimeFormatter DATE = DateTimeFormatter.ofPattern("MM/dd/yyyy");
 
@@ -63,8 +64,12 @@ final class ScheduleCsv {
             "# Repeats: Daily, Weekly, Every 2 weeks, Twice a month, Monthly, Every 3 months, Every 6 months, Yearly, or Custom.",
             "#   Custom: Every = a number and Unit = Days, Weeks, Months or Years (e.g. every 10 days).",
             "#   Twice a month: on First Date's day and on Second Day (1-31; 31 = the last day of the month).",
+            "#   Monthly with Second Day 31: always on the last day of the month, whatever day First Date is.",
             "# First Date: the first time it happens (MM/DD/YYYY). Monthly on the 31st falls on the last day of shorter months.",
-            "# Ends: put a date in End Date, or a number in Times (how many times in all), or leave both blank for never."}) {
+            "# Ends: put a date in End Date, or a number in Times (how many times in all), or leave both blank for never.",
+            "# Per Weekday (monthly only): a day like Tuesday. The amount is then per each one in the month",
+            "#   (a weekly service billed monthly: 88.49 per Tuesday is 353.96 in a month with 4, 442.45 with 5).",
+            "# Paycheck (deposits only): Main, Secondary, Tertiary, 4th or 5th, to see what's due between paychecks."}) {
             out.append(c).append("\r\n");
         }
         line(out, COLUMNS);
@@ -73,7 +78,7 @@ final class ScheduleCsv {
             {acct, "Landlord", "Housing:Rent", "", "", "", "1500.00", "", "Monthly", "", "", "",
                 d(first), "", ""},
             {acct, "Employer", "Income:Salary", "", "", "", "", "2500.00", "Every 2 weeks", "", "", "",
-                d(first.plusDays(4)), "", ""},
+                d(first.plusDays(4)), "", "", "", "Main"},
             {acct, "Employer", "Income:Salary", "", "Paid on the 15th and last day", "", "", "1800.00",
                 "Twice a month", "", "", "31", d(first.plusDays(14)), "", ""},
             {acct, "Car Loan Co", "Auto:Loan", "", "", "", "350.00", "", "Monthly", "", "", "", d(first.plusDays(9)),
@@ -84,6 +89,8 @@ final class ScheduleCsv {
                 d(first.plusDays(6)), "", ""},
             {acct, "Streaming Co", "Entertainment", "", "", "", "15.99", "", "Yearly", "", "", "",
                 d(first.plusDays(2)), "", ""},
+            {acct, "Cleaning Co", "Household:Cleaning", "", "Every Tuesday, billed monthly", "", "88.49", "",
+                "Monthly", "", "", "31", d(first), "", "", "Tuesday"},
         };
         for (String[] e : examples) {
             line(out, e);
@@ -102,10 +109,12 @@ final class ScheduleCsv {
             custom ? "Custom" : p.label,
             custom ? String.valueOf(r.interval()) : "",
             custom ? unitName(r.unit()) : "",
-            r.unit() == Recurrence.Unit.SEMIMONTH ? String.valueOf(r.secondDay()) : "",
+            r.unit() == Recurrence.Unit.SEMIMONTH || r.lastDayOfMonth() ? String.valueOf(r.secondDay()) : "",
             d(r.start()),
             r.endDate() == null ? "" : d(r.endDate()),
-            r.maxCount() == null ? "" : String.valueOf(r.maxCount())
+            r.maxCount() == null ? "" : String.valueOf(r.maxCount()),
+            s.weekday() == null ? "" : weekdayName(s.weekday()),
+            s.paycheck() == null ? "" : Paychecks.rankName(s.paycheck())
         };
     }
 
@@ -240,7 +249,8 @@ final class ScheduleCsv {
                     get(r, col, "Second Day"), first, get(r, col, "End Date"), get(r, col, "Times"));
             ScheduleRepository.Schedule s = new ScheduleRepository.Schedule(0, account.id(), blank(payee),
                     blank(category), tag.isEmpty() ? null : TagRepository.normalize(tag),
-                    blank(get(r, col, "Description")), blank(get(r, col, "Memo")), amount, rec);
+                    blank(get(r, col, "Description")), blank(get(r, col, "Memo")), amount, rec,
+                    weekday(get(r, col, "Per Weekday"), rec), paycheck(get(r, col, "Paycheck"), amount));
             return new Row(lineNo, accountName, payee, shownAmount, repeats, first, s, null);
         } catch (IllegalArgumentException e) {
             return new Row(lineNo, accountName, payee, shownAmount, repeats, first, null, e.getMessage());
@@ -283,6 +293,8 @@ final class ScheduleCsv {
         int second = 0;
         if (u == Recurrence.Unit.SEMIMONTH) {
             second = number(secondDay, "Second Day", 1, 31);
+        } else if (u == Recurrence.Unit.MONTH && !secondDay.isBlank()) {
+            second = number(secondDay, "Second Day", 31, 31);   // monthly: 31 = on the last day of the month
         }
         if (first.isBlank()) {
             throw new IllegalArgumentException("First Date is empty.");
@@ -318,6 +330,49 @@ final class ScheduleCsv {
         } catch (java.time.format.DateTimeParseException e) {
             throw new IllegalArgumentException(what + " \"" + text + "\" isn't a date (use MM/DD/YYYY).");
         }
+    }
+
+    /** "Tuesday". */
+    private static String weekdayName(java.time.DayOfWeek d) {
+        return d.name().charAt(0) + d.name().substring(1).toLowerCase(Locale.ROOT);
+    }
+
+    /**
+     * Per Weekday: blank for a fixed amount, or a day of the week (Tuesday,
+     * Tue): the amount is then per each one in the month (monthly schedules only).
+     */
+    private static Integer weekday(String text, Recurrence r) {
+        String t = text.trim().toLowerCase(Locale.ROOT);
+        if (t.isEmpty()) {
+            return null;
+        }
+        if (r.unit() != Recurrence.Unit.MONTH) {
+            throw new IllegalArgumentException("Per Weekday needs a monthly schedule.");
+        }
+        for (java.time.DayOfWeek d : java.time.DayOfWeek.values()) {
+            String n = d.name().toLowerCase(Locale.ROOT);
+            if (n.equals(t) || n.equals(t.replaceAll("s$", "")) || (t.length() >= 3 && n.startsWith(t))) {
+                return d.getValue();
+            }
+        }
+        throw new IllegalArgumentException("Per Weekday \"" + text + "\" isn't a day of the week.");
+    }
+
+    /** Paycheck: blank, or Main, Secondary, Tertiary, 4th, 5th (or 1-5); deposits only. */
+    private static Integer paycheck(String text, long amount) {
+        String t = text.trim().toLowerCase(Locale.ROOT).replace(" paycheck", "");
+        if (t.isEmpty()) {
+            return null;
+        }
+        if (amount <= 0) {
+            throw new IllegalArgumentException("Only a deposit can be a paycheck.");
+        }
+        for (int rank = 1; rank <= Paychecks.MAX_RANK; rank++) {
+            if (t.equals(Paychecks.rankName(rank).toLowerCase(Locale.ROOT)) || t.equals(String.valueOf(rank))) {
+                return rank;
+            }
+        }
+        throw new IllegalArgumentException("Paycheck \"" + text + "\" isn't one of: Main, Secondary, Tertiary, 4th, 5th.");
     }
 
     private static String get(List<String> r, Map<String, Integer> col, String name) {

@@ -38,30 +38,60 @@ class AndroidStore(context: Context) : PhoneStore {
     }
 
     override suspend fun load(): PhoneState? = withContext(Dispatchers.IO) {
-        if (!file.exists()) return@withContext null
+        val bytes = read(file) ?: return@withContext null
         try {
-            val bytes = file.readBytes()
-            val c = Cipher.getInstance("AES/GCM/NoPadding")
-            c.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, bytes, 1, bytes[0].toInt()))
-            val json = c.doFinal(bytes, 1 + bytes[0], bytes.size - 1 - bytes[0]).decodeToString()
-            SyncJson.decodeFromString(PhoneState.serializer(), json)
+            SyncJson.decodeFromString(PhoneState.serializer(), bytes.decodeToString())
         } catch (e: Exception) {
             null                                   // unreadable (say, the key was reset): start again, unpaired
         }
     }
 
     override suspend fun save(state: PhoneState) = withContext(Dispatchers.IO) {
+        write(file, SyncJson.encodeToString(PhoneState.serializer(), state).encodeToByteArray())
+    }
+
+    // Receipt photos and thumbnails: one encrypted file each, in receipts/.
+    private val blobs = File(context.filesDir, "receipts")
+
+    private fun blob(name: String) = File(blobs, name.replace(Regex("[^A-Za-z0-9-]"), "_") + ".mms")
+
+    override suspend fun saveBlob(name: String, data: ByteArray) = withContext(Dispatchers.IO) {
+        blobs.mkdirs()
+        write(blob(name), data)
+    }
+
+    override suspend fun loadBlob(name: String): ByteArray? = withContext(Dispatchers.IO) { read(blob(name)) }
+
+    override suspend fun deleteBlob(name: String) = withContext(Dispatchers.IO) {
+        blob(name).delete()
+        Unit
+    }
+
+    /** A file's contents, decrypted; null if it isn't there or can't be read. */
+    private fun read(f: File): ByteArray? {
+        if (!f.exists()) return null
+        return try {
+            val bytes = f.readBytes()
+            val c = Cipher.getInstance("AES/GCM/NoPadding")
+            c.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, bytes, 1, bytes[0].toInt()))
+            c.doFinal(bytes, 1 + bytes[0], bytes.size - 1 - bytes[0])
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** Writes a file encrypted (its IV first), whole: to a .tmp, then renamed into place. */
+    private fun write(f: File, data: ByteArray) {
         val c = Cipher.getInstance("AES/GCM/NoPadding")
         c.init(Cipher.ENCRYPT_MODE, key())
-        val sealed = c.doFinal(SyncJson.encodeToString(PhoneState.serializer(), state).encodeToByteArray())
+        val sealed = c.doFinal(data)
         val iv = c.iv
-        val tmp = File(file.parentFile, file.name + ".tmp")
+        val tmp = File(f.parentFile, f.name + ".tmp")
         tmp.writeBytes(byteArrayOf(iv.size.toByte()) + iv + sealed)
-        if (!tmp.renameTo(file)) {
-            file.delete()
-            tmp.renameTo(file)
+        if (!tmp.renameTo(f)) {
+            f.delete()
+            tmp.renameTo(f)
         }
-        Unit
     }
 
     private companion object {

@@ -109,6 +109,38 @@ class DesktopInteropTest {
         assertEquals("Food:Coffee", view.categoryLabel(view.txn(coffee)!!))
     }
 
+    @Test
+    fun aReceiptPhotoIsFiledOnTheComputer() = runTest {
+        val phone = pairedPhone()
+        val shell = txn("Checking", "Shell", -4_000)
+        engine.runNow()
+        phone.sync()
+        val checkingUid = LedgerView(phone.state.value).accounts()[0].uid
+        val date = LocalDate(today.year, today.monthValue, today.dayOfMonth)
+        val jpeg = ByteArray(300_000) { (it * 31).toByte() }     // about a real photo's size
+        val thumb = byteArrayOf(1, 2, 3)
+        val coffee = phone.add(TxnDraft(checkingUid, date, payee = "Starbucks", amountCents = -575))
+        phone.attach(coffee, com.martinsmayhem.mymoney.mobile.ReceiptImage(jpeg, thumb))    // a new one
+        phone.attach(shell.uid, com.martinsmayhem.mymoney.mobile.ReceiptImage(jpeg, thumb)) // one from the computer
+        phone.sync()
+
+        assertEquals(3, engine.runNow().applied())
+        val attachments = AttachmentRepository(db)
+        for (uid in listOf(coffee, shell.uid)) {
+            val e = ledger("Checking").first { it.uid == uid }
+            val files = attachments.forTransaction(e.id)
+            assertEquals(1, files.size)
+            assertTrue(files[0].path().startsWith("attachments/transactions/Checking/"), files[0].path())
+            kotlin.test.assertContentEquals(jpeg, Files.readAllBytes(dir.resolve("data").resolve(files[0].path())))
+        }
+        phone.sync()
+        assertTrue(phone.state.value.pending.isEmpty())
+        assertEquals(1, LedgerView(phone.state.value).txn(coffee)!!.receipts)
+        assertTrue(Files.list(box.resolve(sync.fileId()).resolve("devices")).use { d ->
+            d.allMatch { dev -> !Files.exists(dev.resolve("receipts")) || Files.list(dev.resolve("receipts")).use { it.count() == 0L } }
+        }, "photos are taken out of the mailbox once filed")
+    }
+
     /** The app reinstalled and paired again with the same code: its changes must still arrive. */
     @Test
     fun pairingAgainWithTheSameCodeLosesNothing() = runTest {

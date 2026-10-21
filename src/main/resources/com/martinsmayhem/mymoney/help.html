@@ -17,6 +17,7 @@ a tip about them.</p>
   <li><a href="#filter">Finding transactions</a></li>
   <li><a href="#import">Importing from your bank</a></li>
   <li><a href="#scheduled">Scheduled transactions</a></li>
+  <li><a href="#paychecks">Paychecks: what's due before payday</a></li>
   <li><a href="#reconcile">Reconciling</a></li>
   <li><a href="#statements">Statements and attachments</a></li>
   <li><a href="#loans">Loans and credit cards</a></li>
@@ -82,6 +83,11 @@ account at a glance.</p>
   <li>An account can go under another (a <i>sub-account</i>), like savings envelopes
       under a savings account.</li>
   <li>Right-click an account in the tree for its most-used actions.</li>
+  <li><b>Font and size:</b> Edit &gt; Preferences &gt; General &gt; Font. Pick any font on the
+      computer, and a size; rows and columns grow with it. <i>Default</i> goes back to the usual
+      font. It applies at once.</li>
+  <li><b>The window</b> opens where it was, at the size it was (and maximized, if it was) when
+      MyMoney last closed.</li>
   <li><b>Light or dark:</b> Edit &gt; Preferences &gt; General &gt; Theme. <i>Match the system</i>
       follows your desktop's light or dark mode, as it's set when MyMoney starts. A new choice
       applies right away.</li>
@@ -163,7 +169,8 @@ that text in any column; Escape clears it. Balances still count everything.</p>
       account is made for it, named for the bank, the account type and the number's last four
       digits, like <i>WF Checking 2222</i>. Rename it any time in Manage Accounts.</li>
   <li><b>Afterwards</b>, the downloaded file can be left where it is, deleted, or moved into
-      MyMoney's folder as <tt><i>Account</i>/imports/<i>YYYY-MM-DD</i>.qfx</tt>. QFX and OFX files
+      MyMoney's folder as <tt>imports/<i>Account</i>_import_<i>YYYY-MM-DD</i>.qfx</tt> (beside
+      the attachments folder). QFX and OFX files
       hold your account number in plain text, so MyMoney checks before moving one there.</li>
   <li>A <b>QIF from Quicken</b> with every account brings in the whole file: accounts,
       categories and transactions.</li>
@@ -183,6 +190,35 @@ that text in any column; Escape clears it. Balances still count everything.</p>
 each one in the ledger ahead of time (14 days, or as set in Preferences), marked
 Scheduled, so you can see what's coming. Right-click a transaction and choose
 <b>Add to Schedule</b> to make one from it.</p>
+<ul>
+  <li><b>On the last day of the month:</b> for a monthly schedule, tick this and it falls on
+      the 31st, 30th, or 28th or 29th as each month has it, whatever day it started on.</li>
+  <li><b>An amount per weekday:</b> for a weekly service billed monthly, choose <i>For each</i>
+      and the day (say, Tuesday), and enter the amount for one. Each month's bill is then that
+      times the number of Tuesdays in the month: $88.49 is $353.96 in a month with 4, and
+      $442.45 in one with 5. <i>Next dates</i> shows the coming amounts. A holiday or a skipped
+      week can't be foreseen: change that month's transaction in the ledger.</li>
+</ul>
+
+<a name="paychecks"></a>
+<h2>Paychecks: what's due before payday</h2>
+<p>To see what each paycheck has to cover, mark your scheduled paychecks: open one in Account &gt;
+Scheduled Transactions and set its <b>Paycheck</b> to Main, Secondary, Tertiary, and so on (only
+deposits can be paychecks, and each rank goes to one schedule). Then turn it on in Edit &gt;
+Preferences &gt; <b>Paychecks</b> and choose which paycheck to go by. It's off until you do, and
+you can turn it off again there at any time; the settings belong to this file.</p>
+<ul>
+  <li><b>Until next paycheck:</b> from today up to the day before that paycheck arrives: what the
+      money you have now has to cover.</li>
+  <li><b>Next pay period:</b> from that payday up to the day before the one after: what that
+      paycheck has to cover. A bill due on payday counts in the period that paycheck starts.</li>
+</ul>
+<p>The <b>Summary</b> screen gets an <i>Until payday</i> card listing what's due in the period in
+every open account, with what's due, what's coming in, and the paycheck account's balance once
+it's all through. Its two buttons switch between the periods; double-click a row to open its
+account. On the ledger, <b>Show:</b> beside the filters narrows the account to the same period.
+Due means not yet cleared: Scheduled, Pending, Paid, or entered with no status. A transfer is
+listed once, from the account it leaves.</p>
 
 <a name="reconcile"></a>
 <h2>Reconciling</h2>
@@ -252,7 +288,7 @@ interest in every payment.</p>
 <p>The MyMoney phone app is for entering transactions on the go (with receipt photos) and
 checking balances. The computer and phone never talk directly: each leaves the other
 encrypted files in a <b>mailbox</b> folder on your NAS, so neither has to be on, or at
-home, at the same time. Set it up in <b>File &gt; Sync Settings</b>:</p>
+home, at the same time. Set it up in <b>Sync &gt; Settings</b>:</p>
 <ol>
   <li><b>Mailbox:</b> a folder this computer can reach (the NAS share, as it's mounted
       here), or the NAS's WebDAV address. <b>Test</b> checks it works.</li>
@@ -270,7 +306,7 @@ home, at the same time. Set it up in <b>File &gt; Sync Settings</b>:</p>
 </ol>
 <ul>
   <li>MyMoney syncs when a file is opened, every few minutes while it's open (as set),
-      with <b>File &gt; Sync Now</b> (F5), and when it closes. The bottom of the window
+      with <b>Sync &gt; Sync Now</b> (F5), and when it closes. The bottom of the window
       shows how the last sync went.</li>
   <li>The phone's changes arrive as one step you can <b>Undo</b>. A transfer gets its other
       side and a loan payment its interest, just as if typed here; a bank download later
@@ -278,7 +314,9 @@ home, at the same time. Set it up in <b>File &gt; Sync Settings</b>:</p>
   <li>If a transaction was changed in both places, this computer's values are kept, and the
       phone says so. The phone can't change reconciled transactions, splits or a loan's
       calculated interest, and on a cleared one only the payee, category and status.</li>
-  <li>Removing a phone in Sync Settings stops it syncing at once.</li>
+  <li><b>Receipt photos</b> taken (or chosen) on the phone arrive with the next sync and are
+      filed with the transaction's attachments, as if attached here.</li>
+  <li>Removing a phone in Sync &gt; Settings stops it syncing at once.</li>
 </ul>
 
 <a name="undo"></a>
@@ -291,6 +329,7 @@ starts afresh each time a file is opened.</p>
 <h2>Keyboard shortcuts</h2>
 <table cellpadding="3">
   <tr><td><b>F1</b></td><td>This help</td></tr>
+  <tr><td><b>F5</b></td><td>Sync with your phones (Sync &gt; Sync Now)</td></tr>
   <tr><td><b>Ctrl+O</b></td><td>Open a file</td></tr>
   <tr><td><b>Ctrl+N</b></td><td>New transaction (the blank row)</td></tr>
   <tr><td><b>Ctrl+F</b>, <b>Escape</b></td><td>Filter the ledger; clear the filter</td></tr>
@@ -307,7 +346,7 @@ starts afresh each time a file is opened.</p>
 <h2>Where things are kept</h2>
 <ul>
   <li><b>Your data:</b> your MyMoney file, its attachments folder, and any imported bank files
-      (<i>Account</i>/imports), all in the MyMoney file's folder, wherever you made it. Back up that
+      (imports), all in the MyMoney file's folder, wherever you made it. Back up that
       whole folder (see <a href="#backups">Backing up</a>).</li>
   <li><b>Database backups:</b> in the backup folder you chose.</li>
   <li><b>Settings</b> (recent files, preferences): in your settings folder, shown in

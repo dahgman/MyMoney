@@ -29,6 +29,8 @@ class WebDavMailbox(
     private val auth: String? = if (user.isBlank()) null
     else "Basic " + Base64.encode("$user:$password".encodeToByteArray())
     private var moveRefused = false
+    /** Folders known to be there (made, or found there): no MKCOL for them again. */
+    private val knownFolders = mutableSetOf<String>()
 
     init {
         val u = url.trim().trimEnd('/')
@@ -76,17 +78,35 @@ class WebDavMailbox(
     }
 
     override suspend fun write(path: String, data: ByteArray) {
+        try {
+            writeOnce(path, data)
+        } catch (e: FolderGone) {
+            knownFolders.clear()                        // removed since: make them again, then once more
+            writeOnce(path, data)
+        }
+    }
+
+    /** A PUT answered 404 or 409: a folder it goes in isn't there (any more). */
+    private class FolderGone(message: String) : MailboxException(message)
+
+    private suspend fun put(url: String, data: ByteArray, path: String) {
+        val res = send("PUT", url, data)
+        if (res.status.value == 404 || res.status.value == 409) throw FolderGone("writing $path: its folder isn't there")
+        check(res, "writing $path")
+    }
+
+    private suspend fun writeOnce(path: String, data: ByteArray) {
         makeFolders(path)
         if (moveRefused) {
-            check(send("PUT", url(path, false), data), "writing $path")
+            put(url(path, false), data, path)
             return
         }
         val tmp = url("$path.tmp", false)
-        check(send("PUT", tmp, data), "writing $path")
+        put(tmp, data, path)
         val moved = send("MOVE", tmp, headers = mapOf("Destination" to url(path, false), "Overwrite" to "T"))
         if (moved.status.value in 200..299) return
-        moveRefused = true
-        check(send("PUT", url(path, false), data), "writing $path")
+        moveRefused = true                              // the server (or a proxy) won't MOVE: in place from now on
+        put(url(path, false), data, path)
         send("DELETE", tmp)
     }
 
@@ -97,10 +117,12 @@ class WebDavMailbox(
     }
 
     private suspend fun makeFolder(folder: String) {
+        if (folder in knownFolders) return              // made (or found) already
         val s = send("MKCOL", url(folder, true)).status.value
         if (s != 201 && s != 405 && s != 301 && s != 200) {
             throw MailboxException("making the folder ${folder.ifEmpty { base }}: the WebDAV server answered $s")
         }
+        knownFolders += folder
     }
 
     override suspend fun delete(path: String) {

@@ -184,6 +184,12 @@ public class AppConfig implements AutoCloseable {
     public static final String DATE_FORMAT = "date_format";
     /** The look: "system" (match the desktop's light or dark mode), "light" or "dark"; see Theme. */
     public static final String THEME = "theme";
+    /** The font everything is drawn in: a family name ("" = the look's own) and a size in points (0 = its own). */
+    public static final String FONT_FAMILY = "font_family";
+    public static final String FONT_SIZE = "font_size";
+    /** The main window when it was last closed: "x,y,width,height" (its normal size), and whether maximized. */
+    public static final String WINDOW_BOUNDS = "window_bounds";
+    public static final String WINDOW_MAXIMIZED = "window_maximized";
     /** Open on the Summary screen instead of the first account's ledger. */
     public static final String OPEN_ON_SUMMARY = "open_on_summary";
     /** Where database backups go: a folder (blank: asked the first time, then kept here). */

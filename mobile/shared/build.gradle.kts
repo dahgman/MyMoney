@@ -32,7 +32,7 @@ kotlin {
             implementation(compose.runtime)
             implementation(compose.foundation)
             implementation(compose.material3)
-            implementation(compose.ui)
+            api(compose.ui)                 // ImageBitmap is part of Platform (receipt thumbnails)
         }
         jvmSharedMain.dependencies {
             api(libs.ktor.client.okhttp)

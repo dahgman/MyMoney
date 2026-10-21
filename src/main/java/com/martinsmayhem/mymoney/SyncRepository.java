@@ -119,6 +119,15 @@ final class SyncRepository {
                 : new WebDavMailbox(s.url(), s.path(), s.user(), s.password());
     }
 
+    /** Whether the WebDAV server is known to refuse MOVE (so files are written in place from the start). */
+    boolean writesInPlace() throws SQLException {
+        return "1".equals(meta("sync_write_in_place", "0"));
+    }
+
+    void setWritesInPlace(boolean inPlace) throws SQLException {
+        setMeta("sync_write_in_place", inPlace ? "1" : "0");
+    }
+
     /** The next snapshot's number (each snapshot written gets a higher one). */
     long nextSnapshotSeq() throws SQLException {
         long next = Long.parseLong(meta("sync_snapshot_seq", "0")) + 1;

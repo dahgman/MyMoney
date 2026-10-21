@@ -59,6 +59,11 @@ final class SyncEngine {
 
     private final Database db;
     private final SyncRepository sync;
+    /** One mailbox for the session (it remembers what it learns: folders there, MOVE refused), and its settings. */
+    private Mailbox mailbox;
+    private SyncRepository.Settings mailboxFor;
+    /** mailbox.json written this session (it never changes, so once is enough). */
+    private boolean marked;
     private final SyncApplier applier;
     private final SyncSnapshot snapshots;
 
@@ -94,10 +99,32 @@ final class SyncEngine {
 
     // ----- 1. Plan (window thread) -------------------------------------------
 
-    /** The sync to run, or null if sync isn't set up. */
+    /**
+     * The sync to run, or null if sync isn't set up. The mailbox is the same
+     * one as last time unless the settings changed, so what it has learned
+     * (the folders that are there, a server that refuses MOVE) carries on.
+     */
     Plan plan() throws SQLException {
-        Mailbox m = SyncRepository.mailbox(sync.settings());
-        return m == null ? null : new Plan(m, sync.fileId(), sync.devices());
+        SyncRepository.Settings s = sync.settings();
+        if (mailbox == null || !s.equals(mailboxFor)) {
+            mailbox = SyncRepository.mailbox(s);
+            mailboxFor = s;
+            marked = false;
+            if (mailbox instanceof WebDavMailbox w) {
+                w.setWritesInPlace(sync.writesInPlace());
+            }
+        }
+        return mailbox == null ? null : new Plan(mailbox, sync.fileId(), sync.devices());
+    }
+
+    /**
+     * After a sync (window thread): keeps what the mailbox learned for next
+     * time, in the data file: that its server refuses MOVE.
+     */
+    void remember(Plan plan) throws SQLException {
+        if (plan.mailbox() instanceof WebDavMailbox w && w.writesInPlace() && !sync.writesInPlace()) {
+            sync.setWritesInPlace(true);
+        }
     }
 
     // ----- 2. Fetch (background) ----------------------------------------------
@@ -206,7 +233,10 @@ final class SyncEngine {
         }
         sync.pruneOps();
         Map<String, byte[]> writes = new HashMap<>();
-        writes.put(plan.fileId() + "/mailbox.json", mailboxJson(plan.fileId()));
+        if (!marked) {                                   // once a session: it never changes
+            writes.put(plan.fileId() + "/mailbox.json", mailboxJson(plan.fileId()));
+            marked = true;
+        }
         LocalDate today = LocalDate.now();
         for (SyncRepository.Device d : sync.devices()) {      // read again: appliedThrough has moved on
             String path = snapshotPath(d);
@@ -220,8 +250,15 @@ final class SyncEngine {
 
     /** Writes the snapshots, then deletes what was applied. */
     Summary publish(Outgoing out) throws IOException {
-        for (Map.Entry<String, byte[]> w : out.writes().entrySet()) {
-            out.plan().mailbox().write(w.getKey(), w.getValue());
+        try {
+            for (Map.Entry<String, byte[]> w : out.writes().entrySet()) {
+                out.plan().mailbox().write(w.getKey(), w.getValue());
+            }
+        } catch (IOException e) {
+            if (out.writes().containsKey(out.plan().fileId() + "/mailbox.json")) {
+                marked = false;                          // not written after all: next time
+            }
+            throw e;
         }
         for (String path : out.deletes()) {
             out.plan().mailbox().delete(path);
@@ -235,7 +272,9 @@ final class SyncEngine {
         if (plan == null) {
             return new Summary(0, 0, 0, List.of("Sync isn't set up."));
         }
-        return publish(apply(fetch(plan)));
+        Summary s = publish(apply(fetch(plan)));
+        remember(plan);
+        return s;
     }
 
     /** What marks the file's folder in the mailbox as MyMoney's (the phone checks for it when pairing). */

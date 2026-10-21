@@ -23,6 +23,8 @@ final class TinyWebDav implements AutoCloseable {
     private final String auth;
     /** Answer MOVE with 502, as some reverse proxies make a server do. */
     volatile boolean refuseMove;
+    /** Every request answered, as "METHOD path". */
+    final java.util.List<String> requests = java.util.Collections.synchronizedList(new java.util.ArrayList<>());
 
     TinyWebDav(Path root, String user, String password) throws IOException {
         this.root = root;
@@ -42,6 +44,7 @@ final class TinyWebDav implements AutoCloseable {
     }
 
     private void handle(HttpExchange x) throws IOException {
+        requests.add(x.getRequestMethod() + " " + x.getRequestURI().getPath());
         try (x) {
             if (!auth.equals(x.getRequestHeaders().getFirst("Authorization"))) {
                 reply(x, 401, new byte[0]);

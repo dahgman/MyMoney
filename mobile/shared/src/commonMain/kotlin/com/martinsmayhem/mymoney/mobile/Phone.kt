@@ -84,15 +84,56 @@ class Phone(
         val box = mailboxFor(code, user, password)
         if (box.read("${code.fileId}/mailbox.json") == null) {
             throw MailboxException("MyMoney's mailbox isn't at ${code.mailbox.url}${code.mailbox.path}. On the computer, " +
-                "in File > Sync Settings, \"How phones reach the mailbox\" must be the same folder as the computer's " +
-                "mailbox (with WebDAV: press Same as above), and the computer must have synced once (File > Sync Now). " +
+                "in Sync > Settings, \"How phones reach the mailbox\" must be the same folder as the computer's " +
+                "mailbox (with WebDAV: press Same as above), and the computer must have synced once (Sync > Sync Now). " +
                 "Then pair again with the new code.")
         }
         save(PhoneState(pairing = code, user = user, password = password, prefs = _state.value.prefs))
     }
 
-    /** Forgets the pairing and everything synced (the phone's own settings stay). */
-    suspend fun unpair() = lock.withLock { save(PhoneState(prefs = _state.value.prefs)) }
+    /** Forgets the pairing and everything synced, photos too (the phone's own settings stay). */
+    suspend fun unpair() = lock.withLock {
+        val s = _state.value
+        for (id in s.receipts.values.flatten()) dropPhoto(id)
+        save(PhoneState(prefs = s.prefs))
+    }
+
+    // ----- Receipts ----------------------------------------------------------------------
+
+    private fun receiptBlob(id: String) = "receipt-$id"
+    private fun thumbBlob(id: String) = "thumb-$id"
+
+    private suspend fun dropPhoto(id: String) {
+        store.deleteBlob(receiptBlob(id))
+        store.deleteBlob(thumbBlob(id))
+    }
+
+    /**
+     * Attaches a receipt photo to a transaction: kept on the phone until the
+     * next sync sends it, then filed by the computer with the transaction's
+     * attachments. Any transaction can have one (reconciled ones too).
+     */
+    suspend fun attach(uid: String, image: ReceiptImage) = lock.withLock {
+        val s = _state.value
+        val t = LedgerView(s).txn(uid) ?: throw IllegalStateException("That transaction isn't there any more.")
+        require(!t.mirror) { "Attach it to the transaction in the account it was entered in." }
+        val id = newId()
+        store.saveBlob(receiptBlob(id), image.jpeg)
+        store.saveBlob(thumbBlob(id), image.thumbnail)
+        val opId = newId()
+        val op = buildJsonObject {
+            put("op", JsonPrimitive("attach"))
+            put("opId", JsonPrimitive(opId))
+            put("uid", JsonPrimitive(uid))
+            put("receiptId", JsonPrimitive(id))
+            put("fileName", JsonPrimitive("receipt.jpg"))
+        }
+        save(s.copy(pending = s.pending + PendingOp(opId, op),
+            receipts = s.receipts + (uid to (s.receipts[uid].orEmpty() + id))))
+    }
+
+    /** A receipt's thumbnail (JPEG), or null if it's gone. */
+    suspend fun thumbnail(receiptId: String): ByteArray? = store.loadBlob(thumbBlob(receiptId))
 
     suspend fun setPrefs(prefs: Prefs) = lock.withLock { save(_state.value.copy(prefs = prefs)) }
 
@@ -195,6 +236,7 @@ class Phone(
         val unsentForIt = s.pending.filter { it.sentSeq == null && it.op.str("uid") == uid }
         val wasUnsentAdd = unsentForIt.any { it.op.str("op") == "add" }
         val kept = s.pending - unsentForIt.toSet()
+        for (p in unsentForIt) p.op.str("receiptId")?.let { dropPhoto(it) }     // photos never sent: gone with it
         val pending = if (wasUnsentAdd) kept else {
             val id = newId()
             kept + PendingOp(id, buildJsonObject {
@@ -203,7 +245,9 @@ class Phone(
                 put("uid", JsonPrimitive(uid))
             })
         }
-        save(s.copy(pending = pending))
+        val unsentPhotos = unsentForIt.mapNotNull { it.op.str("receiptId") }.toSet()
+        val receipts = s.receipts[uid].orEmpty() - unsentPhotos
+        save(s.copy(pending = pending, receipts = if (receipts.isEmpty()) s.receipts - uid else s.receipts + (uid to receipts)))
     }
 
     suspend fun dismissNotices() = lock.withLock {
@@ -239,6 +283,7 @@ class Phone(
                 if (snap.snapshotSeq > (s.snapshot?.snapshotSeq ?: -1)) {
                     val results = snap.results.associateBy { it.opId }
                     val notices = s.notices.toMutableList()
+                    var receipts = s.receipts
                     val kept = s.pending.filter { p ->
                         val r = results[p.opId]
                         val done = r != null || (p.sentSeq != null && p.sentSeq <= snap.appliedThrough)
@@ -246,13 +291,36 @@ class Phone(
                         if (r != null && r.result != "applied") {
                             notices += Notice(p.opId, r.message ?: "The computer didn't apply a change.", r.result == "rejected")
                         }
+                        val photo = p.op.str("receiptId")
+                        if (done && photo != null) {
+                            store.deleteBlob(receiptBlob(photo))     // filed on the computer: keep just the thumbnail
+                            if (r?.result == "rejected") {
+                                store.deleteBlob(thumbBlob(photo))
+                                val uid = p.op.str("uid") ?: ""
+                                receipts = receipts + (uid to (receipts[uid].orEmpty() - photo))
+                            }
+                        }
                         !done
                     }
-                    s = s.copy(snapshot = snap, pending = kept, notices = notices)
+                    // Thumbnails of transactions the phone no longer shows: not needed any more.
+                    val shown = snap.transactions.map { it.uid }.toSet() + kept.mapNotNull { it.op.str("uid") }
+                    for ((uid, ids) in receipts) if (uid !in shown || ids.isEmpty()) ids.forEach { store.deleteBlob(thumbBlob(it)) }
+                    receipts = receipts.filter { (uid, ids) -> uid in shown && ids.isNotEmpty() }
+                    s = s.copy(snapshot = snap, pending = kept, notices = notices, receipts = receipts)
                 }
             }
 
-            // 2. What's new here.
+            // 2. What's new here: the receipt photos first, so the computer never sees an attach without its photo.
+            for (p in s.pending.filter { it.sentSeq == null && it.op.str("op") == "attach" }) {
+                val id = p.op.str("receiptId") ?: continue
+                val photo = store.loadBlob(receiptBlob(id))
+                if (photo == null) {                    // lost (shouldn't happen): don't send an attach without it
+                    s = s.copy(pending = s.pending - p)
+                    continue
+                }
+                val rPath = "$dev/receipts/$id.mms"
+                mailbox.write("${code.fileId}/$rPath", SyncCrypto.encrypt(key, rPath, photo))
+            }
             val unsent = s.pending.filter { it.sentSeq == null }
             if (unsent.isNotEmpty()) {
                 val seq = maxOf(s.nextSeq, (s.snapshot?.appliedThrough ?: 0) + 1)
@@ -272,7 +340,7 @@ class Phone(
             s = s.copy(lastSync = Clock.System.now().toString(), lastError = null)
             save(s)
             SyncOutcome(true, unsent.size, confirmed,
-                if (s.snapshot == null) "Waiting for the computer: on it, choose File > Sync Now." else "Synced.")
+                if (s.snapshot == null) "Waiting for the computer: on it, choose Sync > Sync Now." else "Synced.")
         } catch (e: MailboxAuthException) {
             fail(e.message ?: "The NAS refused the user name or password.")
         } catch (e: BadFileException) {

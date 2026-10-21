@@ -493,6 +493,52 @@ class SyncTest {
         assertTrue(Files.exists(davRoot.resolve("keep.mms")));
     }
 
+    /** What closing relies on: looking around, recalculating loans and undo bookkeeping change nothing. */
+    @Test
+    void nothingChangedMeansNothingToSendOnClosing() throws Exception {
+        long loan = accounts.insert("Car", AccountType.LOAN, -1_000_000, null);
+        accounts.saveDetails(new AccountRepository.Details(loan, "Car", AccountType.LOAN, null, "CU",
+                LocalDate.of(2026, 1, 6), -1_000_000, 0, null, null, null, null, null,
+                new AccountRepository.LoanTerms(8_000, 1_000_000, 36, null, 0, null, Loan.InterestMethod.MONTHLY),
+                AccountRepository.CardTerms.NONE));
+        txn(checking, today, "Shell", -4_000, TxnStatus.NONE, null);
+        UndoLog undo = new UndoLog(db);
+        transactions.recalculateAllLoans();
+        undo.checkpoint("Setup");
+        engine.runNow();
+        long synced = db.totalChanges();
+        for (int i = 0; i < 3; i++) {                    // what happens after every action, with nothing new
+            transactions.recalculateAllLoans();
+            undo.checkpoint("Change");
+            transactions.findByAccount(checking.id());
+            accounts.balances(checking);
+        }
+        assertEquals(synced, db.totalChanges(), "nothing new: closing skips the sync");
+        txn(checking, today, "Coffee", -500, TxnStatus.NONE, null);
+        assertTrue(db.totalChanges() > synced, "a new transaction: closing sends it");
+    }
+
+    /** Each sync costs as few WebDAV requests as it can, once the mailbox knows the server. */
+    @Test
+    void aSyncTakesFewRequestsOnceTheMailboxKnowsTheServer() throws Exception {
+        Path root = Files.createDirectories(dir.resolve("dav4"));
+        try (TinyWebDav server = new TinyWebDav(root, "sync", "secret")) {
+            server.refuseMove = true;                    // like the real one, behind its proxy
+            sync.saveSettings(new SyncRepository.Settings("webdav", "", server.url(), "/MyMoney-Sync", "sync", "secret",
+                    server.url(), "/MyMoney-Sync", 5));
+            engine.runNow();                             // learns: folders there, MOVE refused
+            server.requests.clear();
+            engine.runNow();
+            long writes = server.requests.stream().filter(r -> !r.startsWith("PROPFIND")).count();
+            assertEquals(1, writes, "just the snapshot, written in place: " + server.requests);
+
+            SyncEngine later = new SyncEngine(db, attachments);   // another session: remembers MOVE is refused
+            server.requests.clear();
+            later.runNow();
+            assertTrue(server.requests.stream().noneMatch(r -> r.startsWith("MOVE")), server.requests.toString());
+        }
+    }
+
     /** Behind a reverse proxy, MOVE can fail with 502: the file is written in place instead. */
     @Test
     void aServerThatWontMoveStillGetsTheFile() throws Exception {

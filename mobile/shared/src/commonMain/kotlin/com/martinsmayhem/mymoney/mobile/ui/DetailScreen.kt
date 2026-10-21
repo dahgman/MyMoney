@@ -16,6 +16,13 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import com.martinsmayhem.mymoney.mobile.Phone
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -26,8 +33,10 @@ import kotlin.math.abs
 
 /** Everything about one transaction, and (if the phone may) a way to change it. */
 @Composable
-fun DetailScreen(view: LedgerView, txnUid: String, nav: Navigator) {
+fun DetailScreen(phone: Phone, view: LedgerView, platform: Platform, txnUid: String, nav: Navigator) {
     val t = view.txn(txnUid)
+    val scope = rememberCoroutineScope()
+    var problem by remember { mutableStateOf<String?>(null) }
     Scaffold(topBar = {
         Bar("Transaction", back = { nav.back() }) {
             if (t != null && t.editable) TextButton(onClick = { nav.go(Screen.Edit(t.accountUid, t.uid)) }) { Text("Edit") }
@@ -61,7 +70,28 @@ fun DetailScreen(view: LedgerView, txnUid: String, nav: Navigator) {
             Field("Type", t.type ?: "")
             Field("Memo", t.memo)
             Field("Description", t.description)
-            Field("Receipts", if (t.receipts > 0) "${t.receipts} on the computer" else "")
+            val photos = view.phonePhotos(t.uid)
+            val waiting = photos.count { it.waiting }
+            Field("Receipts", when {
+                t.receipts == 0 -> ""
+                waiting == 0 -> "${t.receipts} on the computer"
+                waiting == t.receipts -> "$waiting waiting to send"
+                else -> "${t.receipts - waiting} on the computer, $waiting waiting to send"
+            })
+            Thumbnails(photos.map { storedThumbnail(phone, platform, it.receiptId) to (if (it.waiting) "Waiting to send" else null) })
+            if (!t.mirror) {
+                ReceiptButtons(platform, { problem = it }) { image ->
+                    scope.launch {
+                        try {
+                            phone.attach(t.uid, image)
+                            platform.syncSoon()
+                        } catch (e: Exception) {
+                            problem = e.message
+                        }
+                    }
+                }
+            }
+            problem?.let { Text(it, color = Negative) }
             Text(when {
                 t.mirror -> "The other side of a transfer you added. Change it from the other account."
                 t.pending -> "Changed on this phone; not yet on the computer."

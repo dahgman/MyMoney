@@ -2,6 +2,7 @@ package com.martinsmayhem.mymoney;
 
 import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
+import java.time.temporal.TemporalAdjusters;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -12,7 +13,9 @@ import java.util.List;
  * a month (on the start date's day and a second day). Monthly dates are
  * always counted from the start date, so a schedule starting on the 31st
  * falls on the 30th in 30-day months, the 28th or 29th in February, and is
- * back on the 31st after. Day 31 as the second day means the last day.
+ * back on the 31st after. Day 31 as the second day means the last day; for
+ * a monthly schedule, a second day of 31 means "on the last day of the
+ * month" (from the start date's month), whatever day it started on.
  *
  * It ends never, on an end date, or after a number of times.
  */
@@ -58,18 +61,24 @@ record Recurrence(Unit unit, int interval, int secondDay, LocalDate start, Local
         }
     }
 
-    /** "Monthly", "Every 2 weeks", "Every 10 days", "Twice a month (1st and 15th)". */
+    /** "Monthly", "Monthly (last day)", "Every 2 weeks", "Every 10 days", "Twice a month (1st and 15th)". */
     String describe() {
         Preset p = Preset.of(unit, interval);
         if (unit == Unit.SEMIMONTH) {
             return "Twice a month (" + ordinal(start.getDayOfMonth()) + " and "
                     + (secondDay >= 31 ? "last day" : ordinal(secondDay)) + ")";
         }
+        String last = lastDayOfMonth() ? " (last day)" : "";
         if (p != Preset.CUSTOM) {
-            return p.label;
+            return p.label + last;
         }
         String name = unit.name().toLowerCase();
-        return "Every " + interval + " " + name + (interval == 1 ? "" : "s");
+        return "Every " + interval + " " + name + (interval == 1 ? "" : "s") + last;
+    }
+
+    /** A monthly schedule on the last day of each month (second day 31), whatever day it started on. */
+    boolean lastDayOfMonth() {
+        return unit == Unit.MONTH && secondDay >= 31;
     }
 
     Recurrence {
@@ -104,7 +113,9 @@ record Recurrence(Unit unit, int interval, int secondDay, LocalDate start, Local
         return switch (unit) {
             case DAY -> start.plus((long) k * interval, ChronoUnit.DAYS);
             case WEEK -> start.plus((long) k * interval, ChronoUnit.WEEKS);
-            case MONTH -> start.plusMonths((long) k * interval);
+            case MONTH -> lastDayOfMonth()
+                    ? start.withDayOfMonth(1).plusMonths((long) k * interval).with(TemporalAdjusters.lastDayOfMonth())
+                    : start.plusMonths((long) k * interval);
             case YEAR -> start.plusYears((long) k * interval);
             case SEMIMONTH -> semimonthly(k);
         };

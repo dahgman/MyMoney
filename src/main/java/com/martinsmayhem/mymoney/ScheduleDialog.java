@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.function.Supplier;
 import javax.swing.BorderFactory;
 import javax.swing.ButtonGroup;
+import javax.swing.JCheckBox;
 import javax.swing.JButton;
 import javax.swing.JComboBox;
 import javax.swing.JComponent;
@@ -44,6 +45,15 @@ final class ScheduleDialog extends JDialog {
     private final JTextField memoField = new JTextField(24);
     private final JTextField paymentField = new JTextField(10);
     private final JTextField depositField = new JTextField(10);
+    // The amount: fixed, or per weekday (that much for each one in the month).
+    private final JRadioButton amountFixed = new JRadioButton("The same each time");
+    private final JRadioButton amountPerDay = new JRadioButton("For each");
+    private final JComboBox<java.time.DayOfWeek> weekdayCombo = new JComboBox<>(java.time.DayOfWeek.values());
+    private final JPanel amountRuleRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+    private final JCheckBox lastDay = new JCheckBox("On the last day of the month");
+    /** Not a paycheck, or which one (Main, Secondary, ...): see Paychecks. */
+    private final JComboBox<String> paycheckCombo = new JComboBox<>();
+    private final JPanel lastDayRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
 
     private final JComboBox<Recurrence.Preset> repeatsCombo = new JComboBox<>(Recurrence.Preset.values());
     private final JSpinner everySpinner = new JSpinner(new SpinnerNumberModel(1, 1, 999, 1));
@@ -119,8 +129,44 @@ final class ScheduleDialog extends JDialog {
         Money.calculateOnExit(depositField);
         depositField.setHorizontalAlignment(JTextField.RIGHT);
 
+        ButtonGroup amountKinds = new ButtonGroup();
+        amountKinds.add(amountFixed);
+        amountKinds.add(amountPerDay);
+        weekdayCombo.setRenderer(new javax.swing.DefaultListCellRenderer() {
+            @Override
+            public java.awt.Component getListCellRendererComponent(javax.swing.JList<?> list, Object value,
+                    int index, boolean isSelected, boolean cellHasFocus) {
+                super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
+                if (value instanceof java.time.DayOfWeek d) {
+                    setText(d.name().charAt(0) + d.name().substring(1).toLowerCase());
+                }
+                return this;
+            }
+        });
+        if (editing.perWeekday() != null) {
+            amountPerDay.setSelected(true);
+            weekdayCombo.setSelectedItem(editing.weekday());
+        } else {
+            amountFixed.setSelected(true);
+            weekdayCombo.setSelectedItem(java.time.DayOfWeek.TUESDAY);
+        }
+        amountRuleRow.add(amountFixed);
+        amountRuleRow.add(amountPerDay);
+        amountRuleRow.add(weekdayCombo);
+        amountRuleRow.add(new JLabel("in the month (a weekly service billed monthly)"));
+
+        paycheckCombo.addItem("Not a paycheck");
+        for (int rank = 1; rank <= Paychecks.MAX_RANK; rank++) {
+            paycheckCombo.addItem(Paychecks.rankName(rank) + " paycheck");
+        }
+        paycheckCombo.setSelectedIndex(editing.paycheck() == null ? 0 : Math.min(editing.paycheck(), Paychecks.MAX_RANK));
+        paycheckCombo.setToolTipText("A paycheck can show what's due before it comes (Preferences > Paychecks)");
+
         Recurrence r = editing.recurrence();
         startDate = new DatePicker(r.start());
+        lastDay.setSelected(r.lastDayOfMonth());
+        lastDay.setToolTipText("The 31st, 30th, or 28th or 29th as the month has it, whatever day the first date is");
+        lastDayRow.add(lastDay);
         Recurrence.Preset preset = Recurrence.Preset.of(r.unit(), r.interval());
         repeatsCombo.setSelectedItem(preset);
         if (preset == Recurrence.Preset.CUSTOM) {
@@ -177,10 +223,13 @@ final class ScheduleDialog extends JDialog {
         amounts.add(new JLabel("   Deposit:"));
         amounts.add(depositField);
         row = addRow(form, row, "Payment:", amounts);
+        row = addRow(form, row, "Amount:", amountRuleRow);
+        row = addRow(form, row, "Paycheck:", paycheckCombo);
         row = heading(form, row, "Schedule");
         row = addRow(form, row, "Repeats:", repeatsCombo);
         row = addRow(form, row, "", everyRow);
         row = addRow(form, row, "", secondDayRow);
+        row = addRow(form, row, "", lastDayRow);
         row = addRow(form, row, "First date:", startDate);
         JPanel endRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
         endRow.add(endNever);
@@ -198,6 +247,27 @@ final class ScheduleDialog extends JDialog {
         everySpinner.addChangeListener(e -> refresh());
         secondDaySpinner.addChangeListener(e -> refresh());
         countSpinner.addChangeListener(e -> refresh());
+        lastDay.addActionListener(e -> refresh());
+        amountFixed.addActionListener(e -> refresh());
+        amountPerDay.addActionListener(e -> refresh());
+        weekdayCombo.addActionListener(e -> refresh());
+        for (JTextField f : new JTextField[] {paymentField, depositField}) {
+            f.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
+                @Override
+                public void insertUpdate(javax.swing.event.DocumentEvent e) {
+                    javax.swing.SwingUtilities.invokeLater(ScheduleDialog.this::refresh);
+                }
+
+                @Override
+                public void removeUpdate(javax.swing.event.DocumentEvent e) {
+                    javax.swing.SwingUtilities.invokeLater(ScheduleDialog.this::refresh);
+                }
+
+                @Override
+                public void changedUpdate(javax.swing.event.DocumentEvent e) {
+                }
+            });
+        }
         for (JRadioButton b : new JRadioButton[] {endNever, endOn, endAfter}) {
             b.addActionListener(e -> refresh());
         }
@@ -267,26 +337,81 @@ final class ScheduleDialog extends JDialog {
             }
         }
         Integer count = endAfter.isSelected() ? (Integer) countSpinner.getValue() : null;
-        return new Recurrence(unit, interval, (Integer) secondDaySpinner.getValue(), start, end, count);
+        int second = unit == Recurrence.Unit.SEMIMONTH ? (Integer) secondDaySpinner.getValue()
+                : unit == Recurrence.Unit.MONTH && lastDay.isSelected() ? 31 : 0;
+        return new Recurrence(unit, interval, second, start, end, count);
+    }
+
+    /** The unit the form's Repeats comes to (Monthly, Every 3 months and Custom months are MONTH). */
+    private Recurrence.Unit unit() {
+        Recurrence.Preset p = (Recurrence.Preset) repeatsCombo.getSelectedItem();
+        return p == Recurrence.Preset.CUSTOM ? (Recurrence.Unit) everyUnit.getSelectedItem() : p.unit;
+    }
+
+    /** The amount typed (negative for a payment), or null if there's none yet or it isn't one. */
+    private Long typedAmount() {
+        try {
+            String pay = paymentField.getText().trim();
+            String dep = depositField.getText().trim();
+            return !pay.isEmpty() ? (Long) (-Money.parseTyped(pay)) : !dep.isEmpty() ? (Long) Money.parseTyped(dep) : null;
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+    }
+
+    /** The weekday the amount is per (1 = Monday), or null for a fixed amount. */
+    private Integer perWeekday() {
+        return amountPerDay.isSelected() && unit() == Recurrence.Unit.MONTH
+                ? ((java.time.DayOfWeek) weekdayCombo.getSelectedItem()).getValue() : null;
     }
 
     private void refresh() {
         Recurrence.Preset p = (Recurrence.Preset) repeatsCombo.getSelectedItem();
+        boolean monthly = unit() == Recurrence.Unit.MONTH;
         everyRow.setVisible(p == Recurrence.Preset.CUSTOM);
         secondDayRow.setVisible(p == Recurrence.Preset.SEMIMONTHLY);
+        lastDayRow.setVisible(monthly);
+        // Per weekday counts them in each occurrence's month: monthly schedules only.
+        amountPerDay.setEnabled(monthly);
+        weekdayCombo.setEnabled(monthly && amountPerDay.isSelected());
+        if (!monthly && amountPerDay.isSelected()) {
+            amountFixed.setSelected(true);
+        }
         endDate.setEnabled(endOn.isSelected());
         countSpinner.setEnabled(endAfter.isSelected());
+        Long typed = typedAmount();
+        paycheckCombo.setEnabled(typed == null || typed > 0);    // only a deposit is a paycheck
+        if (typed != null && typed < 0) {
+            paycheckCombo.setSelectedIndex(0);
+        }
         try {
             Recurrence r = recurrence();
             List<LocalDate> next = r.datesBetween(LocalDate.now(), LocalDate.now().plusYears(10));
-            StringBuilder s = new StringBuilder();
-            for (int i = 0; i < Math.min(4, next.size()); i++) {
-                s.append(i == 0 ? "" : ", ").append(next.get(i).format(LedgerTableModel.DISPLAY_DATE));
+            Integer weekday = perWeekday();
+            Long amount = typedAmount();
+            if (weekday == null || amount == null) {
+                StringBuilder s = new StringBuilder();
+                for (int i = 0; i < Math.min(4, next.size()); i++) {
+                    s.append(i == 0 ? "" : ", ").append(next.get(i).format(LedgerTableModel.DISPLAY_DATE));
+                }
+                if (next.size() > 4) {
+                    s.append(", ...");
+                }
+                preview.setText(next.isEmpty() ? "none (the schedule has ended)" : s.toString());
+            } else {
+                // Each date with its amount: the per-day amount times that month's count.
+                ScheduleRepository.Schedule s = new ScheduleRepository.Schedule(0, 0, null, null, null, null, null,
+                        amount, r, weekday);
+                StringBuilder html = new StringBuilder("<html>");
+                for (int i = 0; i < Math.min(4, next.size()); i++) {
+                    LocalDate d = next.get(i);
+                    int n = ScheduleRepository.Schedule.weekdaysIn(java.time.YearMonth.from(d), s.weekday());
+                    html.append(i == 0 ? "" : "<br>").append(d.format(LedgerTableModel.DISPLAY_DATE)).append(" &mdash; ")
+                            .append(Money.format(Math.abs(s.amountOn(d)))).append(" (").append(n).append(' ')
+                            .append(ScheduleRepository.Schedule.plural(s.weekday())).append(')');
+                }
+                preview.setText(next.isEmpty() ? "none (the schedule has ended)" : html.append("</html>").toString());
             }
-            if (next.size() > 4) {
-                s.append(", ...");
-            }
-            preview.setText(next.isEmpty() ? "none (the schedule has ended)" : s.toString());
         } catch (IllegalArgumentException e) {
             preview.setText(" ");
         }
@@ -334,7 +459,8 @@ final class ScheduleDialog extends JDialog {
         ScheduleRepository.Schedule s = new ScheduleRepository.Schedule(editing.id(), account.id(),
                 blankToNull(payeeField), category.isEmpty() ? null : category,
                 tag.isEmpty() ? null : TagRepository.normalize(tag), blankToNull(descriptionField),
-                blankToNull(memoField), amount, r);
+                blankToNull(memoField), amount, r, perWeekday(),
+                amount > 0 && paycheckCombo.getSelectedIndex() > 0 ? paycheckCombo.getSelectedIndex() : null);
         try {
             savedId = schedules.save(s);
         } catch (SQLException e) {

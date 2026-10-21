@@ -16,6 +16,8 @@ import javax.swing.UIManager;
  * The app's light or dark look (Edit > Preferences > General > Theme):
  * Light, Dark, or Match the system, which goes by the desktop's own
  * dark-mode setting (GNOME, KDE, Windows or macOS) when the app starts.
+ * Also the font everything is drawn in, and its size (Preferences >
+ * General > Font): FlatLaf sizes rows, padding and the like to match.
  */
 final class Theme {
 
@@ -52,24 +54,58 @@ final class Theme {
     private Theme() {
     }
 
+    /** The font chosen: a family ("" = the look's own) and a size in points (0 = the look's own). */
+    private static String fontFamily = "";
+    private static int fontSize;
+
+    /** The look's own font (before any chosen one): what Default goes back to. */
+    static java.awt.Font lookFont() {
+        if (lookFont == null) {
+            java.awt.Font f = new FlatLightLaf().getDefaults().getFont("defaultFont");
+            lookFont = f != null ? f : new java.awt.Font(java.awt.Font.SANS_SERIF, java.awt.Font.PLAIN, 13);
+        }
+        return lookFont;
+    }
+
+    private static java.awt.Font lookFont;
+
+    /** The font to use from the next apply/switchTo on: family "" and size 0 for the look's own. */
+    static void setFont(String family, int size) {
+        fontFamily = family == null ? "" : family.trim();
+        fontSize = Math.max(0, size);
+    }
+
     /** Sets the look for windows made from now on. */
     static void apply(Choice choice) {
         boolean dark = choice == Choice.DARK || (choice == Choice.SYSTEM && systemPrefersDark());
         try {
-            UIManager.setLookAndFeel(dark ? darkLaf() : new FlatLightLaf());
+            FlatLaf laf = dark ? new FlatDarkLaf() : new FlatLightLaf();
+            java.util.Map<String, String> extra = new java.util.HashMap<>();
+            if (dark) {
+                extra.putAll(DARK_COLORS);
+            }
+            String font = fontSpec(fontFamily, fontSize);
+            if (font != null) {
+                extra.put("defaultFont", font);
+            }
+            laf.setExtraDefaults(extra);
+            UIManager.setLookAndFeel(laf);
         } catch (Exception e) {
             // keep whatever look is set
         }
     }
 
     /**
-     * The dark look: FlatLaf's Dark, made deeper and crisper than its usual
-     * mid-gray (near-black backgrounds, brighter text, a stronger blue).
+     * FlatLaf's way of writing a font (its "defaultFont" value): the size,
+     * then the family in quotes, like 16 "Liberation Serif"; null for the
+     * look's own font.
      */
-    private static FlatDarkLaf darkLaf() {
-        FlatDarkLaf laf = new FlatDarkLaf();
-        laf.setExtraDefaults(DARK_COLORS);
-        return laf;
+    static String fontSpec(String family, int size) {
+        if ((family == null || family.isBlank()) && size <= 0) {
+            return null;
+        }
+        String s = size > 0 ? String.valueOf(size) : "+0";
+        return family == null || family.isBlank() ? s : s + " \"" + family.replace("\"", "") + "\"";
     }
 
     /** FlatLaf color variables for the dark look (the rest are worked out from these). */

@@ -142,17 +142,37 @@ data class PhoneState(
     val lastSync: String? = null,        // ISO instant of the last sync that worked
     val lastError: String? = null,       // why the last sync failed, if it did
     val prefs: Prefs = Prefs(),
+    /** Receipts this phone added, by transaction uid: their ids, for thumbnails (kept after they're sent). */
+    val receipts: Map<String, List<String>> = emptyMap(),
 )
 
-/** Where PhoneState is kept: on Android an encrypted file, in tests memory. */
+/** A receipt photo ready to attach: the JPEG to send (about 1600 pixels), and a small one to show. */
+class ReceiptImage(val jpeg: ByteArray, val thumbnail: ByteArray)
+
+/**
+ * Where PhoneState is kept: on Android an encrypted file, in tests memory.
+ * Photos are kept beside it, one file each (blobs), so saving the state
+ * doesn't rewrite them every time.
+ */
 interface PhoneStore {
     suspend fun load(): PhoneState?
     suspend fun save(state: PhoneState)
+    suspend fun saveBlob(name: String, data: ByteArray)
+    suspend fun loadBlob(name: String): ByteArray?
+    suspend fun deleteBlob(name: String)
 }
 
 class MemoryStore(private var state: PhoneState? = null) : PhoneStore {
+    val blobs = mutableMapOf<String, ByteArray>()
     override suspend fun load() = state
     override suspend fun save(state: PhoneState) {
         this.state = state
+    }
+    override suspend fun saveBlob(name: String, data: ByteArray) {
+        blobs[name] = data
+    }
+    override suspend fun loadBlob(name: String) = blobs[name]
+    override suspend fun deleteBlob(name: String) {
+        blobs.remove(name)
     }
 }

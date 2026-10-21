@@ -28,8 +28,8 @@ come first, then the code.
 
 > **Status:** phase 1 (the desktop) is built: schema 21, `SyncCrypto`,
 > `Mailbox` (`FolderMailbox`, `WebDavMailbox`), `SyncSnapshot`, `SyncApplier`,
-> `SyncEngine`, `SyncDialog` (**File > Sync Settings…**, not a Preferences tab,
-> since the settings belong to the data file) and **File > Sync Now** (F5).
+> `SyncEngine`, `SyncDialog` (**Sync > Settings…**, not a Preferences tab,
+> since the settings belong to the data file) and **Sync > Sync Now** (F5).
 > Tests: `SyncTest`, with a pretend phone. Edits are checked field by field
 > against the `old` values the phone sends, so rows need no "changed" stamp.
 >
@@ -39,6 +39,13 @@ come first, then the code.
 > pending changes); each sync reads the snapshot *before* sending, and numbers
 > its change file after the computer's `appliedThrough`, so a phone paired
 > again with the same code never reuses a number. App lock isn't in yet.
+>
+> Phase 3 (receipt photos) is built: Take photo / Choose photo on a
+> transaction's details and on a new one; shrunk on the phone to 1600 pixels
+> (upright), kept encrypted there until the computer files it, then only a
+> thumbnail stays. Both mailboxes (desktop and phone) remember the folders
+> they've made and a server that refuses MOVE, so a sync is about one request
+> per file; the desktop skips its closing sync when nothing has changed.
 
 ---
 
@@ -379,7 +386,7 @@ MyMoney already allows the file to be open on only one computer at a time.
 
 | | When |
 |---|---|
-| **Desktop** | When a file is opened; every **5 minutes** while it's open; **File > Sync Now**; and when closing. Skipped while you're typing in a cell (it waits). |
+| **Desktop** | When a file is opened; every **5 minutes** while it's open; **Sync > Sync Now**; and when closing. Skipped while you're typing in a cell (it waits). |
 | **Phone** | When the app opens; right after saving a transaction (if online); a **Sync** button; and in the background about every 15 minutes (Android's shortest interval). |
 
 Offline is normal: the phone keeps its changes until it can send them.
@@ -412,7 +419,7 @@ Offline is normal: the phone keeps its changes until it can send them.
   - the mailbox, with **Test**;
   - the accounts to sync, as tick boxes;
   - the paired phones, with **Pair a Phone…** (the QR code) and **Remove**.
-- **File > Sync Now**, and a small status in the window ("Synced 2 min ago" or
+- **Sync > Sync Now**, and a small status in the window ("Synced 2 min ago" or
   "Sync failed: …").
 
 ---

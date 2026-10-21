@@ -5,7 +5,10 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Types;
+import java.time.DayOfWeek;
 import java.time.LocalDate;
+import java.time.YearMonth;
+import java.time.temporal.TemporalAdjusters;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -27,9 +30,69 @@ import java.util.List;
  */
 final class ScheduleRepository {
 
-    /** One schedule. id 0 = not saved yet. */
+    /**
+     * One schedule. id 0 = not saved yet. perWeekday: null for a fixed
+     * amount; otherwise a day of the week (1 = Monday ... 7 = Sunday), and
+     * amountCents is the amount for each one: each occurrence's amount is
+     * that times the number of those weekdays in its month (a weekly service
+     * billed monthly). paycheck: null, or which paycheck this deposit is
+     * (1 = the main one, 2 = secondary, 3 = tertiary, ...; see Paychecks).
+     */
     record Schedule(long id, long accountId, String payee, String category, String tag, String description,
-                    String memo, long amountCents, Recurrence recurrence) {
+                    String memo, long amountCents, Recurrence recurrence, Integer perWeekday, Integer paycheck) {
+
+        /** A fixed-amount schedule, not a paycheck. */
+        Schedule(long id, long accountId, String payee, String category, String tag, String description,
+                 String memo, long amountCents, Recurrence recurrence) {
+            this(id, accountId, payee, category, tag, description, memo, amountCents, recurrence, null, null);
+        }
+
+        /** A schedule (fixed, or per weekday), not a paycheck. */
+        Schedule(long id, long accountId, String payee, String category, String tag, String description,
+                 String memo, long amountCents, Recurrence recurrence, Integer perWeekday) {
+            this(id, accountId, payee, category, tag, description, memo, amountCents, recurrence, perWeekday, null);
+        }
+
+        Schedule {
+            if (perWeekday != null && (perWeekday < 1 || perWeekday > 7)) {
+                throw new IllegalArgumentException("Not a day of the week: " + perWeekday);
+            }
+            if (paycheck != null && paycheck < 1) {
+                throw new IllegalArgumentException("Not a paycheck: " + paycheck);
+            }
+        }
+
+        /** The same schedule with another recurrence (the amount rule kept). */
+        Schedule with(Recurrence r) {
+            return new Schedule(id, accountId, payee, category, tag, description, memo, amountCents, r, perWeekday,
+                    paycheck);
+        }
+
+        /** The amount on this date: the fixed amount, or the per-weekday amount times that month's count. */
+        long amountOn(LocalDate date) {
+            return perWeekday == null ? amountCents : amountCents * weekdaysIn(YearMonth.from(date), weekday());
+        }
+
+        DayOfWeek weekday() {
+            return perWeekday == null ? null : DayOfWeek.of(perWeekday);
+        }
+
+        /** "$353.96", or "$88.49 × Tuesdays". */
+        String describeAmount() {
+            return perWeekday == null ? Money.format(amountCents) : Money.format(amountCents) + " × " + plural(weekday());
+        }
+
+        /** How many of a day of the week a month has (4 or 5). */
+        static int weekdaysIn(YearMonth month, DayOfWeek day) {
+            LocalDate first = month.atDay(1).with(TemporalAdjusters.nextOrSame(day));
+            return 1 + (month.lengthOfMonth() - first.getDayOfMonth()) / 7;
+        }
+
+        /** "Tuesdays". */
+        static String plural(DayOfWeek d) {
+            String n = d.name();
+            return n.charAt(0) + n.substring(1).toLowerCase() + "s";
+        }
     }
 
     private final Connection conn;
@@ -52,7 +115,7 @@ final class ScheduleRepository {
     }
 
     private static final String COLUMNS = "id, account_id, payee, category, tag, description, memo, amount_cents,"
-            + " unit, interval, second_day, start_date, end_date, max_count";
+            + " unit, interval, second_day, start_date, end_date, max_count, amount_weekday, paycheck";
 
     private List<Schedule> query(String sql, Long id) throws SQLException {
         List<Schedule> list = new ArrayList<>();
@@ -66,10 +129,14 @@ final class ScheduleRepository {
                     String end = rs.getString(13);
                     int max = rs.getInt(14);
                     Integer maxCount = rs.wasNull() ? null : max;
+                    int weekday = rs.getInt(15);
+                    Integer perWeekday = rs.wasNull() ? null : weekday;
+                    int rank = rs.getInt(16);
+                    Integer paycheck = rs.wasNull() ? null : rank;
                     Recurrence r = new Recurrence(Recurrence.Unit.valueOf(rs.getString(9)), rs.getInt(10), second,
                             LocalDate.parse(rs.getString(12)), end == null ? null : LocalDate.parse(end), maxCount);
                     list.add(new Schedule(rs.getLong(1), rs.getLong(2), rs.getString(3), rs.getString(4),
-                            rs.getString(5), rs.getString(6), rs.getString(7), rs.getLong(8), r));
+                            rs.getString(5), rs.getString(6), rs.getString(7), rs.getLong(8), r, perWeekday, paycheck));
                 }
             }
         }
@@ -86,12 +153,21 @@ final class ScheduleRepository {
     long save(Schedule s) throws SQLException {
         conn.setAutoCommit(false);
         try {
+            if (s.paycheck() != null) {                  // one schedule per paycheck rank: it moves to this one
+                try (PreparedStatement ps = conn.prepareStatement(
+                        "UPDATE schedule SET paycheck = NULL WHERE paycheck = ? AND id <> ?")) {
+                    ps.setInt(1, s.paycheck());
+                    ps.setLong(2, s.id());
+                    ps.executeUpdate();
+                }
+            }
             long id = s.id();
             LocalDate through = startOfCreating(s.recurrence().start());
             if (id == 0) {
                 try (PreparedStatement ps = conn.prepareStatement("INSERT INTO schedule (account_id, payee,"
                         + " category, tag, description, memo, amount_cents, unit, interval, second_day, start_date,"
-                        + " end_date, max_count, generated_through) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")) {
+                        + " end_date, max_count, amount_weekday, paycheck, generated_through)"
+                        + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")) {
                     int i = bind(ps, s);
                     ps.setString(i, through.toString());
                     ps.executeUpdate();
@@ -100,8 +176,8 @@ final class ScheduleRepository {
             } else {
                 try (PreparedStatement ps = conn.prepareStatement("UPDATE schedule SET account_id = ?, payee = ?,"
                         + " category = ?, tag = ?, description = ?, memo = ?, amount_cents = ?, unit = ?, interval = ?,"
-                        + " second_day = ?, start_date = ?, end_date = ?, max_count = ?, generated_through = ?"
-                        + " WHERE id = ?")) {
+                        + " second_day = ?, start_date = ?, end_date = ?, max_count = ?, amount_weekday = ?,"
+                        + " paycheck = ?, generated_through = ? WHERE id = ?")) {
                     int i = bind(ps, s);
                     ps.setString(i, through.toString());
                     ps.setLong(i + 1, id);
@@ -190,7 +266,7 @@ final class ScheduleRepository {
         ps.setLong(7, s.amountCents());
         ps.setString(8, r.unit().name());
         ps.setInt(9, r.interval());
-        if (r.unit() == Recurrence.Unit.SEMIMONTH) {
+        if (r.unit() == Recurrence.Unit.SEMIMONTH || r.lastDayOfMonth()) {
             ps.setInt(10, r.secondDay());
         } else {
             ps.setNull(10, Types.INTEGER);
@@ -202,7 +278,17 @@ final class ScheduleRepository {
         } else {
             ps.setInt(13, r.maxCount());
         }
-        return 14;
+        if (s.perWeekday() == null) {
+            ps.setNull(14, Types.INTEGER);
+        } else {
+            ps.setInt(14, s.perWeekday());
+        }
+        if (s.paycheck() == null) {
+            ps.setNull(15, Types.INTEGER);
+        } else {
+            ps.setInt(15, s.paycheck());
+        }
+        return 16;
     }
 
     // ----- Creating occurrences ----------------------------------------------
@@ -241,7 +327,7 @@ final class ScheduleRepository {
             } catch (SQLException e) {
                 conn.rollback();
                 problems.add("\"" + (s.payee() == null ? "(no payee)" : s.payee()) + "\" "
-                        + Money.format(s.amountCents()) + ": " + e.getMessage());
+                        + s.describeAmount() + ": " + e.getMessage());
             } finally {
                 conn.setAutoCommit(true);
             }
@@ -280,7 +366,7 @@ final class ScheduleRepository {
         e.tag = s.tag();
         e.description = s.description();
         e.memo = s.memo();
-        e.amountCents = s.amountCents();
+        e.amountCents = s.amountOn(date);              // per weekday: that month's count of them
         e.status = TxnStatus.SCHEDULED;
         transactions.insertInCurrentTransaction(s.accountId(), e);
         try (PreparedStatement ps = conn.prepareStatement(

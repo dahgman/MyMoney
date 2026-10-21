@@ -32,11 +32,20 @@ object MyMoneyPhone {
     }
     private var phone: Phone? = null
     private val loading = Mutex()
+    /** The mailbox, kept while the app runs so it remembers what it learns (folders there, MOVE refused). */
+    private var mailbox: Pair<List<String>, WebDavMailbox>? = null
+
+    @Synchronized
+    private fun mailboxFor(url: String, path: String, user: String, password: String): WebDavMailbox {
+        val key = listOf(url, path, user, password)
+        mailbox?.let { (k, m) -> if (k == key) return m }
+        return WebDavMailbox(http, url, path, user, password).also { mailbox = key to it }
+    }
 
     /** The Phone, its state loaded. */
     suspend fun get(context: Context): Phone = loading.withLock {
         phone ?: Phone(AndroidStore(context.applicationContext)) { code, user, password ->
-            WebDavMailbox(http, code.mailbox.url, code.mailbox.path, user, password)
+            mailboxFor(code.mailbox.url, code.mailbox.path, user, password)
         }.also {
             it.load()
             phone = it

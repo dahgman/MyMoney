@@ -93,8 +93,8 @@ fun AccountsScreen(phone: Phone, view: LedgerView, platform: Platform, nav: Navi
                 }
             }
             if (accounts.isEmpty()) item {
-                Hint(if (state.snapshot == null) "Waiting for the computer's first sync. On the computer, choose File > Sync Now."
-                else "No accounts are synced. On the computer, tick them in File > Sync Settings.")
+                Hint(if (state.snapshot == null) "Waiting for the computer's first sync. On the computer, choose Sync > Sync Now."
+                else "No accounts are synced. On the computer, tick them in Sync > Settings.")
             }
             items(accounts, key = { it.uid }) { a ->
                 AccountRow(a, indent = false) { nav.go(Screen.Ledger(a.uid)) }

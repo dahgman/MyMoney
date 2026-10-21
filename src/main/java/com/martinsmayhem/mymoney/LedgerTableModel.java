@@ -142,6 +142,8 @@ public class LedgerTableModel extends AbstractTableModel {
     private int filterColumn = -1;               // the column the filter text is looked for in; -1 = all
     private Function<String, String> payeeDebtCategory = p -> null;   // payee -> "[Debt Account]" or null
     private boolean hideReconciled;
+    /** Only the uncleared transactions in this period (see Paychecks), or null for all. */
+    private Paychecks.Period period;
     /** The sort used whenever an account is selected: Status, then Date. */
     private static final List<SortKey> DEFAULT_SORT =
             List.of(new SortKey(STATUS, true), new SortKey(DATE, true));
@@ -267,6 +269,16 @@ public class LedgerTableModel extends AbstractTableModel {
     }
 
     /** True if some transactions are hidden by the filter. */
+    /**
+     * Shows only the transactions not yet cleared in this period (what's due
+     * before a paycheck: see Paychecks), or all of them (null).
+     */
+    public void setPeriod(Paychecks.Period p) {
+        period = p;
+        applyFilter();
+        fireTableDataChanged();
+    }
+
     public boolean isFiltered() {
         return entries.size() < all.size();
     }
@@ -1144,7 +1156,8 @@ public class LedgerTableModel extends AbstractTableModel {
         }
         entries.clear();
         for (LedgerEntry e : all) {
-            if (!(hideReconciled && e.status == TxnStatus.RECONCILED) && matchesText(e)) {
+            if (!(hideReconciled && e.status == TxnStatus.RECONCILED) && matchesText(e)
+                    && (period == null || period.contains(e.date) && Paychecks.upcoming(e.status))) {
                 entries.add(e);
             }
         }

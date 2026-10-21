@@ -162,7 +162,17 @@ class LedgerView(val state: PhoneState) {
                 map[uid] = n
             }
             "delete" -> map.remove(uid)
+            "attach" -> map[uid]?.let { map[uid] = it.copy(receipts = it.receipts + 1) }   // counted until the computer has it
         }
+    }
+
+    /** A receipt photo added on this phone; waiting: not on the computer yet. */
+    data class PhonePhoto(val receiptId: String, val waiting: Boolean)
+
+    /** The receipt photos this phone added to a transaction, oldest first. */
+    fun phonePhotos(uid: String): List<PhonePhoto> {
+        val waiting = state.pending.mapNotNull { p -> p.op.str("receiptId")?.takeIf { p.op.str("uid") == uid } }.toSet()
+        return state.receipts[uid].orEmpty().map { PhonePhoto(it, it in waiting) }
     }
 
     /** The accounts the phone shows: synced ones, envelopes under their parents, balances with pending changes. */

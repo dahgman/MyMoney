@@ -154,7 +154,7 @@ final class LinkDebtDialog extends JDialog {
             }
             ScheduleRepository.Schedule s = schedule;
             schedules.save(new ScheduleRepository.Schedule(s.id(), s.accountId(), s.payee(), "[" + debt.name() + "]",
-                    s.tag(), s.description(), s.memo(), s.amountCents(), s.recurrence()));
+                    s.tag(), s.description(), s.memo(), s.amountCents(), s.recurrence(), s.perWeekday(), s.paycheck()));
         } catch (SQLException e) {
             error("Could not link the schedule:\n" + e.getMessage());
             return;

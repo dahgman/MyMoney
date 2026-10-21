@@ -127,9 +127,10 @@ final class ScheduleImportDialog extends JDialog {
     private static ScheduleRepository.Schedule withoutId(ScheduleRepository.Schedule s) {
         Recurrence r = s.recurrence();
         Recurrence norm = new Recurrence(r.unit(), r.interval(),
-                r.unit() == Recurrence.Unit.SEMIMONTH ? r.secondDay() : 0, r.start(), r.endDate(), r.maxCount());
+                r.unit() == Recurrence.Unit.SEMIMONTH || r.lastDayOfMonth() ? r.secondDay() : 0, r.start(), r.endDate(),
+                r.maxCount());
         return new ScheduleRepository.Schedule(0, s.accountId(), s.payee(), s.category(), s.tag(), s.description(),
-                s.memo(), s.amountCents(), norm);
+                s.memo(), s.amountCents(), norm, s.perWeekday(), s.paycheck());
     }
 
     private final class Model extends AbstractTableModel {

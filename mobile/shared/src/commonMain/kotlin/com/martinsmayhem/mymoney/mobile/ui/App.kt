@@ -31,6 +31,17 @@ interface Platform {
 
     /** Draws the status and navigation bars to suit a dark (or light) app: light (or dark) icons. */
     fun systemBars(dark: Boolean)
+
+    /**
+     * A receipt photo, from the camera (or the gallery), made ready to send:
+     * about 1600 pixels, upright, as a JPEG, with a small thumbnail.
+     * result gets null if it was cancelled; failed gets why, if the photo couldn't be used.
+     */
+    fun pickReceipt(camera: Boolean, result: (com.martinsmayhem.mymoney.mobile.ReceiptImage?) -> Unit,
+                    failed: (String) -> Unit)
+
+    /** A JPEG to show (a thumbnail), or null if it can't be read. */
+    fun imageBitmap(jpeg: ByteArray): androidx.compose.ui.graphics.ImageBitmap?
 }
 
 /** The screens, as a stack: back pops one. */
@@ -94,7 +105,7 @@ fun App(phone: Phone, platform: Platform, nav: Navigator) {
             when (val s = nav.current) {
                 Screen.Pair, Screen.Accounts -> AccountsScreen(phone, view, platform, nav)
                 is Screen.Ledger -> LedgerScreen(view, s.accountUid, nav, platform.today())
-                is Screen.Detail -> DetailScreen(view, s.txnUid, nav)
+                is Screen.Detail -> DetailScreen(phone, view, platform, s.txnUid, nav)
                 is Screen.Edit -> EditScreen(phone, view, platform, nav, s)
                 Screen.Upcoming -> UpcomingScreen(view, nav)
                 Screen.Sync -> SyncScreen(phone, view, nav, platform.appVersion)

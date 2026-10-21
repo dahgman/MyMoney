@@ -65,6 +65,12 @@ public class MainFrame extends javax.swing.JFrame {
     private final TransactionRepository transactionRepo;
     private final LedgerTableModel ledgerModel;
     private final AttachmentRepository attachments;
+    private final Paychecks paychecks;
+    /** The ledger's Show: all transactions, or what's due before a paycheck (see Paychecks). */
+    private final JComboBox<Object> payView = new JComboBox<>(new Object[] {"All transactions",
+        Paychecks.Mode.UNTIL_NEXT, Paychecks.Mode.NEXT_PERIOD});
+    private final JLabel payViewLabel = new JLabel("Show: ");
+    private PaydayWidget paydayWidget;
     private final ReconcileRepository reconciles;
     private final ScheduleRepository schedules;
 
@@ -108,6 +114,7 @@ public class MainFrame extends javax.swing.JFrame {
         this.tags = new TagRepository(db);
         this.transactionRepo = new TransactionRepository(db);
         this.attachments = new AttachmentRepository(db);
+        this.paychecks = new Paychecks(db);
         this.reconciles = new ReconcileRepository(db);
         this.schedules = new ScheduleRepository(db);
         this.ledgerModel = new LedgerTableModel(transactionRepo,
@@ -175,6 +182,19 @@ public class MainFrame extends javax.swing.JFrame {
         }
         SwingUtilities.invokeLater(this::selectTransactionNearToday);   // once the window is showing
         countUse();                                      // for the backup reminder
+        refreshFonts();
+        refreshPaycheckControls();
+        addComponentListener(new java.awt.event.ComponentAdapter() {      // its size and place, unmaximized
+            @Override
+            public void componentResized(java.awt.event.ComponentEvent e) {
+                rememberNormalBounds();
+            }
+
+            @Override
+            public void componentMoved(java.awt.event.ComponentEvent e) {
+                rememberNormalBounds();
+            }
+        });
         setupSync();
         Splash.step("Ready", 100);
     }
@@ -199,16 +219,11 @@ public class MainFrame extends javax.swing.JFrame {
         ledgerTable.setSurrendersFocusOnKeystroke(true);                         // typing goes straight into the cell
 
         TableColumnModel cols = ledgerTable.getColumnModel();
-        int[] widths = {110, 60, 160, 160, 110, 150, 130, 62, 90, 90, 100, 30, 30, 90, 90, 120, 110, 110};
-        for (int i = 0; i < widths.length; i++) {
-            cols.getColumn(i).setPreferredWidth(widths[i]);
+        for (int i = 0; i < LEDGER_WIDTHS.length; i++) {
+            cols.getColumn(i).setPreferredWidth(scaled(LEDGER_WIDTHS[i]));
         }
         // With 11 columns the table squeezes them to fit; never squeeze dates or amounts.
-        cols.getColumn(LedgerTableModel.DATE).setMinWidth(100);
-        cols.getColumn(LedgerTableModel.TAG).setMinWidth(80);
-        cols.getColumn(LedgerTableModel.PAYMENT).setMinWidth(80);
-        cols.getColumn(LedgerTableModel.DEPOSIT).setMinWidth(80);
-        cols.getColumn(LedgerTableModel.BALANCE).setMinWidth(90);
+        LEDGER_MIN_WIDTHS.forEach((column, w) -> cols.getColumn(column).setMinWidth(scaled(w)));
 
         // The whole row being edited is drawn white (see muted): redraw it as editing starts and stops.
         ledgerTable.addPropertyChangeListener("tableCellEditor", e -> {
@@ -579,6 +594,11 @@ public class MainFrame extends javax.swing.JFrame {
         bar.add(Box.createHorizontalStrut(12));
         bar.add(hideReconciledBox);
         bar.add(Box.createHorizontalStrut(12));
+        bar.add(payViewLabel);
+        bar.add(payView);
+        payView.setMaximumSize(payView.getPreferredSize());
+        payView.addActionListener(e -> applyPayView());
+        bar.add(Box.createHorizontalStrut(12));
         JButton goToNew = new JButton("New Transaction");
         goToNew.setToolTipText("Jump to the blank row for entering a new transaction (Ctrl+N)");
         goToNew.addActionListener(e -> goToNewTransaction());
@@ -716,8 +736,51 @@ public class MainFrame extends javax.swing.JFrame {
     private void updateFilterCount() {
         filterCountLabel.setText(ledgerModel.isFiltered()
                 ? "Showing " + ledgerModel.shownCount() + " of " + ledgerModel.transactionCount()
-                        + " transactions"
-                : " ");
+                        + " transactions" + (payPeriod == null ? "" : " (" + payPeriod.from().format(LedgerTableModel.DISPLAY_DATE)
+                        + " to " + payPeriod.last().format(LedgerTableModel.DISPLAY_DATE) + ")")
+                : payView.getSelectedItem() instanceof Paychecks.Mode && payPeriod == null ? "No paycheck to go by" : " ");
+    }
+
+    // ----- Paychecks: what's due before payday (see Paychecks) ----------------------------
+
+    /** The period the ledger is showing (Show: a paycheck period), or null for everything. */
+    private Paychecks.Period payPeriod;
+
+    /** Show: all transactions, or the uncleared ones in a paycheck period. */
+    private void applyPayView() {
+        payPeriod = null;
+        if (payView.getSelectedItem() instanceof Paychecks.Mode m) {
+            try {
+                payPeriod = paychecks.current(m, LocalDate.now());
+            } catch (SQLException e) {
+                showError("Could not read the paychecks:\n" + e.getMessage());
+            }
+        }
+        ledgerModel.setPeriod(payPeriod);
+        updateFilterCount();
+        payView.setToolTipText(payPeriod == null ? "What's due before payday (Preferences > Paychecks)"
+                : "Not yet cleared, " + payPeriod.from().format(LedgerTableModel.DISPLAY_DATE) + " to "
+                        + payPeriod.last().format(LedgerTableModel.DISPLAY_DATE) + " ("
+                        + Paychecks.rankName(payPeriod.paycheck().paycheck()).toLowerCase() + " paycheck on "
+                        + payPeriod.payday().format(LedgerTableModel.DISPLAY_DATE) + ")");
+    }
+
+    /** Shows the paycheck controls if paychecks are turned on (and brings them up to date); hides them if not. */
+    private void refreshPaycheckControls() {
+        boolean on;
+        try {
+            on = paychecks.settings().enabled();
+        } catch (SQLException e) {
+            on = false;
+        }
+        payViewLabel.setVisible(on);
+        payView.setVisible(on);
+        if (!on && payView.getSelectedIndex() != 0) {
+            payView.setSelectedIndex(0);                 // off: everything again
+        } else {
+            applyPayView();                              // a paycheck or the date may have changed
+        }
+        refreshSummaryIfShown();
     }
 
     /**
@@ -949,11 +1012,6 @@ public class MainFrame extends javax.swing.JFrame {
         fileMenu.insert(menuItem("Import...", this::importFile), 2);
         fileMenu.insert(menuItem("Back Up Database...", this::backupDatabase), 3);
         fileMenu.insert(menuItem("Rename File...", this::renameFile), 4);
-        fileMenu.insertSeparator(5);
-        JMenuItem syncItem = menuItem("Sync Now", () -> syncNow(true));
-        syncItem.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_F5, 0));
-        fileMenu.insert(syncItem, 6);
-        fileMenu.insert(menuItem("Sync Settings...", this::syncSettings), 7);
 
         // Account menu: the selected account, and tags.
         javax.swing.JMenu accountMenu = new javax.swing.JMenu("Account");
@@ -1012,6 +1070,15 @@ public class MainFrame extends javax.swing.JFrame {
         editMenu.add(menuItem("Preferences...", this::editPreferences));
         menuBar.add(editMenu, 1);                       // after File
         menuBar.add(accountMenu, 2);                    // after Edit
+
+        // Sync: with the phones (see docs/SYNC-DESIGN.md).
+        javax.swing.JMenu syncMenu = new javax.swing.JMenu("Sync");
+        JMenuItem syncItem = menuItem("Sync Now", () -> syncNow(true));
+        syncItem.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_F5, 0));
+        syncMenu.add(syncItem);
+        syncMenu.addSeparator();
+        syncMenu.add(menuItem("Settings...", this::syncSettings));
+        menuBar.add(syncMenu, 3);                       // after Account, before Help
 
         // Help: the help pages (F1), and About.
         javax.swing.JMenu helpMenu = new javax.swing.JMenu("Help");
@@ -1354,6 +1421,7 @@ public class MainFrame extends javax.swing.JFrame {
         if (dlg.wasChanged()) {
             checkpoint("Scheduled Transactions");
             createScheduledTransactions(true);
+            refreshPaycheckControls();
         }
     }
 
@@ -1408,6 +1476,9 @@ public class MainFrame extends javax.swing.JFrame {
         ScheduleDialog dlg = new ScheduleDialog(this, schedules, s, all, this::payeeNames,
                 this::categoryPaths, this::tagNames, this::lastCategoryForPayee);
         dlg.setVisible(true);
+        if (dlg.savedId() != null) {
+            SwingUtilities.invokeLater(this::refreshPaycheckControls);   // it may have become (or stopped being) a paycheck
+        }
         return dlg.savedId();
     }
 
@@ -1505,8 +1576,7 @@ public class MainFrame extends javax.swing.JFrame {
         names.add(accountNameLabel);
         names.add(loanNumberLabel);
         names.add(websiteLabel);
-        loanNumberLabel.setFont(loanNumberLabel.getFont().deriveFont(loanNumberLabel.getFont().getSize2D() - 2));
-        loanNumberLabel.setVisible(false);
+        loanNumberLabel.setVisible(false);              // (its font: see refreshFonts)
         summaryPanel.add(names, java.awt.BorderLayout.WEST);
         // The account's balance over the past 12 months, between its name and its balances.
         JPanel chartHolder = new JPanel(new java.awt.BorderLayout());
@@ -1666,6 +1736,10 @@ public class MainFrame extends javax.swing.JFrame {
     private javax.swing.Timer syncTimer;
     private boolean syncRunning;
     private boolean closing;                     // the window is closing: no more syncs touch the file
+    /** The file's change count (Database.totalChanges) when the phones last got a snapshot; -1: never. */
+    private long syncedChanges = -1;
+    /** The change count of the sync in progress, kept as syncedChanges once its snapshot is written. */
+    private long syncingChanges = -1;
     private final JLabel syncStatusLabel = new JLabel(" ");
 
     /** Syncs now (if it's set up), then every few minutes while the file is open. */
@@ -1692,7 +1766,7 @@ public class MainFrame extends javax.swing.JFrame {
         }
     }
 
-    /** File > Sync Settings... */
+    /** Sync > Settings... */
     private void syncSettings() {
         if (SyncDialog.show(this, db)) {
             restartSyncTimer();
@@ -1713,7 +1787,7 @@ public class MainFrame extends javax.swing.JFrame {
     /**
      * Syncs with the phones: the mailbox is read and written in the
      * background, and the phones' changes are applied here, on the window's
-     * thread, as one undo step. manual: File > Sync Now (says how it went,
+     * thread, as one undo step. manual: Sync > Sync Now (says how it went,
      * and offers the settings if sync isn't set up); otherwise it quietly
      * waits while a cell is being typed in or a dialog is open.
      */
@@ -1774,11 +1848,13 @@ public class MainFrame extends javax.swing.JFrame {
                 try {
                     SyncEngine.Summary s = get();
                     if (s != null) {
+                        syncedChanges = syncingChanges;  // the phones have all of it
+                        syncEngine.remember(plan);
                         syncDone(s, manual);
                     } else {
                         syncStatusLabel.setText(" ");
                     }
-                } catch (java.util.concurrent.ExecutionException e) {
+                } catch (java.util.concurrent.ExecutionException | SQLException e) {
                     Throwable cause = e.getCause() == null ? e : e.getCause();
                     syncFailed(cause.getMessage(), manual);
                 } catch (InterruptedException e) {
@@ -1804,6 +1880,7 @@ public class MainFrame extends javax.swing.JFrame {
         }
         checkpoint("Change");                            // whatever came before stays its own undo step
         SyncEngine.Outgoing out = syncEngine.apply(fetched);
+        syncingChanges = db.totalChanges();              // everything up to here goes in this snapshot
         SyncEngine.Summary s = out.summary();
         if (s.applied() + s.conflicts() > 0) {
             checkpoint("Sync from Phone");
@@ -1850,7 +1927,9 @@ public class MainFrame extends javax.swing.JFrame {
 
     /**
      * On closing: sends the phones a last snapshot of what changed here
-     * (their own changes wait for next time), waiting up to 8 seconds.
+     * (their own changes wait for next time), waiting up to 8 seconds. If
+     * nothing changed since the last snapshot they got, there's nothing to
+     * send, and it's skipped.
      */
     private void finalSync() {
         closing = true;
@@ -1862,8 +1941,8 @@ public class MainFrame extends javax.swing.JFrame {
         }
         try {
             SyncEngine.Plan plan = syncEngine.plan();
-            if (plan == null || plan.devices().isEmpty()) {
-                return;
+            if (plan == null || plan.devices().isEmpty() || db.totalChanges() == syncedChanges) {
+                return;                                  // not set up, no phones, or nothing new for them
             }
             SyncEngine.Outgoing out = syncEngine.apply(SyncEngine.Fetched.nothing(plan));
             Thread t = new Thread(() -> {
@@ -1879,6 +1958,110 @@ public class MainFrame extends javax.swing.JFrame {
         } catch (SQLException | InterruptedException ignored) {
             // the phones get it next time
         }
+    }
+
+    // ----- The window's size and place, kept between runs ------------------------
+
+    /** The ledger's column widths for the look's own font, by column number (see scaled). */
+    private static final int[] LEDGER_WIDTHS = {110, 60, 160, 160, 110, 150, 130, 62, 90, 90, 100, 30, 30, 90, 90, 120,
+                                                110, 110};
+    /** Never narrower than these (dates and amounts aren't squeezed), for the look's own font. */
+    private static final Map<Integer, Integer> LEDGER_MIN_WIDTHS = Map.of(LedgerTableModel.DATE, 100,
+            LedgerTableModel.TAG, 80, LedgerTableModel.PAYMENT, 80, LedgerTableModel.DEPOSIT, 80,
+            LedgerTableModel.BALANCE, 90);
+
+    /** A width for the look's own font, made to suit the font in use (larger text: wider). */
+    private static int scaled(int width) {
+        java.awt.Font now = javax.swing.UIManager.getFont("Table.font");
+        float ratio = now == null ? 1f : now.getSize2D() / Theme.lookFont().getSize2D();
+        return Math.round(width * Math.max(1f, ratio));
+    }
+
+    /** Its size and place when last not maximized (what restoring a maximized window goes back to). */
+    private java.awt.Rectangle normalBounds;
+
+    private void rememberNormalBounds() {
+        if (isShowing() && (getExtendedState() & java.awt.Frame.MAXIMIZED_BOTH) == 0) {
+            normalBounds = getBounds();
+        }
+    }
+
+    /** Keeps the window's size, place and maximized state for next time. */
+    private void saveWindow() {
+        java.awt.Rectangle b = normalBounds != null ? normalBounds : getBounds();
+        try {
+            config.setString(AppConfig.WINDOW_BOUNDS, b.x + "," + b.y + "," + b.width + "," + b.height);
+            config.setBoolean(AppConfig.WINDOW_MAXIMIZED, (getExtendedState() & java.awt.Frame.MAXIMIZED_BOTH) != 0);
+        } catch (SQLException e) {
+            // it opens at the usual size next time
+        }
+    }
+
+    /**
+     * Puts the window where it was last time, at its size then (maximized if
+     * it was); centered at the usual size if that's not known, or no longer
+     * on any screen (say, a monitor was unplugged).
+     */
+    void restoreWindow() {
+        java.awt.Rectangle b = parseBounds(config.getString(AppConfig.WINDOW_BOUNDS, ""));
+        if (b != null && onScreen(b)) {
+            setBounds(b);
+            normalBounds = b;
+        } else {
+            setLocationRelativeTo(null);
+        }
+        if (config.getBoolean(AppConfig.WINDOW_MAXIMIZED, false)) {
+            setExtendedState(getExtendedState() | java.awt.Frame.MAXIMIZED_BOTH);
+        }
+    }
+
+    /** "x,y,width,height" as a rectangle, or null if it isn't one (or is too small to use). */
+    static java.awt.Rectangle parseBounds(String text) {
+        String[] p = text.split(",");
+        if (p.length != 4) {
+            return null;
+        }
+        try {
+            java.awt.Rectangle r = new java.awt.Rectangle(Integer.parseInt(p[0].trim()), Integer.parseInt(p[1].trim()),
+                    Integer.parseInt(p[2].trim()), Integer.parseInt(p[3].trim()));
+            return r.width >= 400 && r.height >= 300 ? r : null;
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    /** True if enough of it is on some screen to grab its title bar (at least 200 by 50 pixels). */
+    private static boolean onScreen(java.awt.Rectangle r) {
+        for (java.awt.GraphicsDevice d : java.awt.GraphicsEnvironment.getLocalGraphicsEnvironment().getScreenDevices()) {
+            java.awt.Rectangle seen = d.getDefaultConfiguration().getBounds().intersection(r);
+            if (seen.width >= 200 && seen.height >= 50) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * The few labels drawn in a font of their own, made from the current
+     * one (after a font or theme change, too): the account's name larger and
+     * bold, the loan number smaller, Summary bold.
+     */
+    private void refreshFonts() {
+        java.awt.Font base = javax.swing.UIManager.getFont("Label.font");
+        if (base == null) {
+            return;
+        }
+        // The ledger's columns, as wide as the font needs (hidden ones too, for when they're shown).
+        for (java.util.Map.Entry<Integer, javax.swing.table.TableColumn> c : ledgerColumns.entrySet()) {
+            int column = c.getKey();
+            if (column < LEDGER_WIDTHS.length) {
+                c.getValue().setMinWidth(scaled(LEDGER_MIN_WIDTHS.getOrDefault(column, 15)));
+                c.getValue().setPreferredWidth(scaled(LEDGER_WIDTHS[column]));
+            }
+        }
+        accountNameLabel.setFont(base.deriveFont(java.awt.Font.BOLD, base.getSize2D() + 3));
+        loanNumberLabel.setFont(base.deriveFont(base.getSize2D() - 2));
+        summaryButton.setFont(javax.swing.UIManager.getFont("Button.font").deriveFont(java.awt.Font.BOLD));
     }
 
     @Override
@@ -2225,7 +2408,8 @@ public class MainFrame extends javax.swing.JFrame {
     /**
      * What's done with a bank download file once it's imported, as chosen:
      * left where it is, deleted, or moved into MyMoney's folder as
-     * <data folder>/<Account>/imports/<import date>.<ext>. Moving a QFX/OFX
+     * <data folder>/imports/<Account>_import_<import date>.<ext> (see
+     * ImportFileChoice.keptName). Moving a QFX/OFX
      * file asks first, since it holds the account number in plain text; if
      * not, it can be deleted or left instead.
      */
@@ -2233,7 +2417,7 @@ public class MainFrame extends javax.swing.JFrame {
         if (ImportFileChoice.MOVE.equals(action) && hasAccountNumber) {
             int r = JOptionPane.showConfirmDialog(this, "QFX and OFX files contain your account number in clear"
                     + " (unencrypted) text.\nMoving this one keeps that copy in MyMoney's folder:\n    "
-                    + importsFolder(account) + "\n\nMove it there?", "After Importing",
+                    + ImportFileChoice.importsFolder(db.getFile().getParent()) + "\n\nMove it there?", "After Importing",
                     JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
             if (r != JOptionPane.YES_OPTION) {
                 ImportFileChoice instead = new ImportFileChoice(ImportFileChoice.DELETE);
@@ -2250,27 +2434,15 @@ public class MainFrame extends javax.swing.JFrame {
             if (ImportFileChoice.DELETE.equals(action)) {
                 Files.deleteIfExists(file);
             } else if (ImportFileChoice.MOVE.equals(action)) {
-                Path folder = importsFolder(account);
-                Files.createDirectories(folder);
-                String name = file.getFileName().toString();
-                int dot = name.lastIndexOf('.');
-                String ext = dot > 0 ? name.substring(dot).toLowerCase(java.util.Locale.ROOT) : "";
-                String base = LocalDate.now().toString();          // the import date: 2026-10-16.qfx
-                Path to = folder.resolve(base + ext);
-                for (int n = 2; Files.exists(to); n++) {
-                    to = folder.resolve(base + " (" + n + ")" + ext);
-                }
+                Path to = ImportFileChoice.keptName(db.getFile().getParent(), account.name(), LocalDate.now(),
+                        file.getFileName().toString());          // imports/Checking_import_2026-10-20.qfx
+                Files.createDirectories(to.getParent());
                 Files.move(file, to);
             }
         } catch (IOException e) {
             showError("Could not " + (ImportFileChoice.DELETE.equals(action) ? "delete" : "move") + " \""
                     + file.getFileName() + "\":\n" + e.getMessage() + "\n\nIt's still where it was.");
         }
-    }
-
-    /** Where an account's imported bank downloads are moved: <data folder>/<Account>/imports. */
-    private Path importsFolder(Account account) {
-        return db.getFile().getParent().resolve(AttachmentRepository.folderName(account.name())).resolve("imports");
     }
 
     /**
@@ -2934,6 +3106,42 @@ public class MainFrame extends javax.swing.JFrame {
         themeRow.add(new JLabel("Theme:"));
         themeRow.add(theme);
         themeRow.add(new JLabel("(Match the system: light or dark, as the desktop is set when MyMoney starts)"));
+
+        // The font everything is drawn in, and its size; Default = the look's own.
+        java.awt.Font lookFont = Theme.lookFont();
+        String oldFamily = config.getString(AppConfig.FONT_FAMILY, "");
+        int oldSize = config.getInt(AppConfig.FONT_SIZE, 0);
+        String defaultFamily = "Default (" + lookFont.getFamily() + ")";
+        JComboBox<String> fontFamily = new JComboBox<>();
+        fontFamily.addItem(defaultFamily);
+        for (String f : java.awt.GraphicsEnvironment.getLocalGraphicsEnvironment().getAvailableFontFamilyNames()) {
+            fontFamily.addItem(f);
+        }
+        fontFamily.setSelectedItem(oldFamily.isEmpty() ? defaultFamily : oldFamily);
+        fontFamily.setMaximumRowCount(20);
+        javax.swing.JSpinner fontSize = new javax.swing.JSpinner(new javax.swing.SpinnerNumberModel(
+                oldSize > 0 ? oldSize : lookFont.getSize(), 8, 32, 1));
+        JLabel fontSample = new JLabel("Sample: Walmart  Food:Groceries  $1,234.56");
+        Runnable showSample = () -> {
+            String fam = fontFamily.getSelectedIndex() == 0 ? lookFont.getFamily() : (String) fontFamily.getSelectedItem();
+            fontSample.setFont(new java.awt.Font(fam, java.awt.Font.PLAIN, (Integer) fontSize.getValue()));
+        };
+        fontFamily.addActionListener(e -> showSample.run());
+        fontSize.addChangeListener(e -> showSample.run());
+        showSample.run();
+        JButton fontDefault = new JButton("Default");
+        fontDefault.addActionListener(e -> {
+            fontFamily.setSelectedIndex(0);
+            fontSize.setValue(lookFont.getSize());
+        });
+        JPanel fontRow = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 4, 0));
+        fontRow.add(new JLabel("Font:"));
+        fontRow.add(fontFamily);
+        fontRow.add(new JLabel("Size:"));
+        fontRow.add(fontSize);
+        fontRow.add(fontDefault);
+        JPanel fontSampleRow = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 4, 0));
+        fontSampleRow.add(fontSample);
         JPanel dateRow = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 4, 0));
         dateRow.add(new JLabel("Dates:"));
         dateRow.add(dateFormat);
@@ -2986,16 +3194,75 @@ public class MainFrame extends javax.swing.JFrame {
         backupNote.setBorder(BorderFactory.createEmptyBorder(12, 0, 0, 0));
 
         javax.swing.JTabbedPane tabs = new javax.swing.JTabbedPane();
-        tabs.addTab("General", preferencesTab(themeRow, openOnSummary, dateRow, balances, groupTotals));
+        tabs.addTab("General", preferencesTab(themeRow, fontRow, fontSampleRow, openOnSummary, dateRow, balances, groupTotals));
         tabs.addTab("Ledger", preferencesTab(editHeading, enterDown, enterRight, autoDecimal, scheduleHeading,
                 scheduleRow));
         tabs.addTab("Imports", preferencesTab(importHeading, matchRow, afterHeading, afterImport));
         tabs.addTab("Backups", preferencesTab(folderRow, remindRow, retentionHeading, keepRow, thinRow, backupNote));
+
+        // Paychecks (this file's): on or off, which one to go by, and the Summary's period.
+        Paychecks.Settings paySettings;
+        List<ScheduleRepository.Schedule> payList;
+        try {
+            paySettings = paychecks.settings();
+            payList = paychecks.paychecks();
+        } catch (SQLException e) {
+            paySettings = Paychecks.Settings.OFF;
+            payList = List.of();
+        }
+        javax.swing.JCheckBox payOn = new javax.swing.JCheckBox(
+                "Show what's due between paychecks (on the Summary screen, and Show: on the ledger)", paySettings.enabled());
+        JComboBox<String> payWhich = new JComboBox<>();
+        List<Integer> payRanks = new ArrayList<>();
+        for (ScheduleRepository.Schedule p : payList) {
+            payWhich.addItem(Paychecks.rankName(p.paycheck()) + ": " + (p.payee() == null ? "(no payee)" : p.payee())
+                    + ", " + p.describeAmount() + ", " + p.recurrence().describe().toLowerCase());
+            payRanks.add(p.paycheck());
+        }
+        if (payList.isEmpty()) {
+            payWhich.addItem("No paychecks yet");
+            payWhich.setEnabled(false);
+        } else {
+            payWhich.setSelectedIndex(Math.max(0, payRanks.indexOf(paySettings.rank())));
+        }
+        JPanel payWhichRow = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 4, 0));
+        payWhichRow.add(new JLabel("Go by:"));
+        payWhichRow.add(payWhich);
+        javax.swing.JRadioButton payUntil = new javax.swing.JRadioButton(Paychecks.Mode.UNTIL_NEXT.label
+                + " (from today)", paySettings.mode() == Paychecks.Mode.UNTIL_NEXT);
+        javax.swing.JRadioButton payPeriodButton = new javax.swing.JRadioButton(Paychecks.Mode.NEXT_PERIOD.label
+                + " (from that payday to the next)", paySettings.mode() == Paychecks.Mode.NEXT_PERIOD);
+        javax.swing.ButtonGroup payModes = new javax.swing.ButtonGroup();
+        payModes.add(payUntil);
+        payModes.add(payPeriodButton);
+        JLabel payModeHeading = new JLabel("The Summary screen starts on:");
+        payModeHeading.setBorder(BorderFactory.createEmptyBorder(10, 0, 0, 0));
+        JLabel payHint = new JLabel("<html><div style='width:520px'>Mark a scheduled deposit as a paycheck (main,"
+                + " secondary, tertiary, ...) with its <b>Paycheck</b> choice, in Account &gt; Scheduled Transactions."
+                + " Upcoming means not yet cleared: scheduled, pending, paid, or entered with no status."
+                + " These settings belong to this file.</div></html>");
+        payHint.setBorder(BorderFactory.createEmptyBorder(12, 0, 0, 0));
+        Runnable payEnable = () -> {
+            payWhich.setEnabled(payOn.isSelected() && !payRanks.isEmpty());
+            payUntil.setEnabled(payOn.isSelected());
+            payPeriodButton.setEnabled(payOn.isSelected());
+        };
+        payOn.addActionListener(e -> payEnable.run());
+        payEnable.run();
+        tabs.addTab("Paychecks", preferencesTab(payOn, payWhichRow, payModeHeading, payUntil, payPeriodButton, payHint));
         int r = JOptionPane.showConfirmDialog(this, tabs, "Preferences", JOptionPane.OK_CANCEL_OPTION,
                 JOptionPane.PLAIN_MESSAGE);
         if (r != JOptionPane.OK_OPTION) {
             return;
         }
+        try {
+            paychecks.save(new Paychecks.Settings(payOn.isSelected(),
+                    payRanks.isEmpty() ? paySettings.rank() : payRanks.get(Math.max(0, payWhich.getSelectedIndex())),
+                    payPeriodButton.isSelected() ? Paychecks.Mode.NEXT_PERIOD : Paychecks.Mode.UNTIL_NEXT));
+        } catch (SQLException e) {
+            showError("Could not save the paycheck settings:\n" + e.getMessage());
+        }
+        refreshPaycheckControls();
         String folderText = backupField.getText().trim();
         if (!folderText.isEmpty() && !Files.isDirectory(Path.of(folderText))) {
             showError("The backup folder doesn't exist:\n" + folderText + "\n\nIt's kept anyway; backups will ask for"
@@ -3011,6 +3278,9 @@ public class MainFrame extends javax.swing.JFrame {
             config.setBoolean(AppConfig.OPEN_ON_SUMMARY, openOnSummary.isSelected());
             config.setString(AppConfig.DATE_FORMAT, LedgerTableModel.DATE_FORMATS[dateFormat.getSelectedIndex()]);
             config.setString(AppConfig.THEME, ((Theme.Choice) theme.getSelectedItem()).key);
+            config.setString(AppConfig.FONT_FAMILY, fontFamily.getSelectedIndex() == 0 ? "" : (String) fontFamily.getSelectedItem());
+            int size = (Integer) fontSize.getValue();
+            config.setInt(AppConfig.FONT_SIZE, size == lookFont.getSize() ? 0 : size);
             config.setInt(AppConfig.SCHEDULE_DAYS, (Integer) scheduleDays.getValue());
             config.setString(AppConfig.IMPORT_FILE_ACTION, afterImport.choice());
             config.setString(AppConfig.BACKUP_FOLDER, folderText);
@@ -3021,8 +3291,13 @@ public class MainFrame extends javax.swing.JFrame {
             showError("The preferences apply now, but could not be saved for next time:\n" + e.getMessage());
         }
         enterNextField = enterRight.isSelected();
-        if (theme.getSelectedItem() != oldTheme) {
+        String newFamily = fontFamily.getSelectedIndex() == 0 ? "" : (String) fontFamily.getSelectedItem();
+        int newSize = (Integer) fontSize.getValue() == lookFont.getSize() ? 0 : (Integer) fontSize.getValue();
+        if (theme.getSelectedItem() != oldTheme || !newFamily.equals(oldFamily) || newSize != oldSize) {
+            Theme.setFont(newFamily, newSize);
             Theme.switchTo((Theme.Choice) theme.getSelectedItem());   // every open window, now
+            refreshFonts();
+            fitTreeWidth();
         }
         Money.setAutoDecimal(autoDecimal.isSelected());
         String newFormat = LedgerTableModel.DATE_FORMATS[dateFormat.getSelectedIndex()];
@@ -3074,6 +3349,8 @@ public class MainFrame extends javax.swing.JFrame {
      */
     private void setupSummary() {
         summaryView = new SummaryPanel(accounts, this::selectAccountInTree);
+        paydayWidget = new PaydayWidget(paychecks, accounts, this::selectAccountInTree);
+        summaryView.addWidget(paydayWidget, paydayWidget::refresh);
         javax.swing.JScrollPane summaryScroll = new javax.swing.JScrollPane(summaryView);
         summaryScroll.setBorder(null);
         summaryScroll.getVerticalScrollBar().setUnitIncrement(16);
@@ -3083,7 +3360,6 @@ public class MainFrame extends javax.swing.JFrame {
         mainSplit.setRightComponent(rightCards);
 
         summaryButton.setHorizontalAlignment(SwingConstants.LEADING);
-        summaryButton.setFont(summaryButton.getFont().deriveFont(java.awt.Font.BOLD));
         summaryButton.setToolTipText("Net worth and every account's balance at a glance");
         summaryButton.setFocusable(false);
         summaryButton.addActionListener(e -> showSummary());
@@ -3393,8 +3669,10 @@ public class MainFrame extends javax.swing.JFrame {
             ledgerTable.getCellEditor().stopCellEditing();
         }
         resolveDraft(false);
+        remindToBackUp();                                // may ask something: while the window's still there
+        saveWindow();
+        setVisible(false);                               // gone at once; what's left happens out of sight
         finalSync();
-        remindToBackUp();
         db.close();
         config.close();
     }//GEN-LAST:event_formWindowClosing

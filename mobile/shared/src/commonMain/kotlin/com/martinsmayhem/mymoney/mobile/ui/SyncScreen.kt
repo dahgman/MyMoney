@@ -77,7 +77,7 @@ fun SyncScreen(phone: Phone, view: LedgerView, nav: Navigator, appVersion: Strin
             text = {
                 Text("Everything is removed from this phone" +
                     (if (s.pending.isNotEmpty()) ", including ${s.pending.size} changes the computer doesn't have yet" else "") +
-                    ". Remove it on the computer too (File > Sync Settings).")
+                    ". Remove it on the computer too (Sync > Settings).")
             },
             confirmButton = {
                 TextButton(onClick = {

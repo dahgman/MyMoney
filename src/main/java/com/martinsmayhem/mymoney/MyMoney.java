@@ -64,6 +64,7 @@ public class MyMoney {
             System.exit(1);
             return;
         }
+        Theme.setFont(config.getString(AppConfig.FONT_FAMILY, ""), config.getInt(AppConfig.FONT_SIZE, 0));
         Theme.apply(Theme.Choice.of(config.getString(AppConfig.THEME, "system")));
         Splash.start();
         AppIcon.install();                    // the icon for every window, dialogs included
@@ -127,7 +128,7 @@ public class MyMoney {
 
         Splash.step("Opening " + db.getFile().getFileName() + "…", 35);
         MainFrame frame = new MainFrame(db, config);   // reports its own steps
-        frame.setLocationRelativeTo(null);
+        frame.restoreWindow();                // where and how big it was last time (or centered)
         frame.setVisible(true);
         Splash.finish();
     }

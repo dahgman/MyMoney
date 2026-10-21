@@ -43,7 +43,7 @@ public class Database implements AutoCloseable {
      *  12 - loans: the lender's monthly payment and first payment date
      * When changing the schema: bump this, update createSchema(), and add a step to upgrade().
      */
-    public static final int SCHEMA_VERSION = 21;
+    public static final int SCHEMA_VERSION = 23;
 
     private final Path file;
     private final Connection conn;
@@ -452,6 +452,28 @@ public class Database implements AutoCloseable {
         st.execute("INSERT OR IGNORE INTO meta (key, value) VALUES ('sync_file_id', " + NEW_UUID + ")");
     }
 
+    /**
+     * Schema 22: a schedule's amount can be per weekday (schedule.amount_weekday,
+     * 1 = Monday ... 7 = Sunday; NULL = a fixed amount): its amount times the
+     * number of those weekdays in each occurrence's month.
+     */
+    private static void addScheduleWeekday(Statement st) throws SQLException {
+        if (!hasColumn(st, "schedule", "amount_weekday")) {
+            st.execute("ALTER TABLE schedule ADD COLUMN amount_weekday INTEGER");
+        }
+    }
+
+    /**
+     * Schema 23: a scheduled deposit can be a paycheck (schedule.paycheck:
+     * 1 = the main one, 2 = secondary, 3 = tertiary, ...; NULL = not one),
+     * for showing what's due between paychecks (see Paychecks).
+     */
+    private static void addPaycheckRank(Statement st) throws SQLException {
+        if (!hasColumn(st, "schedule", "paycheck")) {
+            st.execute("ALTER TABLE schedule ADD COLUMN paycheck INTEGER");
+        }
+    }
+
     private static boolean hasColumn(Statement st, String table, String column) throws SQLException {
         try (java.sql.ResultSet rs = st.executeQuery("PRAGMA table_info(" + table + ")")) {
             while (rs.next()) {
@@ -461,6 +483,16 @@ public class Database implements AutoCloseable {
             }
         }
         return false;
+    }
+
+    /**
+     * How many rows this connection has changed since the file was opened
+     * (SQLite's total_changes()): if it's the same as before, nothing changed.
+     */
+    public long totalChanges() throws SQLException {
+        try (Statement st = conn.createStatement(); java.sql.ResultSet rs = st.executeQuery("SELECT total_changes()")) {
+            return rs.next() ? rs.getLong(1) : 0;
+        }
     }
 
     /** Brings an older file up to SCHEMA_VERSION, one step at a time, all-or-nothing. */
@@ -622,7 +654,13 @@ public class Database implements AutoCloseable {
             if (fromVersion < 21) {
                 addSyncSchema(st);
             }
-            // Future: if (fromVersion < 22) { ... }
+            if (fromVersion < 22) {
+                addScheduleWeekday(st);
+            }
+            if (fromVersion < 23) {
+                addPaycheckRank(st);
+            }
+            // Future: if (fromVersion < 24) { ... }
 
             try (PreparedStatement ps = conn.prepareStatement(
                     "UPDATE meta SET value = ? WHERE key = 'schema_version'")) {
@@ -798,6 +836,8 @@ public class Database implements AutoCloseable {
                 st.execute(sql);
             }
             addSyncSchema(st);
+            addScheduleWeekday(st);
+            addPaycheckRank(st);
             try (PreparedStatement ps = conn.prepareStatement(
                     "INSERT INTO meta (key, value) VALUES (?, ?)")) {
                 ps.setString(1, "schema_version");

@@ -65,6 +65,7 @@ fun EditScreen(phone: Phone, view: LedgerView, platform: Platform, nav: Navigato
     var tag by remember { mutableStateOf(existing?.tag ?: "") }
     var memo by remember { mutableStateOf(existing?.memo ?: "") }
     var description by remember { mutableStateOf(existing?.description ?: "") }
+    var photos by remember { mutableStateOf(listOf<com.martinsmayhem.mymoney.mobile.ReceiptImage>()) }   // a new one's
     // A cleared transaction's money stays put: only its payee, category and status (TxnView.canChange).
     fun can(field: String) = existing == null || existing.canChange(field)
     var num by remember { mutableStateOf(existing?.num ?: "") }
@@ -88,7 +89,12 @@ fun EditScreen(phone: Phone, view: LedgerView, platform: Platform, nav: Navigato
             if (deposit) cents else -cents, status)
         scope.launch {
             try {
-                if (existing == null) phone.add(d) else phone.edit(existing.uid, d)
+                if (existing == null) {
+                    val uid = phone.add(d)
+                    photos.forEach { phone.attach(uid, it) }
+                } else {
+                    phone.edit(existing.uid, d)
+                }
                 platform.syncSoon()
                 nav.back()
             } catch (e: Exception) {
@@ -149,6 +155,12 @@ fun EditScreen(phone: Phone, view: LedgerView, platform: Platform, nav: Navigato
                 Box(Modifier.weight(1f)) {
                     Picker("Status", Format.status(status), Format.phoneStatuses.map { it to Format.status(it) }) { status = it }
                 }
+            }
+            if (existing == null) {
+                Text("Receipts", style = MaterialTheme.typography.titleSmall)
+                val thumbs = remember(photos) { photos.map { platform.imageBitmap(it.thumbnail) to null } }
+                Thumbnails(thumbs)
+                ReceiptButtons(platform, { problem = it }) { photos = photos + it }
             }
             problem?.let { Text(it, color = Negative) }
             Button(onClick = ::save, modifier = Modifier.fillMaxWidth()) { Text("Save") }

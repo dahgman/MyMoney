@@ -396,9 +396,7 @@ final class DebtSnowballDialog extends JDialog {
             schedules.delete(s.id(), true);
             return;
         }
-        schedules.save(new ScheduleRepository.Schedule(s.id(), s.accountId(), s.payee(), s.category(), s.tag(),
-                s.description(), s.memo(), s.amountCents(),
-                new Recurrence(r.unit(), r.interval(), r.secondDay(), r.start(), yesterday, null)));
+        schedules.save(s.with(new Recurrence(r.unit(), r.interval(), r.secondDay(), r.start(), yesterday, null)));
     }
 
     // ----- Helpers -------------------------------------------------------------------

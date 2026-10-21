@@ -64,6 +64,40 @@ class ThemeTest {
     }
 
     @Test
+    void fontsAreWrittenAsFlatLafReadsThem() {
+        assertNull(Theme.fontSpec("", 0), "the look's own font");
+        assertEquals("16", Theme.fontSpec("", 16));
+        assertEquals("+0 \"Liberation Serif\"", Theme.fontSpec("Liberation Serif", 0));
+        assertEquals("18 \"DejaVu Sans\"", Theme.fontSpec("DejaVu Sans", 18));
+    }
+
+    @Test
+    void theChosenFontIsUsed() {
+        try {
+            Theme.setFont("", 18);
+            Theme.apply(Theme.Choice.LIGHT);
+            assertEquals(18, javax.swing.UIManager.getFont("Label.font").getSize());
+            assertEquals(18, javax.swing.UIManager.getFont("Table.font").getSize());
+            Theme.setFont("", 0);
+            Theme.apply(Theme.Choice.LIGHT);
+            assertEquals(Theme.lookFont().getSize(), javax.swing.UIManager.getFont("Label.font").getSize(), "back to its own");
+        } finally {
+            Theme.setFont("", 0);
+        }
+    }
+
+    @Test
+    void theWindowsSizeIsReadBack() {
+        assertEquals(new java.awt.Rectangle(100, 50, 1400, 900), MainFrame.parseBounds("100,50,1400,900"));
+        assertEquals(new java.awt.Rectangle(-1800, 0, 1400, 900), MainFrame.parseBounds("-1800, 0, 1400, 900"),
+                "a monitor to the left");
+        assertNull(MainFrame.parseBounds(""), "never saved");
+        assertNull(MainFrame.parseBounds("1,2,3"));
+        assertNull(MainFrame.parseBounds("a,b,c,d"));
+        assertNull(MainFrame.parseBounds("0,0,50,40"), "too small to use");
+    }
+
+    @Test
     void choicesAreStoredByKey() {
         assertEquals(Theme.Choice.DARK, Theme.Choice.of("dark"));
         assertEquals(Theme.Choice.LIGHT, Theme.Choice.of("light"));

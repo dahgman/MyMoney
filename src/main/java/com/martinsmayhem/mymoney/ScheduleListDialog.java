@@ -67,7 +67,7 @@ final class ScheduleListDialog extends JDialog {
                 }
             }
         });
-        int[] widths = {130, 170, 90, 170, 95, 130};
+        int[] widths = {130, 170, 140, 170, 95, 130};
         for (int i = 0; i < widths.length; i++) {
             table.getColumnModel().getColumn(i).setPreferredWidth(widths[i]);
         }
@@ -75,7 +75,7 @@ final class ScheduleListDialog extends JDialog {
         DefaultTableCellRenderer money = new DefaultTableCellRenderer() {
             @Override
             protected void setValue(Object value) {
-                setText(value instanceof Long cents ? Money.format(cents) : "");
+                setText(value instanceof AmountValue a ? a.text() : "");
             }
         };
         money.setHorizontalAlignment(SwingConstants.RIGHT);
@@ -375,6 +375,19 @@ final class ScheduleListDialog extends JDialog {
     }
 
     /** "Repeats", sorted from most to least often (by roughly how many days apart). */
+    /** An amount as shown ("$353.96", or "$88.49 × Tuesdays"), sorted by its cents. */
+    private record AmountValue(long cents, String text) implements Comparable<AmountValue> {
+        @Override
+        public int compareTo(AmountValue o) {
+            return Long.compare(cents, o.cents);
+        }
+
+        @Override
+        public String toString() {
+            return text;
+        }
+    }
+
     private record RepeatsValue(String label, double daysApart) implements Comparable<RepeatsValue> {
         static RepeatsValue of(Recurrence r) {
             double unit = switch (r.unit()) {
@@ -447,7 +460,7 @@ final class ScheduleListDialog extends JDialog {
         @Override
         public Class<?> getColumnClass(int column) {
             return switch (column) {
-                case 2 -> Long.class;
+                case 2 -> AmountValue.class;
                 case 3 -> RepeatsValue.class;
                 case 4 -> LocalDate.class;
                 case 5 -> EndsValue.class;
@@ -461,8 +474,9 @@ final class ScheduleListDialog extends JDialog {
             Recurrence r = s.recurrence();
             return switch (column) {
                 case 0 -> accountNames.getOrDefault(s.accountId(), "?");
-                case 1 -> s.payee() == null ? "" : s.payee();
-                case 2 -> s.amountCents();
+                case 1 -> (s.payee() == null ? "" : s.payee())
+                        + (s.paycheck() == null ? "" : "  (" + Paychecks.rankName(s.paycheck()).toLowerCase() + " paycheck)");
+                case 2 -> new AmountValue(s.amountCents(), s.describeAmount());
                 case 3 -> RepeatsValue.of(r);
                 case 4 -> {
                     LocalDate n = next(s);

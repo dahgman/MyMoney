@@ -38,6 +38,8 @@ final class WebDavMailbox implements Mailbox {
      * so leaves it for next time).
      */
     private volatile boolean moveRefused;
+    /** Folders known to be there (made, or found there): no MKCOL for them again. */
+    private final java.util.Set<String> knownFolders = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     /**
      * @param url  the server, like "https://thehive:5006"
@@ -155,6 +157,22 @@ final class WebDavMailbox implements Mailbox {
 
     @Override
     public void write(String path, byte[] data) throws IOException {
+        try {
+            writeOnce(path, data);
+        } catch (FolderGone e) {
+            knownFolders.clear();                        // removed since: make them again, then once more
+            writeOnce(path, data);
+        }
+    }
+
+    /** A PUT answered 404 or 409: a folder it goes in isn't there (any more). */
+    private static final class FolderGone extends IOException {
+        FolderGone(String message) {
+            super(message);
+        }
+    }
+
+    private void writeOnce(String path, byte[] data) throws IOException {
         makeFolders(path);
         if (moveRefused) {
             put(uri(path, false), data, path);
@@ -175,12 +193,22 @@ final class WebDavMailbox implements Mailbox {
     }
 
     private void put(URI uri, byte[] data, String path) throws IOException {
-        check(send(request(uri).PUT(HttpRequest.BodyPublishers.ofByteArray(data)).build()), "writing " + path);
+        HttpResponse<byte[]> res = send(request(uri).PUT(HttpRequest.BodyPublishers.ofByteArray(data)).build());
+        if (res.statusCode() == 404 || res.statusCode() == 409) {
+            throw new FolderGone("writing " + path + ": its folder isn't there (the WebDAV server answered "
+                    + res.statusCode() + ")");
+        }
+        check(res, "writing " + path);
     }
 
     /** True once the server has refused a MOVE (files are written in place since). */
     boolean writesInPlace() {
         return moveRefused;
+    }
+
+    /** Writes in place from the start: the server is known to refuse MOVE (from an earlier session). */
+    void setWritesInPlace(boolean inPlace) {
+        moveRefused = inPlace;
     }
 
     /**
@@ -201,6 +229,9 @@ final class WebDavMailbox implements Mailbox {
     }
 
     private void makeFolder(String folder) throws IOException {
+        if (knownFolders.contains(folder)) {
+            return;                                      // made (or found) already this session
+        }
         HttpResponse<byte[]> res = send(request(uri(folder, true))
                 .method("MKCOL", HttpRequest.BodyPublishers.noBody()).build());
         int s = res.statusCode();
@@ -208,6 +239,7 @@ final class WebDavMailbox implements Mailbox {
             throw new IOException("making the folder " + (folder.isEmpty() ? base : folder)
                     + ": the WebDAV server answered " + s);
         }
+        knownFolders.add(folder);
     }
 
     @Override
@@ -220,6 +252,8 @@ final class WebDavMailbox implements Mailbox {
 
     @Override
     public void deleteFolder(String folder) throws IOException {
+        String prefix = folder.replaceAll("/+$", "");
+        knownFolders.removeIf(f -> f.equals(prefix) || f.startsWith(prefix + "/"));
         HttpResponse<byte[]> res = send(request(uri(folder, true)).DELETE().build());
         if (res.statusCode() != 404) {
             check(res, "deleting " + folder);

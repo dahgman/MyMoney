@@ -251,6 +251,57 @@ class PhoneTest {
 
     // ----- Syncing ----------------------------------------------------------------------------
 
+    // ----- Receipts ------------------------------------------------------------------------
+
+    private val photo = ReceiptImage(byteArrayOf(-1, -40, 1, 2, 3, -1, -39), byteArrayOf(-1, -40, 9, -1, -39))
+
+    @Test
+    fun aReceiptGoesBeforeTheChangeThatAttachesIt() = runTest {
+        paired(rent)
+        phone.attach("t-rent", photo)
+        val id = LedgerView(phone.state.value).phonePhotos("t-rent").single().also { assertTrue(it.waiting) }.receiptId
+        assertEquals(1, LedgerView(phone.state.value).txn("t-rent")!!.receipts, "counted while it waits")
+        phone.sync()
+        val path = "devices/dev1/receipts/$id.mms"
+        assertContentEquals(photo.jpeg, SyncCrypto.decrypt(key, path, Files.readAllBytes(root.resolve("file1/$path"))))
+        val op = changeFile(1)["ops"]!!.jsonArray.single().jsonObject
+        assertEquals("attach", op["op"]!!.jsonPrimitive.content)
+        assertEquals(id, op["receiptId"]!!.jsonPrimitive.content)
+
+        // The computer files it: the photo goes from the phone, the thumbnail stays.
+        computerWrites(snapshot(2, rent.copy(receipts = 1),
+            results = listOf(OpResult(phone.state.value.pending.single().opId, "applied")), appliedThrough = 1))
+        phone.sync()
+        assertTrue(phone.state.value.pending.isEmpty())
+        assertNull(store.blobs["receipt-$id"])
+        assertContentEquals(photo.thumbnail, phone.thumbnail(id))
+        assertFalse(LedgerView(phone.state.value).phonePhotos("t-rent").single().waiting)
+        assertEquals(1, LedgerView(phone.state.value).txn("t-rent")!!.receipts, "now the computer's count")
+    }
+
+    @Test
+    fun aReceiptOnATransactionNeverSentGoesWithIt() = runTest {
+        paired()
+        val uid = phone.add(draft(-575))
+        phone.attach(uid, photo)
+        phone.delete(uid)
+        assertTrue(phone.state.value.pending.isEmpty())
+        assertTrue(store.blobs.isEmpty(), "its photo is gone too")
+        assertTrue(phone.state.value.receipts.isEmpty())
+    }
+
+    @Test
+    fun thumbnailsGoWhenTheTransactionDoes() = runTest {
+        paired(rent)
+        phone.attach("t-rent", photo)
+        phone.sync()
+        computerWrites(snapshot(2, results = listOf(OpResult(phone.state.value.pending.single().opId, "applied")),
+            appliedThrough = 1))                          // Rent reconciled long ago, say: no longer sent
+        phone.sync()
+        assertTrue(store.blobs.isEmpty())
+        assertTrue(phone.state.value.receipts.isEmpty())
+    }
+
     @Test
     fun syncSendsThenHearsBack() = runTest {
         paired(rent)

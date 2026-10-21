@@ -58,6 +58,9 @@ final class SummaryPanel extends JPanel {
     private final JTable table = new JTable(model);
     private final List<Row> rows = new ArrayList<>();
     private JPanel accountsCard;
+    private JPanel widgets;
+    /** Widgets added by the window (like the paycheck panel), refreshed with the rest. */
+    private final List<Runnable> widgetRefreshes = new ArrayList<>();
     private long maxPositive;
     private long maxNegative;
 
@@ -84,7 +87,7 @@ final class SummaryPanel extends JPanel {
             header.add(c);
         }
 
-        JPanel widgets = new JPanel();
+        widgets = new JPanel();
         widgets.setLayout(new BoxLayout(widgets, BoxLayout.PAGE_AXIS));
         widgets.setOpaque(false);
         accountsCard = accountsWidget();
@@ -95,8 +98,15 @@ final class SummaryPanel extends JPanel {
         add(widgets, BorderLayout.CENTER);
     }
 
+    /** Adds a widget under the accounts (refreshed, with refresh, whenever the Summary is). */
+    void addWidget(JComponent widget, Runnable refresh) {
+        widgets.add(widget, widgets.getComponentCount() - 1);     // before the glue at the bottom
+        widgetRefreshes.add(refresh);
+    }
+
     /** Re-reads every account's current balance. */
     void refresh() {
+        widgetRefreshes.forEach(Runnable::run);
         rows.clear();
         long total = 0;
         try {
