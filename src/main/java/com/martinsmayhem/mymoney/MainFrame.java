@@ -227,6 +227,9 @@ public class MainFrame extends javax.swing.JFrame {
 
         // The whole row being edited is drawn white (see muted): redraw it as editing starts and stops.
         ledgerTable.addPropertyChangeListener("tableCellEditor", e -> {
+            if (ledgerTable.getEditorComponent() != null) {
+                keepTabInLedger(ledgerTable.getEditorComponent());
+            }
             // (The table names the editor before the row, so the row is read just after.)
             SwingUtilities.invokeLater(() -> {
                 if (ledgerTable.isEditing() && ledgerTable.getEditingRow() >= 0) {
@@ -234,6 +237,32 @@ public class MainFrame extends javax.swing.JFrame {
                 }
                 ledgerTable.repaint();
             });
+        });
+
+        // Tab and Shift+Tab move between the fields of the transaction being edited, without
+        // saving it; Enter saves it all (commitAndMoveDown). Escape puts it back as it was.
+        ledgerTable.getActionMap().put("selectNextColumnCell", new javax.swing.AbstractAction() {
+            @Override
+            public void actionPerformed(java.awt.event.ActionEvent e) {
+                moveField(1);
+            }
+        });
+        ledgerTable.getActionMap().put("selectPreviousColumnCell", new javax.swing.AbstractAction() {
+            @Override
+            public void actionPerformed(java.awt.event.ActionEvent e) {
+                moveField(-1);
+            }
+        });
+        javax.swing.Action cancelCell = ledgerTable.getActionMap().get("cancel");
+        ledgerTable.getActionMap().put("cancel", new javax.swing.AbstractAction() {
+            @Override
+            public void actionPerformed(java.awt.event.ActionEvent e) {
+                if (ledgerTable.isEditing()) {
+                    cancelCell.actionPerformed(e);       // first the field
+                } else {
+                    revertEdit();                       // then the whole transaction
+                }
+            }
         });
 
         // Future-dated transactions are drawn with grey text, in every column.
@@ -346,8 +375,21 @@ public class MainFrame extends javax.swing.JFrame {
             }
             int row = ledgerTable.getSelectedRow();
             if (editingTxn != NO_EDIT && !isEditingTxnRow(row)) {
-                editingTxn = NO_EDIT;                   // moved to another transaction: it's committed
+                editingTxn = NO_EDIT;                   // moved to another transaction: save this one
                 ledgerTable.repaint();
+                if (ledgerModel.hasPendingEdit()) {
+                    long to = ledgerModel.transactionId(row);
+                    boolean toDraft = ledgerModel.isDraftRow(row);
+                    SwingUtilities.invokeLater(() -> {  // let the click finish first
+                        int column = Math.max(0, ledgerTable.getSelectedColumn());
+                        if (ledgerModel.commitEdit()) {  // rows may have moved: back to the one chosen
+                            int now = toDraft ? ledgerModel.draftRow() : ledgerModel.rowOfTransaction(to);
+                            if (now >= 0) {
+                                ledgerTable.changeSelection(now, column, false, false);
+                            }
+                        }
+                    });
+                }
             }
             int previous = lastLedgerRow;
             lastLedgerRow = row;
@@ -894,21 +936,33 @@ public class MainFrame extends javax.swing.JFrame {
         if (!ledgerTable.getCellEditor().stopCellEditing()) {
             return;
         }
-        if (enterNextField && ledgerTable.getRowCount() == rowsBefore) {
+        if (enterNextField) {
             // Enter works like Tab: on to the next field of this transaction that can be edited.
             for (int v = column + 1; v < ledgerTable.getColumnCount(); v++) {
                 if (ledgerModel.isCellEditable(row, ledgerTable.convertColumnIndexToModel(v))) {
-                    ledgerTable.changeSelection(row, v, false, false);
+                    editField(row, v);
                     return;
                 }
             }
             column = ledgerTable.convertColumnIndexToView(LedgerTableModel.DATE);   // past the last: next row's Date
         }
-        if (ledgerTable.getRowCount() == rowsBefore && ledgerModel.isDraftRow(row)
-                && ledgerModel.draftHasData() && !resolveDraft(true)) {
-            selectDraftAmount();                        // Enter on a new transaction with no amount
-            return;
+        // Save the whole transaction (see LedgerTableModel.commitEdit).
+        if (ledgerModel.isDraftRow(row)) {
+            if (ledgerModel.draftHasData() && !resolveDraft(true)) {
+                selectDraftAmount();                    // Enter on a new transaction with no amount
+                return;
+            }
+        } else if (ledgerModel.hasPendingEdit()) {
+            long id = ledgerModel.transactionId(row);
+            ledgerModel.commitEdit();
+            editingTxn = NO_EDIT;
+            int now = ledgerModel.rowOfTransaction(id);   // it may have moved (a new date)
+            if (now >= 0) {
+                row = now;
+            }
         }
+        editingTxn = NO_EDIT;
+        ledgerTable.repaint();
         int rows = ledgerTable.getRowCount();
         if (rows > rowsBefore) {                        // a new transaction was saved: on to the next blank row
             ledgerTable.changeSelection(ledgerModel.draftRow(),
@@ -924,7 +978,18 @@ public class MainFrame extends javax.swing.JFrame {
      * go back to it. Returns false only for "Go Back".
      */
     private boolean resolveDraft(boolean allowGoBack) {
-        if (!ledgerModel.draftHasData() || resolvingDraft) {
+        if (resolvingDraft) {
+            return true;
+        }
+        if (ledgerModel.commitEdit()) {                 // a transaction being edited: save it
+            editingTxn = NO_EDIT;
+        }
+        if (!ledgerModel.draftHasData()) {
+            return true;
+        }
+        if (ledgerModel.draftHasAmount()) {
+            ledgerModel.recordDraft();                  // a new transaction with an amount: save it
+            editingTxn = NO_EDIT;
             return true;
         }
         resolvingDraft = true;
@@ -949,6 +1014,73 @@ public class MainFrame extends javax.swing.JFrame {
         } finally {
             resolvingDraft = false;
         }
+    }
+
+    /**
+     * Tab (step 1) or Shift+Tab (-1): on to the next field of the same
+     * transaction that can be edited, editing it, round to the first after
+     * the last. The transaction isn't saved until Enter or leaving its row.
+     */
+    private void moveField(int step) {
+        boolean editing = ledgerTable.isEditing();
+        int row = editing ? ledgerTable.getEditingRow() : ledgerTable.getSelectedRow();
+        int column = editing ? ledgerTable.getEditingColumn() : ledgerTable.getSelectedColumn();
+        if (row < 0) {
+            return;
+        }
+        if (editing && !ledgerTable.getCellEditor().stopCellEditing()) {
+            return;                                     // bad input: stay in the field
+        }
+        int n = ledgerTable.getColumnCount();
+        for (int i = 1; i <= n; i++) {
+            int v = Math.floorMod(column + step * i, n);
+            if (ledgerModel.isCellEditable(row, ledgerTable.convertColumnIndexToModel(v))) {
+                editField(row, v);
+                return;
+            }
+        }
+    }
+
+    /** Selects a cell and starts editing it, with its text selected so typing replaces it. */
+    private void editField(int row, int viewColumn) {
+        ledgerTable.changeSelection(row, viewColumn, false, false);
+        if (ledgerTable.editCellAt(row, viewColumn)) {
+            java.awt.Component c = ledgerTable.getEditorComponent();
+            c.requestFocusInWindow();
+            if (c instanceof javax.swing.text.JTextComponent t) {
+                t.selectAll();
+            }
+        }
+    }
+
+    /** Lets Tab reach the ledger (moveField) from inside a cell editor, instead of leaving the table. */
+    private static void keepTabInLedger(java.awt.Component c) {
+        c.setFocusTraversalKeysEnabled(false);
+        if (c instanceof java.awt.Container box) {
+            for (java.awt.Component child : box.getComponents()) {
+                keepTabInLedger(child);
+            }
+        }
+    }
+
+    /**
+     * Escape (or Undo) with changes to a saved transaction not yet saved:
+     * puts it back as it was. Returns false if there were none.
+     */
+    private boolean revertEdit() {
+        if (!ledgerModel.hasPendingEdit()) {
+            return false;
+        }
+        long id = editingTxn;
+        int column = Math.max(0, ledgerTable.getSelectedColumn());
+        ledgerModel.cancelEdit();
+        editingTxn = NO_EDIT;
+        int row = ledgerModel.rowOfTransaction(id);
+        if (row >= 0) {
+            ledgerTable.changeSelection(row, column, false, false);
+        }
+        ledgerTable.repaint();
+        return true;
     }
 
     /** Puts the cursor on the new-transaction row's Payment cell. */
@@ -1195,6 +1327,9 @@ public class MainFrame extends javax.swing.JFrame {
             ledgerTable.getCellEditor().cancelCellEditing();
             return;
         }
+        if (revertEdit()) {
+            return;                                     // undoes the unsaved changes to the transaction being edited
+        }
         if (undoLog == null || undoLog.undoLabel() == null) {
             return;
         }
@@ -1226,6 +1361,7 @@ public class MainFrame extends javax.swing.JFrame {
         if (ledgerTable.isEditing()) {
             ledgerTable.getCellEditor().stopCellEditing();
         }
+        ledgerModel.commitEdit();
         if (undoLog == null || undoLog.redoLabel() == null) {
             return;
         }

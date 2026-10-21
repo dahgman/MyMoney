@@ -137,6 +137,7 @@ class BulkEditTest {
 
         model.setValueAt("Shell Oil", row, LedgerTableModel.PAYEE);
         model.setValueAt("Auto:Fuel", rowOf(cleared.id), LedgerTableModel.CATEGORY);
+        model.commitEdit();                                                             // Enter
         assertEquals("Shell Oil", get(checking, cleared.id).payee);
         assertEquals("Auto:Fuel", get(checking, cleared.id).category);
 
@@ -159,6 +160,7 @@ class BulkEditTest {
         assertTrue(!model.isCellEditable(row, LedgerTableModel.PAYMENT), "its amount stays locked");
         assertTrue(!model.isCellEditable(row, LedgerTableModel.DATE));
         model.setValueAt("Amazon", row, LedgerTableModel.PAYEE);
+        model.commitEdit();
         assertEquals("Amazon", get(checking, done.id).payee);
         assertEquals(TxnStatus.RECONCILED, get(checking, done.id).status);
     }
@@ -171,6 +173,7 @@ class BulkEditTest {
         transactions.update(other);
         show(checking);
         model.setValueAt("Monthly savings", rowOf(t.id), LedgerTableModel.PAYEE);
+        model.commitEdit();
         assertEquals("Monthly savings", get(checking, t.id).payee);
         LedgerEntry o = transactions.findByAccount(savings).get(0);
         assertEquals("Monthly savings", o.payee, "the reconciled side follows");

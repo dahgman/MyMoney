@@ -109,9 +109,11 @@ type into it, and it's saved as soon as it has an amount. Ctrl+N jumps to it.</p
       like <tt>45.10+12.99</tt>. With <i>insert the decimal point</i> on in Preferences,
       <tt>1234</tt> means $12.34.</li>
   <li><b>Payee, Category, Tag and Type</b> fill in as you type, everywhere you enter them:
-      type <tt>wal</tt> and <i>Walmart</i> appears, with the rest selected. Keep typing to
-      narrow it, Backspace to drop what was filled in, or Enter or Tab to take it. The list
-      below shows the other matches; the arrow keys and Enter (or Space) pick one of those.
+      type <tt>wal</tt> and <i>walmart</i> appears, with the rest selected (what you typed
+      keeps its case; a payee or category already saved is matched whatever the case). Keep
+      typing to narrow it, Backspace to drop what was filled in, or Enter or Tab to take it.
+      The list below shows the other matches; the arrow keys and Enter (or Space) pick one of
+      those, spelled as it is in the list.
       A payee you've used before brings its last category along.</li>
   <li><b>Status</b> (the C column): Cleared once your bank shows it, Reconciled once it's
       on a reconciled statement; also Pending, Paid and Scheduled. <b>Cleared</b> transactions
@@ -119,8 +121,14 @@ type into it, and it's saved as soon as it has an amount. Ctrl+N jumps to it.</p
       its status to None first). <b>Reconciled</b> ones are locked the same way, but their tag
       can change too. Neither's category can make it into, or out of, a transfer. These hold
       here, in the transaction window, in Edit Transactions and from the phone.</li>
-  <li><b>Enter</b> saves and moves down to the next transaction (or, if you choose so in
-      Preferences, to the next field, like Tab).</li>
+  <li><b>Tab</b> and <b>Shift+Tab</b> move from field to field of the transaction you're
+      editing (round to the first after the last), without saving it yet: the row stays white
+      while it has changes. <b>Enter</b> saves all of them at once (one step for Undo) and
+      moves down to the next transaction (or, if you choose so in Preferences, Enter moves to
+      the next field like Tab, and saves after the last). Moving to another transaction saves
+      it too. <b>Escape</b> undoes the field you're in; press it again (or Ctrl+Z) to put the
+      whole transaction back as it was. A new transaction is saved the same way, once it has
+      an amount.</li>
   <li><b>Several at once:</b> select rows, then right-click &gt; <b>Edit Transactions</b>: one
       window with the date, number, type, payee, category, tag, description, memo and status.
       Tick the fields to change (typing in one ticks it); only those change, on all of them,
@@ -335,7 +343,9 @@ starts afresh each time a file is opened.</p>
   <tr><td><b>Ctrl+F</b>, <b>Escape</b></td><td>Filter the ledger; clear the filter</td></tr>
   <tr><td><b>Ctrl+R</b></td><td>Reconcile the account</td></tr>
   <tr><td><b>Ctrl+Z</b>, <b>Ctrl+Y</b></td><td>Undo, Redo</td></tr>
-  <tr><td><b>Enter</b>, <b>Tab</b></td><td>Save the cell and move on</td></tr>
+  <tr><td><b>Tab</b>, <b>Shift+Tab</b></td><td>Next, previous field of the transaction</td></tr>
+  <tr><td><b>Enter</b></td><td>Save the transaction and move down</td></tr>
+  <tr><td><b>Escape</b></td><td>Undo the field; again, the whole transaction</td></tr>
   <tr><td><b>Delete</b></td><td>Delete the selected transactions</td></tr>
   <tr><td><b>F4</b>, <b>Alt+Down</b></td><td>Open the calendar in a date</td></tr>
   <tr><td><b>Space</b></td><td>Select or deselect a transaction while reconciling</td></tr>

@@ -133,11 +133,12 @@ class LoanBalanceTest {
         throw new AssertionError("no row on " + date);
     }
 
-    /** Types into the blank row: date, then one more column. */
+    /** Types into the blank row: date, then one more column, then Enter. */
     private static void newRow(LedgerTableModel model, LocalDate date, int column, String amount) {
-        int draft = model.getRowCount() - 1;
+        int draft = model.draftRow();
         model.setValueAt(date.format(LedgerTableModel.DISPLAY_DATE), draft, LedgerTableModel.DATE);
-        model.setValueAt(amount, model.getRowCount() - 1, column);
+        model.setValueAt(amount, draft, column);
+        model.recordDraft();
     }
 
     @Test
@@ -192,6 +193,7 @@ class LoanBalanceTest {
         assertEquals("$1,015.70", calculated, "45 days of interest");
 
         model.setValueAt("1000.00", row, LedgerTableModel.INTEREST);       // the lender's own figure
+        model.commitEdit();
         row = rowOn(model, e.date);
         assertEquals("$1,000.00", model.getValueAt(row, LedgerTableModel.INTEREST));
         assertEquals(Money.format(payment - 100_000), model.getValueAt(row, LedgerTableModel.PRINCIPAL),
@@ -199,6 +201,7 @@ class LoanBalanceTest {
         assertEquals(Money.format(payment), model.getValueAt(row, LedgerTableModel.DEPOSIT));
 
         model.setValueAt("", row, LedgerTableModel.PRINCIPAL);             // cleared: calculated again
+        model.commitEdit();
         row = rowOn(model, e.date);
         assertEquals(calculated, model.getValueAt(row, LedgerTableModel.INTEREST));
         assertTrue(!model.isManualInterest(row));

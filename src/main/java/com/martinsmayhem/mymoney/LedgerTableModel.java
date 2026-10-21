@@ -132,6 +132,14 @@ public class LedgerTableModel extends AbstractTableModel {
 
     private Account account;
     private String lastAction = "Change";        // name of the last saved change, for Undo
+    /**
+     * The saved transaction being edited: its changes are kept here (in the
+     * row itself) until commitEdit saves them all at once, or cancelEdit
+     * puts it back. editingBefore is how it was; editedColumns, what changed.
+     */
+    private LedgerEntry editing;
+    private LedgerEntry editingBefore;
+    private final java.util.Set<Integer> editedColumns = new java.util.TreeSet<>();
     /** One level of sorting: a column and its direction. */
     public record SortKey(int column, boolean ascending) {
     }
@@ -200,6 +208,7 @@ public class LedgerTableModel extends AbstractTableModel {
 
     /** Shows a different account's ledger (or nothing, for null), in the default sort. */
     public void setAccount(Account account) {
+        commitEdit();                                   // leaving the account saves what was being edited
         this.account = account;
         this.draft = newDraft(LocalDate.now());
         draft.category = defaultCategory();
@@ -359,10 +368,89 @@ public class LedgerTableModel extends AbstractTableModel {
     /** True if something besides the date (and the default category) has been typed into the new-transaction row. */
     public boolean draftHasData() {
         return account != null
-                && (!text(draft.checkNumber).isBlank() || !text(draft.payee).isBlank()
+                && (draft.amountCents != 0 || !text(draft.checkNumber).isBlank() || !text(draft.payee).isBlank()
                     || !text(draft.category).equals(text(defaultCategory())) || !text(draft.tag).isBlank()
                     || !text(draft.description).isBlank()
                     || !text(draft.memo).isBlank() || draft.status != TxnStatus.NONE);
+    }
+
+    /** True if the new-transaction row has a Payment or Deposit (so it can be saved as it is). */
+    public boolean draftHasAmount() {
+        return account != null && draft.amountCents != 0;
+    }
+
+    /** True while a saved transaction has changes not yet saved (see commitEdit). */
+    public boolean hasPendingEdit() {
+        return editing != null;
+    }
+
+    /**
+     * Saves the changes made to the transaction being edited, all at once:
+     * one undo step. Returns true if anything was saved.
+     */
+    public boolean commitEdit() {
+        if (editing == null) {
+            return false;
+        }
+        if (editing.sameContent(editingBefore)) {
+            clearEdit();
+            return false;
+        }
+        lastAction = editedColumns.size() == 1 ? actionName(editedColumns.iterator().next()) : "Edit Transaction";
+        refresh();                                      // load() saves it (see saveEdit)
+        onChanged.run();
+        return true;
+    }
+
+    /** Puts the transaction being edited back as it was saved. Returns true if there was one. */
+    public boolean cancelEdit() {
+        if (editing == null) {
+            return false;
+        }
+        clearEdit();
+        refresh();
+        return true;
+    }
+
+    private void clearEdit() {
+        editing = null;
+        editingBefore = null;
+        editedColumns.clear();
+    }
+
+    /**
+     * Saves the transaction being edited, if it changed and still exists,
+     * before the rows are read again: whatever re-reads them (a commit, a
+     * sync, a renamed account) keeps the changes rather than losing them.
+     */
+    private void saveEdit() {
+        LedgerEntry e = editing;
+        LedgerEntry before = editingBefore;
+        clearEdit();
+        if (e == null || e.sameContent(before)) {
+            return;
+        }
+        try {
+            if (transactions.exists(e.id)) {
+                transactions.update(e);
+            }
+        } catch (SQLException ex) {
+            onError.accept("Could not save the transaction:\n" + ex.getMessage());
+        }
+    }
+
+    private static String actionName(int column) {
+        return column == STATUS ? "Change Status" : "Edit " + NAMES[column];
+    }
+
+    /** The row showing a saved transaction, or -1 if it isn't shown. */
+    public int rowOfTransaction(long id) {
+        for (int row = 0; row < getRowCount(); row++) {
+            if (isSavedRow(row) && entryAt(row).id == id) {
+                return row;
+            }
+        }
+        return -1;
     }
 
     /** Saves the new-transaction row as it is, even with no amount ($0.00). */
@@ -823,6 +911,14 @@ public class LedgerTableModel extends AbstractTableModel {
             return;
         }
         boolean isDraft = !isSavedRow(row);
+        if (!isDraft && editing != null && editing != entryAt(row)) {
+            long id = entryAt(row).id;                  // another transaction was being edited: save it first
+            commitEdit();
+            row = rowOfTransaction(id);
+            if (row < 0) {
+                return;
+            }
+        }
         LedgerEntry e = isDraft ? draft : entryAt(row);
 
         // Un-reconciling needs a yes from the user.
@@ -867,27 +963,16 @@ public class LedgerTableModel extends AbstractTableModel {
             }
         }
 
-        // 2. Save it.
-        try {
-            if (isDraft) {
-                boolean amountEntered = (column == PAYMENT || column == DEPOSIT || isLoanColumn(column))
-                        && e.amountCents != 0;
-                if (!amountEntered) {
-                    fireTableRowsUpdated(row, row);      // keep filling in the blank row
-                    return;
-                }
-                lastAction = "New Transaction";
-                transactions.insert(account.id(), draft);
-                draft = nextDraft(draft.date);           // next entry starts on the same date
-            } else {
-                lastAction = column == STATUS ? "Change Status" : "Edit " + NAMES[column];
-                transactions.update(e);
+        // 2. Keep it until the whole transaction is saved (Enter, or moving to another
+        // row): a new one by recordDraft, a saved one by commitEdit.
+        if (!isDraft) {
+            if (editing == null) {
+                editing = e;
+                editingBefore = before;
             }
-        } catch (SQLException ex) {
-            onError.accept("Could not save the transaction:\n" + ex.getMessage());
+            editedColumns.add(column);
         }
-        refresh();
-        onChanged.run();
+        fireTableRowsUpdated(row, row);
     }
 
     /**
@@ -1132,6 +1217,7 @@ public class LedgerTableModel extends AbstractTableModel {
 
     /** Re-reads the account's transactions, computes balances, filters and sorts. */
     private void load() {
+        saveEdit();
         all.clear();
         if (account != null) {
             try {

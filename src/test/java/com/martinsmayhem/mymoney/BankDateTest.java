@@ -145,10 +145,12 @@ class BankDateTest {
         model.setAccount(checking);
         assertTrue(model.isCellEditable(0, LedgerTableModel.BANK_DATE), "even when reconciled");
         model.setValueAt("10/03/2026", 0, LedgerTableModel.BANK_DATE);
+        model.commitEdit();
         assertEquals(oct(3), only().bankDate);
         assertEquals("10/03/2026", model.getValueAt(0, LedgerTableModel.BANK_DATE));
         assertEquals("Posted 2 days after the date entered", model.bankDelay(0));
         model.setValueAt("", 0, LedgerTableModel.BANK_DATE);
+        model.commitEdit();
         assertNull(only().bankDate);
         assertNull(model.bankDelay(0));
         assertEquals(TxnStatus.RECONCILED, only().status);

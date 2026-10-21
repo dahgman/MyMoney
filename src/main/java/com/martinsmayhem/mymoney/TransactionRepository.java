@@ -176,6 +176,16 @@ public class TransactionRepository {
         inTransaction(() -> doUpdate(entry));
     }
 
+    /** True if the transaction is still there (not deleted). */
+    boolean exists(long txnId) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement("SELECT 1 FROM txn WHERE id = ?")) {
+            ps.setLong(1, txnId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next();
+            }
+        }
+    }
+
     /**
      * Clears the downloaded flag (matched or new) on these transactions, and
      * forgets which download they came from, so importing that file again
