@@ -625,6 +625,7 @@ public class MainFrame extends javax.swing.JFrame {
                 + "Start with a column's name and a colon to look in just that column:"
                 + " <b>payee: walmart</b>, <b>type:pos</b>, <b>memo: card 2549</b></html>");
         hideReconciledBox.setToolTipText("Hide reconciled transactions (balances still include them)");
+        hideReconciledBox.setSelected(config.getBoolean(AppConfig.HIDE_RECONCILED, false));   // as last left
 
         JPanel bar = new JPanel();
         bar.setLayout(new BoxLayout(bar, BoxLayout.LINE_AXIS));
@@ -672,7 +673,14 @@ public class MainFrame extends javax.swing.JFrame {
                 applyFilter();
             }
         });
-        hideReconciledBox.addActionListener(e -> applyFilter());
+        hideReconciledBox.addActionListener(e -> {
+            applyFilter();
+            try {
+                config.setBoolean(AppConfig.HIDE_RECONCILED, hideReconciledBox.isSelected());   // kept for next time
+            } catch (SQLException ex) {
+                // it starts unticked next time
+            }
+        });
 
         // Escape in the filter clears it and goes back to the ledger.
         filterField.getInputMap(JComponent.WHEN_FOCUSED)

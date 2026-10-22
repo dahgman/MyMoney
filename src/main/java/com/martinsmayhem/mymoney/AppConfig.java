@@ -190,6 +190,8 @@ public class AppConfig implements AutoCloseable {
     /** The main window when it was last closed: "x,y,width,height" (its normal size), and whether maximized. */
     public static final String WINDOW_BOUNDS = "window_bounds";
     public static final String WINDOW_MAXIMIZED = "window_maximized";
+    /** The ledger's Hide reconciled box, as it was last left. */
+    public static final String HIDE_RECONCILED = "hide_reconciled";
     /** Open on the Summary screen instead of the first account's ledger. */
     public static final String OPEN_ON_SUMMARY = "open_on_summary";
     /** Where database backups go: a folder (blank: asked the first time, then kept here). */
