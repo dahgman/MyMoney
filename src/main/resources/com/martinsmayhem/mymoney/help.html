@@ -83,6 +83,11 @@ account at a glance.</p>
   <li>An account can go under another (a <i>sub-account</i>), like savings envelopes
       under a savings account.</li>
   <li>Right-click an account in the tree for its most-used actions.</li>
+  <li><b>More room for the ledger:</b> drag the line between the account list and the ledger
+      as far left as you like; the ledger covers the balances first, then the names. The
+      <b>account list button</b> at the left of the menu bar (or Ctrl+B) hides the list
+      altogether, and shows it again. Its width, and whether it's hidden, are kept for next
+      time.</li>
   <li><b>Font and size:</b> Edit &gt; Preferences &gt; General &gt; Font. Pick any font on the
       computer, and a size; rows and columns grow with it. <i>Default</i> goes back to the usual
       font. It applies at once.</li>
@@ -197,7 +202,9 @@ that text in any column; Escape clears it. Balances still count everything.</p>
 <p>Account &gt; Scheduled Transactions lists bills and paychecks that repeat. MyMoney puts
 each one in the ledger ahead of time (14 days, or as set in Preferences), marked
 Scheduled, so you can see what's coming. Right-click a transaction and choose
-<b>Add to Schedule</b> to make one from it.</p>
+<b>Add to Schedule</b> to make one from it. Lowering the days ahead takes back the scheduled
+transactions past the new limit, unless you've changed, entered or attached something to them;
+they come back as their dates come within range.</p>
 <ul>
   <li><b>On the last day of the month:</b> for a monthly schedule, tick this and it falls on
       the 31st, 30th, or 28th or 29th as each month has it, whatever day it started on.</li>
@@ -225,6 +232,12 @@ you can turn it off again there at any time; the settings belong to this file.</
 every open account, with what's due, what's coming in, and the paycheck account's balance once
 it's all through. Its two buttons switch between the periods; double-click a row to open its
 account. On the ledger, <b>Show:</b> beside the filters narrows the account to the same period.
+There, scheduled transactions you haven't <b>entered</b> yet (still marked Scheduled) are in muted
+italics on a faint tint, and the count beside Show: says how many there are. To enter one, select
+it (or several) and choose <b>Enter Scheduled</b> (right-click, or the Edit menu): it's taken off
+Scheduled, as the phone's <i>Enter scheduled</i> does, and shows like any other.
+So that every bill in the next pay period is there to see, MyMoney puts scheduled transactions in the
+ledger at least that far ahead while paychecks are on, even past the days ahead set in Preferences.
 Due means not yet cleared: Scheduled, Pending, Paid, or entered with no status. A transfer is
 listed once, from the account it leaves.</p>
 
@@ -342,6 +355,7 @@ starts afresh each time a file is opened.</p>
   <tr><td><b>Ctrl+N</b></td><td>New transaction (the blank row)</td></tr>
   <tr><td><b>Ctrl+F</b>, <b>Escape</b></td><td>Filter the ledger; clear the filter</td></tr>
   <tr><td><b>Ctrl+R</b></td><td>Reconcile the account</td></tr>
+  <tr><td><b>Ctrl+B</b></td><td>Hide or show the account list</td></tr>
   <tr><td><b>Ctrl+Z</b>, <b>Ctrl+Y</b></td><td>Undo, Redo</td></tr>
   <tr><td><b>Tab</b>, <b>Shift+Tab</b></td><td>Next, previous field of the transaction</td></tr>
   <tr><td><b>Enter</b></td><td>Save the transaction and move down</td></tr>

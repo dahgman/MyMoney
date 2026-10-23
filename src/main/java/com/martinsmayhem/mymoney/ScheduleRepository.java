@@ -27,6 +27,9 @@ import java.util.List;
  * untouched (Scheduled, from today on); ones already edited or cleared stay.
  * Past occurrences are never created: a schedule starts from today at the
  * earliest.
+ *
+ * When the days ahead get fewer, occurrences already created past the new
+ * limit are taken back (see trim), unless they've been touched.
  */
 final class ScheduleRepository {
 
@@ -333,6 +336,79 @@ final class ScheduleRepository {
             }
         }
         return created;
+    }
+
+    /**
+     * Takes back occurrences created further ahead than daysAhead now reaches
+     * (the setting was lowered, or paychecks were turned off): those dated
+     * after it that are still Scheduled and just as the schedule made them,
+     * with nothing attached. Edited ones stay. The schedule is wound back to
+     * that day, so they're created again as their dates come in range.
+     * Returns how many were removed.
+     */
+    int trim(int daysAhead) throws SQLException {
+        LocalDate until = LocalDate.now().plusDays(daysAhead);
+        java.util.Map<Long, java.util.Map<Long, LedgerEntry>> ledgers = new java.util.HashMap<>();
+        int removed = 0;
+        for (Schedule s : findAll()) {
+            if (!generatedThrough(s.id()).isAfter(until)) {
+                continue;
+            }
+            java.util.Map<Long, LedgerEntry> ledger = ledgers.get(s.accountId());
+            if (ledger == null) {
+                ledger = new java.util.HashMap<>();
+                for (LedgerEntry e : transactions.findByAccount(s.accountId())) {
+                    ledger.put(e.id, e);
+                }
+                ledgers.put(s.accountId(), ledger);
+            }
+            List<Long> ids = new ArrayList<>();
+            try (PreparedStatement ps = conn.prepareStatement("SELECT id, schedule_date FROM txn"
+                    + " WHERE schedule_id = ? AND status = ? AND schedule_date > ?")) {
+                ps.setLong(1, s.id());
+                ps.setString(2, TxnStatus.SCHEDULED.code());
+                ps.setString(3, until.toString());
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        LedgerEntry e = ledger.get(rs.getLong(1));
+                        if (e != null && asCreated(s, LocalDate.parse(rs.getString(2)), e)) {
+                            ids.add(e.id);
+                        }
+                    }
+                }
+            }
+            conn.setAutoCommit(false);
+            try {
+                for (long txnId : ids) {
+                    transactions.deleteInCurrentTransaction(txnId);   // (and a transfer's other side)
+                }
+                try (PreparedStatement ps = conn.prepareStatement(
+                        "UPDATE schedule SET generated_through = ? WHERE id = ?")) {
+                    ps.setString(1, until.toString());
+                    ps.setLong(2, s.id());
+                    ps.executeUpdate();
+                }
+                conn.commit();
+            } catch (SQLException e) {
+                conn.rollback();
+                throw e;
+            } finally {
+                conn.setAutoCommit(true);
+            }
+            removed += ids.size();
+        }
+        return removed;
+    }
+
+    /** True if an occurrence is just as create made it for that date: not edited, nothing attached. */
+    static boolean asCreated(Schedule s, LocalDate scheduledFor, LedgerEntry e) {
+        return scheduledFor.equals(e.date) && e.amountCents == s.amountOn(scheduledFor) && e.attachments == 0
+                && same(s.payee(), e.payee) && same(s.category(), e.category) && same(s.tag(), e.tag)
+                && same(s.description(), e.description) && same(s.memo(), e.memo);
+    }
+
+    private static boolean same(String a, String b) {
+        return (a == null ? "" : a.trim()).equalsIgnoreCase(b == null ? "" : b.trim());
     }
 
     private LocalDate generatedThrough(long id) throws SQLException {

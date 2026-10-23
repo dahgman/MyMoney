@@ -161,6 +161,9 @@ public class AppConfig implements AutoCloseable {
 
     /** Show each account's cleared balance in the account tree. */
     public static final String SHOW_TREE_BALANCES = "show_tree_balances";
+    /** The account list's width as last dragged (0 = fitted to the names), and whether it was hidden. */
+    public static final String TREE_WIDTH = "tree_width";
+    public static final String TREE_HIDDEN = "tree_hidden";
     /** With tree balances shown: each account type heading shows its accounts' total (on unless turned off). */
     public static final String SHOW_TREE_GROUP_TOTALS = "show_tree_group_totals";
 

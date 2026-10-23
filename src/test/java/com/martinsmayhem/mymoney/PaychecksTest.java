@@ -172,6 +172,51 @@ class PaychecksTest {
     }
 
     @Test
+    void notYetEnteredUntilTakenOffScheduled() throws Exception {
+        LocalDate wed = LocalDate.of(2026, 10, 21);
+        txn(checking, "Power", -9_000, "Utilities", TxnStatus.SCHEDULED, LocalDate.of(2026, 10, 25));
+        txn(checking, "Phone", -6_000, "Utilities", TxnStatus.SCHEDULED, LocalDate.of(2026, 10, 26));
+        txn(checking, "Store", -1_000, "Food", TxnStatus.NONE, LocalDate.of(2026, 10, 22));
+        LedgerTableModel model = new LedgerTableModel(transactions, m -> {
+            throw new AssertionError(m);
+        }, q -> true, () -> { });
+        model.setAccount(accounts.findAll().stream().filter(a -> a.id() == checking).findFirst().orElseThrow());
+        model.setPeriod(Paychecks.period(paycheck("Employer", BIWEEKLY, 1), Paychecks.Mode.UNTIL_NEXT, wed));
+        assertEquals(3, model.shownCount());
+        assertEquals(2, model.notEnteredCount());
+        int power = -1;
+        for (int r = 0; r < model.getRowCount(); r++) {
+            if ("Power".equals(model.getValueAt(r, LedgerTableModel.PAYEE))) {
+                power = r;
+            }
+        }
+        assertTrue(model.isNotEntered(power));
+        model.bulkSet(new int[] {power}, LedgerTableModel.STATUS, TxnStatus.NONE);   // Enter Scheduled
+        assertEquals(1, model.notEnteredCount());
+        assertEquals(3, model.shownCount(), "entered, it's still due: still shown");
+    }
+
+    @Test
+    void billsAreCreatedThroughTheNextPayPeriod() throws Exception {
+        LocalDate today = LocalDate.now();
+        // Paid every 2 weeks, next in 12 days: the next pay period runs to 25 days from now.
+        Recurrence pay = new Recurrence(Recurrence.Unit.WEEK, 2, 0, today.plusDays(12).minusWeeks(2), null, null);
+        schedules.save(paycheck("Employer", pay, 1));
+        assertEquals(14, paychecks.daysAhead(14, today), "off: the setting");
+        paychecks.save(new Paychecks.Settings(true, 1, Paychecks.Mode.UNTIL_NEXT));
+        assertEquals(25, paychecks.daysAhead(14, today), "on: through the next pay period");
+        assertEquals(40, paychecks.daysAhead(40, today), "the setting when it reaches further");
+
+        // A bill 20 days out, beyond the 14-day setting, is created and shown in Next pay period.
+        long bill = schedules.save(new ScheduleRepository.Schedule(0, checking, "Insurance", null, null, null, null,
+                -9_900, new Recurrence(Recurrence.Unit.MONTH, 1, 0, today.plusDays(20), null, null)));
+        schedules.generate(paychecks.daysAhead(14, today), new java.util.ArrayList<>());
+        Paychecks.Period next = paychecks.current(Paychecks.Mode.NEXT_PERIOD, today);
+        assertTrue(paychecks.upcoming(next).stream().anyMatch(u -> "Insurance".equals(u.entry().payee)));
+        assertTrue(bill > 0);
+    }
+
+    @Test
     void theCsvKeepsThePaycheck() throws Exception {
         Account a = accounts.findAll().get(0);
         String csv = ScheduleCsv.export(List.of(paycheck("Employer", BIWEEKLY, 2)), Map.of(checking, "Checking"));

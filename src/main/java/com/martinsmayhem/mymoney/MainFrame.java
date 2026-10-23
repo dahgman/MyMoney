@@ -159,6 +159,7 @@ public class MainFrame extends javax.swing.JFrame {
         Splash.step("Creating scheduled transactions…", 78);
         createScheduledTransactions(false);              // bring scheduled transactions up to date
         showTreeBalances = config.getBoolean(AppConfig.SHOW_TREE_BALANCES, false);
+        chosenTreeWidth = config.getInt(AppConfig.TREE_WIDTH, 0);
         showGroupTotals = config.getBoolean(AppConfig.SHOW_TREE_GROUP_TOTALS, true);
         enterNextField = config.getBoolean(AppConfig.ENTER_NEXT_FIELD, false);
         Money.setAutoDecimal(config.getBoolean(AppConfig.AUTO_DECIMAL, false));
@@ -173,6 +174,9 @@ public class MainFrame extends javax.swing.JFrame {
         });
         Splash.step("Loading accounts…", 88);
         loadAccounts(null);
+        if (config.getBoolean(AppConfig.TREE_HIDDEN, false)) {
+            setTreeShown(false);                         // hidden when last closed
+        }
         if (config.getBoolean(AppConfig.OPEN_ON_SUMMARY, false)) {
             showSummary();                     // the preference: open on Summary
         } else if (accountTree.getRowCount() > 0) {
@@ -632,6 +636,7 @@ public class MainFrame extends javax.swing.JFrame {
         bar.setBorder(BorderFactory.createEmptyBorder(4, 6, 4, 6));
         bar.add(new JLabel("Filter: "));
         bar.add(filterField);
+        filterField.setMinimumSize(new java.awt.Dimension(scaled(140), filterField.getPreferredSize().height));
         bar.add(Box.createHorizontalStrut(4));
         bar.add(clear);
         bar.add(Box.createHorizontalStrut(12));
@@ -785,13 +790,40 @@ public class MainFrame extends javax.swing.JFrame {
 
     private void updateFilterCount() {
         filterCountLabel.setText(ledgerModel.isFiltered()
-                ? "Showing " + ledgerModel.shownCount() + " of " + ledgerModel.transactionCount()
-                        + " transactions" + (payPeriod == null ? "" : " (" + payPeriod.from().format(LedgerTableModel.DISPLAY_DATE)
-                        + " to " + payPeriod.last().format(LedgerTableModel.DISPLAY_DATE) + ")")
+                ? (payPeriod == null ? "Showing " + ledgerModel.shownCount() + " of " + ledgerModel.transactionCount()
+                        + " transactions"
+                        : payPeriod.from().format(LedgerTableModel.DISPLAY_DATE) + " to "
+                        + payPeriod.last().format(LedgerTableModel.DISPLAY_DATE) + ": " + ledgerModel.shownCount()
+                        + " shown, " + ledgerModel.notEnteredCount() + " not entered yet")
                 : payView.getSelectedItem() instanceof Paychecks.Mode && payPeriod == null ? "No paycheck to go by" : " ");
     }
 
     // ----- Paychecks: what's due before payday (see Paychecks) ----------------------------
+
+    /**
+     * Edit > Enter Scheduled (and the ledger's right-click): the selected
+     * scheduled transactions are entered, taken off Scheduled (status None),
+     * as the phone's "Enter scheduled" does. Others selected are left alone.
+     */
+    private void enterScheduled() {
+        if (ledgerTable.isEditing()) {
+            ledgerTable.getCellEditor().stopCellEditing();
+        }
+        resolveDraft(false);
+        List<Integer> scheduled = new ArrayList<>();
+        for (int row : selectedTransactionRows()) {
+            if (ledgerModel.isNotEntered(row)) {
+                scheduled.add(row);
+            }
+        }
+        if (scheduled.isEmpty()) {
+            JOptionPane.showMessageDialog(this, "Select one or more scheduled transactions (still marked Scheduled)"
+                    + " to enter.", "MyMoney", JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+        ledgerModel.bulkSet(scheduled.stream().mapToInt(Integer::intValue).toArray(),
+                LedgerTableModel.STATUS, TxnStatus.NONE);
+    }
 
     /** The period the ledger is showing (Show: a paycheck period), or null for everything. */
     private Paychecks.Period payPeriod;
@@ -864,6 +896,22 @@ public class MainFrame extends javax.swing.JFrame {
     private static final Color FUTURE_TEXT = new Color(128, 128, 128);         // grey
 
     /**
+     * Showing a paycheck period: a scheduled transaction not yet entered, in
+     * a muted blue-grey on a faint tint (light and dark themes), in italics.
+     */
+    private static Color notEnteredBackground(javax.swing.JTable table) {
+        Color bg = table.getBackground();
+        boolean dark = (bg.getRed() * 299 + bg.getGreen() * 587 + bg.getBlue() * 114) / 1000 < 128;
+        return dark ? new Color(0x26, 0x2D, 0x38) : new Color(0xEE, 0xF2, 0xF8);
+    }
+
+    private static Color notEnteredText(javax.swing.JTable table) {
+        Color bg = table.getBackground();
+        boolean dark = (bg.getRed() * 299 + bg.getGreen() * 587 + bg.getBlue() * 114) / 1000 < 128;
+        return dark ? new Color(0x8A, 0x97, 0xAB) : new Color(0x6E, 0x7C, 0x91);
+    }
+
+    /**
      * Wraps a cell renderer so future-dated rows get grey text (on the normal
      * background). Selected rows keep the normal selection colors, the
      * blank new-transaction row is always grey, and the row being edited is
@@ -879,9 +927,24 @@ public class MainFrame extends javax.swing.JFrame {
             } else if (ledgerModel.isDraftRow(row)) {
                 c.setBackground(newRowBackground(table)); // the blank new-transaction row: always grey
                 c.setForeground(table.getForeground());
+            } else if (payPeriod != null) {
+                // Showing a paycheck period: not yet entered (still Scheduled) muted and in
+                // italics; entered ones in the usual colors, even when dated ahead.
+                boolean notEntered = ledgerModel.isNotEntered(row);
+                if (!isSelected) {
+                    c.setBackground(notEntered ? notEnteredBackground(table) : table.getBackground());
+                    c.setForeground(notEntered ? notEnteredText(table) : table.getForeground());
+                }
             } else if (!isSelected) {
                 c.setBackground(table.getBackground());
                 c.setForeground(ledgerModel.isFuture(row) ? FUTURE_TEXT : table.getForeground());
+            }
+            // Italics for one not yet entered, and only for it (a renderer is reused from cell to cell).
+            boolean italic = payPeriod != null && row != table.getEditingRow() && !isEditingTxnRow(row)
+                    && ledgerModel.isNotEntered(row);
+            java.awt.Font f = c.getFont();
+            if (f != null && f.isItalic() != italic) {
+                c.setFont(f.deriveFont(italic ? f.getStyle() | java.awt.Font.ITALIC : f.getStyle() & ~java.awt.Font.ITALIC));
             }
             return c;
         };
@@ -1178,6 +1241,7 @@ public class MainFrame extends javax.swing.JFrame {
         JPopupMenu ledgerMenu = new JPopupMenu();
         for (javax.swing.JComponent menu : new javax.swing.JComponent[] {editMenu, ledgerMenu}) {
             menu.add(menuItem("Edit Transactions...", this::editTransactions));
+            menu.add(menuItem("Enter Scheduled", this::enterScheduled));
             menu.add(menuItem("Move Memo to Description", this::moveMemoToDescription));
             menu.add(menuItem("Clear Downloaded Flag", this::clearDownloadedFlag));
             menu.add(menuItem("Add to Schedule...", this::addToSchedule));
@@ -1208,8 +1272,9 @@ public class MainFrame extends javax.swing.JFrame {
         editMenu.insertSeparator(2);
         editMenu.addSeparator();
         editMenu.add(menuItem("Preferences...", this::editPreferences));
-        menuBar.add(editMenu, 1);                       // after File
-        menuBar.add(accountMenu, 2);                    // after Edit
+        int file = menuBar.getComponentIndex(fileMenu);  // (the account list button may come first)
+        menuBar.add(editMenu, file + 1);                // after File
+        menuBar.add(accountMenu, file + 2);             // after Edit
 
         // Sync: with the phones (see docs/SYNC-DESIGN.md).
         javax.swing.JMenu syncMenu = new javax.swing.JMenu("Sync");
@@ -1218,7 +1283,7 @@ public class MainFrame extends javax.swing.JFrame {
         syncMenu.add(syncItem);
         syncMenu.addSeparator();
         syncMenu.add(menuItem("Settings...", this::syncSettings));
-        menuBar.add(syncMenu, 3);                       // after Account, before Help
+        menuBar.add(syncMenu, file + 3);                // after Account, before Help
 
         // Help: the help pages (F1), and About.
         javax.swing.JMenu helpMenu = new javax.swing.JMenu("Help");
@@ -1509,15 +1574,18 @@ public class MainFrame extends javax.swing.JFrame {
 
     /**
      * Puts every schedule's occurrences in the ledger, up to the number of
-     * days ahead set in Preferences, as one undo step. Problems are shown; if
+     * days ahead set in Preferences (and, with paychecks on, at least to the
+     * end of the next pay period), and takes back untouched ones past that,
+     * as one undo step. Problems are shown; if
      * refresh, the ledger and balances are redrawn.
      */
     private void createScheduledTransactions(boolean refresh) {
         List<String> problems = new ArrayList<>();
         int created;
         try {
-            created = schedules.generate(
-                    config.getInt(AppConfig.SCHEDULE_DAYS, AppConfig.DEFAULT_SCHEDULE_DAYS), problems);
+            int days = scheduleDaysAhead();
+            created = schedules.trim(days);              // fewer days ahead: take back the untouched extras
+            created += schedules.generate(days, problems);
         } catch (SQLException e) {
             showError("Could not create the scheduled transactions:\n" + e.getMessage());
             return;
@@ -1532,6 +1600,20 @@ public class MainFrame extends javax.swing.JFrame {
             ledgerModel.reload();
             updateSummary(selectedAccount());
             refreshTreeBalances();
+        }
+    }
+
+    /**
+     * How many days ahead scheduled transactions are put in the ledger: the
+     * Preferences setting, or, with paychecks on, to the end of the next pay
+     * period if that's further, so Show: and the Summary see every bill in it.
+     */
+    private int scheduleDaysAhead() {
+        int days = config.getInt(AppConfig.SCHEDULE_DAYS, AppConfig.DEFAULT_SCHEDULE_DAYS);
+        try {
+            return paychecks.daysAhead(days, LocalDate.now());
+        } catch (SQLException e) {
+            return days;                                 // the setting alone
         }
     }
 
@@ -2136,6 +2218,8 @@ public class MainFrame extends javax.swing.JFrame {
         try {
             config.setString(AppConfig.WINDOW_BOUNDS, b.x + "," + b.y + "," + b.width + "," + b.height);
             config.setBoolean(AppConfig.WINDOW_MAXIMIZED, (getExtendedState() & java.awt.Frame.MAXIMIZED_BOTH) != 0);
+            config.setInt(AppConfig.TREE_WIDTH, chosenTreeWidth);
+            config.setBoolean(AppConfig.TREE_HIDDEN, !treeShown);
         } catch (SQLException e) {
             // it opens at the usual size next time
         }
@@ -3027,15 +3111,26 @@ public class MainFrame extends javax.swing.JFrame {
             }
         });
 
-        // The balances are drawn over the tree, right-aligned at its visible right edge
-        // (a tree row is only as wide as its text, so it can't right-align part of it).
+        // The balances are drawn over the tree, right-aligned at its right edge (a tree row is
+        // only as wide as its text, so it can't right-align part of it). The tree is never
+        // narrower than its names and balances need: when the pane is, the ledger covers its
+        // right side (the balances, then the names) rather than balances running over names.
+        accountScroll.setHorizontalScrollBarPolicy(javax.swing.ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
+        accountScroll.setMinimumSize(new java.awt.Dimension(0, 0));
         accountScroll.setViewportView(new javax.swing.JLayer<>(accountTree, new javax.swing.plaf.LayerUI<>() {
             @Override
             public void paint(java.awt.Graphics g, JComponent c) {
                 super.paint(g, c);
                 if (showTreeBalances) {
-                    paintTreeBalances((java.awt.Graphics2D) g, c.getVisibleRect());
+                    paintTreeBalances((java.awt.Graphics2D) g, c.getVisibleRect(), c.getWidth());
                 }
+            }
+
+            @Override
+            public java.awt.Dimension getPreferredSize(JComponent c) {
+                // At least as wide as the names and balances need (the pane fills any extra).
+                java.awt.Dimension d = super.getPreferredSize(c);
+                return new java.awt.Dimension(Math.max(d.width, treeContentWidth()), d.height);
             }
         }));
     }
@@ -3043,13 +3138,13 @@ public class MainFrame extends javax.swing.JFrame {
     /** Space between a balance and the tree's right edge. */
     private static final int TREE_BALANCE_MARGIN = 6;
 
-    /** Draws each visible account's balance at the right edge of the visible part of the tree. */
-    private void paintTreeBalances(java.awt.Graphics2D g, java.awt.Rectangle visible) {
+    /** Draws each visible account's balance at the tree's right edge (width: the tree's width). */
+    private void paintTreeBalances(java.awt.Graphics2D g, java.awt.Rectangle visible, int width) {
         g.setFont(accountTree.getFont());
         g.setRenderingHint(java.awt.RenderingHints.KEY_TEXT_ANTIALIASING,
                 java.awt.RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
         java.awt.FontMetrics fm = g.getFontMetrics();
-        int right = visible.x + visible.width - TREE_BALANCE_MARGIN;
+        int right = width - TREE_BALANCE_MARGIN;
         for (int row = 0; row < accountTree.getRowCount(); row++) {
             java.awt.Rectangle r = accountTree.getRowBounds(row);
             if (r == null || r.y + r.height < visible.y || r.y > visible.y + visible.height) {
@@ -3088,6 +3183,16 @@ public class MainFrame extends javax.swing.JFrame {
         if (!showTreeBalances) {
             return TREE_MIN_WIDTH;
         }
+        java.awt.Insets in = accountScroll.getInsets();
+        return Math.max(TREE_MIN_WIDTH, treeContentWidth() + in.left + in.right
+                + accountScroll.getVerticalScrollBar().getPreferredSize().width);
+    }
+
+    /** How wide the tree must be for every name and its balance to show without touching (0 without balances). */
+    private int treeContentWidth() {
+        if (!showTreeBalances) {
+            return 0;
+        }
         int need = 0;
         for (int row = 0; row < accountTree.getRowCount(); row++) {
             java.awt.Rectangle r = accountTree.getRowBounds(row);
@@ -3097,17 +3202,13 @@ public class MainFrame extends javax.swing.JFrame {
                         + amountWidth(row, amount) + TREE_BALANCE_MARGIN);
             }
         }
-        java.awt.Insets in = accountScroll.getInsets();
-        return Math.max(TREE_MIN_WIDTH,
-                need + in.left + in.right + accountScroll.getVerticalScrollBar().getPreferredSize().width);
+        return need;
     }
 
-    /** Stops the divider being dragged so far left that balances would cover account names. */
+    /** After the balances change: the tree may need to be wider (see treeContentWidth). */
     private void updateTreeMinimumWidth() {
-        accountScroll.setMinimumSize(new java.awt.Dimension(treeMinimumWidth(), 0));
-        if (mainSplit.getDividerLocation() < treeMinimumWidth()) {
-            mainSplit.setDividerLocation(treeMinimumWidth());   // e.g. a balance just got wider
-        }
+        accountScroll.getViewport().revalidate();
+        accountScroll.repaint();
     }
 
     /** The widest balance in the tree, in pixels (0 if balances aren't shown). */
@@ -3406,6 +3507,7 @@ public class MainFrame extends javax.swing.JFrame {
         } catch (SQLException e) {
             showError("Could not save the paycheck settings:\n" + e.getMessage());
         }
+        createScheduledTransactions(true);               // paychecks on: bills through the next pay period
         refreshPaycheckControls();
         String folderText = backupField.getText().trim();
         if (!folderText.isEmpty() && !Files.isDirectory(Path.of(folderText))) {
@@ -3451,8 +3553,8 @@ public class MainFrame extends javax.swing.JFrame {
             updateSummary(selectedAccount());
             refreshSummaryIfShown();
         }
-        if ((Integer) scheduleDays.getValue() > oldScheduleDays) {
-            createScheduledTransactions(true);           // further ahead: create the extra ones now
+        if ((Integer) scheduleDays.getValue() != oldScheduleDays) {
+            createScheduledTransactions(true);           // further ahead: the extra ones now; fewer: the untouched extras go
         }
         if (balances.isSelected() == showTreeBalances && groupTotals.isSelected() == showGroupTotals) {
             return;
@@ -3510,8 +3612,12 @@ public class MainFrame extends javax.swing.JFrame {
         JPanel left = new JPanel(new java.awt.BorderLayout(0, 4));
         left.add(summaryButton, java.awt.BorderLayout.NORTH);
         left.add(accountScroll, java.awt.BorderLayout.CENTER);
+        left.setMinimumSize(new java.awt.Dimension(0, 0));   // the ledger can be dragged over it
+        summaryButton.setMinimumSize(new java.awt.Dimension(0, summaryButton.getPreferredSize().height));
+        treePane = left;
         mainSplit.setLeftComponent(left);
-        mainSplit.setDividerLocation(divider);
+        setTreeWidth(divider);
+        setupTreeToggle();
     }
 
     /** Shows the Summary screen (the tree's selection is cleared, so any account can be picked after). */
@@ -3594,14 +3700,94 @@ public class MainFrame extends javax.swing.JFrame {
      * be dragged; this runs again whenever the account list is reloaded.
      */
     private void fitTreeWidth() {
+        if (chosenTreeWidth > 0) {
+            setTreeWidth(chosenTreeWidth);              // the width it was dragged to
+            updateTreeMinimumWidth();
+            return;
+        }
         java.awt.Insets in = accountScroll.getInsets();
         int width = accountTree.getPreferredSize().width
                 + (showTreeBalances ? widestTreeBalance() + 16 + TREE_BALANCE_MARGIN : 0)   // room for the balances
                 + in.left + in.right
                 + accountScroll.getVerticalScrollBar().getPreferredSize().width   // room if it scrolls
                 + 10;                                                              // a little breathing room
-        mainSplit.setDividerLocation(Math.max(treeMinimumWidth(), Math.min(TREE_MAX_WIDTH, width)));
+        setTreeWidth(Math.max(treeMinimumWidth(), Math.min(TREE_MAX_WIDTH, width)));
         updateTreeMinimumWidth();
+    }
+
+    // ----- Hiding and showing the account list ----------------------------------------
+
+    /** The account list's width as the user dragged it (0: fitted to the names); kept between runs. */
+    private int chosenTreeWidth;
+    private boolean treeShown = true;
+    private int settingTreeWidth;                        // > 0 while the width is set here, not dragged
+    private int treeDividerSize;
+    private JPanel treePane;                             // Summary above the account tree
+    private final JButton treeToggle = new JButton();
+
+    /** Sets the account list's width (or the width it gets when shown again, while hidden). */
+    private void setTreeWidth(int width) {
+        lastTreeWidth = width;
+        if (treeShown) {
+            settingTreeWidth++;
+            try {
+                mainSplit.setDividerLocation(width);
+            } finally {
+                settingTreeWidth--;
+            }
+        }
+    }
+
+    private int lastTreeWidth = 250;
+
+    /** The button at the left of the menu bar (and Ctrl+B) that hides and shows the account list. */
+    private void setupTreeToggle() {
+        treeDividerSize = mainSplit.getDividerSize();
+        treeToggle.setIcon(new SidebarIcon(() -> treeShown));
+        treeToggle.putClientProperty("JButton.buttonType", "toolBarButton");
+        treeToggle.setFocusable(false);
+        treeToggle.addActionListener(e -> setTreeShown(!treeShown));
+        menuBar.add(treeToggle, 0);
+        getRootPane().getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW)
+                .put(KeyStroke.getKeyStroke(KeyEvent.VK_B, menuShortcut()), "toggleTree");
+        getRootPane().getActionMap().put("toggleTree", new AbstractAction() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                setTreeShown(!treeShown);
+            }
+        });
+        // Dragging the divider: that's the width from now on (and next time).
+        mainSplit.addPropertyChangeListener(javax.swing.JSplitPane.DIVIDER_LOCATION_PROPERTY, e -> {
+            if (settingTreeWidth == 0 && treeShown && mainSplit.isShowing()) {
+                chosenTreeWidth = mainSplit.getDividerLocation();
+                lastTreeWidth = chosenTreeWidth;
+            }
+        });
+        updateTreeToggle();
+    }
+
+    /** Hides or shows the account list (with Summary above it); the ledger takes the room. */
+    private void setTreeShown(boolean shown) {
+        if (shown == treeShown) {
+            return;
+        }
+        if (!shown) {
+            lastTreeWidth = mainSplit.getDividerLocation();
+        }
+        treeShown = shown;
+        treePane.setVisible(shown);
+        mainSplit.setDividerSize(shown ? treeDividerSize : 0);
+        if (shown) {
+            setTreeWidth(lastTreeWidth);
+        }
+        mainSplit.revalidate();
+        updateTreeToggle();
+    }
+
+    private void updateTreeToggle() {
+        treeToggle.setToolTipText((treeShown ? "Hide" : "Show") + " the account list ("
+                + (System.getProperty("os.name", "").toLowerCase().contains("mac") ? "Cmd" : "Ctrl") + "+B)");
+        treeToggle.repaint();
     }
 
     /** The account selected in the tree, or null if none. */

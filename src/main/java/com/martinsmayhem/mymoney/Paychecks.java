@@ -184,6 +184,17 @@ final class Paychecks {
         return p == null ? null : period(p, mode, today);
     }
 
+    /**
+     * How many days ahead scheduled transactions must be in the ledger: at
+     * least setting (the Preferences one), and with paychecks on, through the
+     * end of the next pay period, so every bill in it is there to show.
+     */
+    int daysAhead(int setting, LocalDate today) throws SQLException {
+        Period next = current(Mode.NEXT_PERIOD, today);
+        return next == null ? setting
+                : Math.max(setting, (int) java.time.temporal.ChronoUnit.DAYS.between(today, next.last()));
+    }
+
     /** A status that counts as upcoming: not yet cleared by the bank. */
     static boolean upcoming(TxnStatus s) {
         return s != TxnStatus.CLEARED && s != TxnStatus.RECONCILED && s != TxnStatus.RECONCILING;

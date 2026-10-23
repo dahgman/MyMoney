@@ -527,6 +527,26 @@ public class LedgerTableModel extends AbstractTableModel {
     }
 
     /**
+     * True for a scheduled transaction not yet entered: still marked
+     * Scheduled. Entering it (as the phone's "Enter scheduled" does) takes
+     * it off Scheduled.
+     */
+    public boolean isNotEntered(int row) {
+        return isSavedRow(row) && entryAt(row).status == TxnStatus.SCHEDULED;
+    }
+
+    /** Of the rows shown: how many are not yet entered (see isNotEntered). */
+    public int notEnteredCount() {
+        int n = 0;
+        for (LedgerEntry e : entries) {
+            if (e.status == TxnStatus.SCHEDULED) {
+                n++;
+            }
+        }
+        return n;
+    }
+
+    /**
      * Whether a field of a saved transaction may change, with a cleared or
      * reconciled one's money left alone: a cleared transaction's payee,
      * category and status may change; a reconciled one's tag and bank date
