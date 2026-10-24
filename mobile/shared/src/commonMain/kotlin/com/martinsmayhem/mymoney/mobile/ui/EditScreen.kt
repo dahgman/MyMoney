@@ -94,6 +94,7 @@ fun EditScreen(phone: Phone, view: LedgerView, platform: Platform, nav: Navigato
                     photos.forEach { phone.attach(uid, it) }
                 } else {
                     phone.edit(existing.uid, d)
+                    photos.forEach { phone.attach(existing.uid, it) }   // receipts added here
                 }
                 platform.syncSoon()
                 nav.back()
@@ -114,10 +115,15 @@ fun EditScreen(phone: Phone, view: LedgerView, platform: Platform, nav: Navigato
     }) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            // Account, Payment/Deposit, Date, Amount, Payee, Category, Description, then receipts.
+            // (Tag and memo aren't shown; a transaction's own are kept as they are.)
             if (existing == null) {
                 Picker("Account", synced.firstOrNull { it.uid == accountUid }?.name ?: "", synced.map { it.uid to it.name }) {
                     accountUid = it
                 }
+            } else {
+                OutlinedTextField(view.account(existing.accountUid)?.name ?: "", {}, label = { Text("Account") },
+                    enabled = false, modifier = Modifier.fillMaxWidth())   // a transaction stays in its account
             }
             if (existing?.cleared == true) {
                 Hint("Cleared: only its payee, category and status can be changed. To change the rest, set its" +
@@ -127,40 +133,36 @@ fun EditScreen(phone: Phone, view: LedgerView, platform: Platform, nav: Navigato
                 FilterChip(!deposit, { deposit = false }, label = { Text("Payment") }, enabled = can("amountCents"))
                 FilterChip(deposit, { deposit = true }, label = { Text("Deposit") }, enabled = can("amountCents"))
             }
-            OutlinedTextField(amount, { amount = it }, label = { Text("Amount") }, singleLine = true, prefix = { Text("$") },
-                enabled = can("amountCents"),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth())
             Box {
                 OutlinedTextField(Format.date(date, view.dateFormat()), {}, label = { Text("Date") }, readOnly = true,
                     enabled = can("date"), modifier = Modifier.fillMaxWidth())
                 if (can("date")) Box(Modifier.matchParentSize().clickable { pickDate = true })
             }
+            OutlinedTextField(amount, { amount = it }, label = { Text("Amount") }, singleLine = true, prefix = { Text("$") },
+                enabled = can("amountCents"),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth())
             Suggest("Payee", payee, view.payees(), Modifier.fillMaxWidth()) { payee = it }
             Box {
                 OutlinedTextField(view.categoryLabel(category), {}, label = { Text("Category or transfer") }, readOnly = true,
                     enabled = can("category"), modifier = Modifier.fillMaxWidth())
                 if (can("category")) Box(Modifier.matchParentSize().clickable { pickCategory = true })
             }
-            if (can("tag")) {
-                Suggest("Tag", tag, view.snapshot.tags.map { it.name }, Modifier.fillMaxWidth()) { tag = it }
-            } else {
-                OutlinedTextField(tag, {}, label = { Text("Tag") }, enabled = false, modifier = Modifier.fillMaxWidth())
-            }
-            OutlinedTextField(memo, { memo = it }, label = { Text("Memo") }, enabled = can("memo"), modifier = Modifier.fillMaxWidth())
             OutlinedTextField(description, { description = it }, label = { Text("Description") }, enabled = can("description"),
                 modifier = Modifier.fillMaxWidth())
+            if (existing?.mirror != true) {
+                Text("Receipts", style = MaterialTheme.typography.titleSmall)
+                val saved = existing?.let { view.phonePhotos(it.uid) } ?: emptyList()
+                val thumbs = saved.map { storedThumbnail(phone, platform, it.receiptId) to (if (it.waiting) "Waiting to send" else null) } +
+                    remember(photos) { photos.map { platform.imageBitmap(it.thumbnail) to "Added" } }
+                Thumbnails(thumbs)
+                ReceiptButtons(platform, { problem = it }) { photos = photos + it }
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(num, { num = it }, label = { Text("Num") }, singleLine = true, enabled = can("num"),
                     modifier = Modifier.weight(1f))
                 Box(Modifier.weight(1f)) {
                     Picker("Status", Format.status(status), Format.phoneStatuses.map { it to Format.status(it) }) { status = it }
                 }
-            }
-            if (existing == null) {
-                Text("Receipts", style = MaterialTheme.typography.titleSmall)
-                val thumbs = remember(photos) { photos.map { platform.imageBitmap(it.thumbnail) to null } }
-                Thumbnails(thumbs)
-                ReceiptButtons(platform, { problem = it }) { photos = photos + it }
             }
             problem?.let { Text(it, color = Negative) }
             Button(onClick = ::save, modifier = Modifier.fillMaxWidth()) { Text("Save") }

@@ -269,7 +269,7 @@ public class MainFrame extends javax.swing.JFrame {
             }
         });
 
-        // Future-dated transactions are drawn with grey text, in every column.
+        // Transactions still to come (scheduled, dated ahead) are drawn with grey text, in every column.
         ledgerTable.setDefaultRenderer(Object.class, muted(ledgerTable.getDefaultRenderer(Object.class)));
 
         DefaultTableCellRenderer right = new DefaultTableCellRenderer();
@@ -892,7 +892,7 @@ public class MainFrame extends javax.swing.JFrame {
                 : ledgerModel.isSavedRow(row) && ledgerModel.transactionId(row) == editingTxn;
     }
 
-    /** Text color for transactions dated after today. */
+    /** Text color for transactions still to come (LedgerTableModel.ahead). */
     private static final Color FUTURE_TEXT = new Color(128, 128, 128);         // grey
 
     /**
@@ -3105,7 +3105,7 @@ public class MainFrame extends javax.swing.JFrame {
                 if (showTreeBalances && value instanceof DefaultMutableTreeNode n
                         && n.getUserObject() instanceof Account a && treeBalances.containsKey(a.id())) {
                     setToolTipText(a.type() == AccountType.ENVELOPE
-                            ? "Current balance (transactions through today)" : "Cleared balance");
+                            ? "Current balance (transactions through today, and those entered ahead)" : "Cleared balance");
                 }
                 return this;
             }

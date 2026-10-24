@@ -37,7 +37,7 @@ import javax.swing.table.TableCellRenderer;
  * account tree, is clicked): the net worth, then widgets.
  *
  * Accounts widget: every account, grouped by type like the tree, with its
- * current balance (every transaction dated today or earlier) and a bar for
+ * current balance (every transaction dated today or earlier, or entered ahead) and a bar for
  * it, from a zero line: blue right for money you have, red left for money
  * owed. The numbers are the bars' labels; hovering a bar shows it too.
  * Double-clicking an account opens its ledger.
@@ -147,7 +147,7 @@ final class SummaryPanel extends JPanel {
                 .max().orElse(0);
         netWorth.setText(Money.format(total));
         asOf.setText("All accounts, as of " + LocalDate.now().format(DateTimeFormatter.ofPattern("MMMM d, yyyy"))
-                + " (transactions dated today or earlier)");
+                + " (transactions dated today or earlier, and those entered ahead)");
         model.fireTableDataChanged();
         table.setPreferredScrollableViewportSize(table.getPreferredSize());
         accountsCard.setMaximumSize(new Dimension(Integer.MAX_VALUE, accountsCard.getPreferredSize().height));

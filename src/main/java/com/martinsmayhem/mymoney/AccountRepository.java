@@ -173,16 +173,27 @@ public class AccountRepository {
     }
 
     /**
+     * A transaction dated ahead that counts as done already (SQL, for txn t in
+     * account a): one not Scheduled. Not in a loan, whose balance follows its
+     * dates (its calculated interest is dated ahead, and marked Cleared).
+     */
+    static final String COMMITTED = "(t.status <> 'S' AND a.type <> 'LOAN'"
+            + " AND NOT EXISTS (SELECT 1 FROM split x WHERE x.txn_id = t.id AND x.loan_interest = 2))";
+
+    /**
      * An account's balance on a date: its opening balance and adjustment plus
-     * every transaction dated on or before it, whatever its status.
+     * every transaction dated on or before it, whatever its status. From today
+     * on, also those dated later that are committed (see COMMITTED): entered,
+     * not just scheduled, they count as done.
      */
     public long balanceThrough(long accountId, java.time.LocalDate date) throws SQLException {
+        boolean fromToday = !date.isBefore(java.time.LocalDate.now());
         try (PreparedStatement ps = conn.prepareStatement("""
                 SELECT a.opening_balance_cents + a.balance_adjustment_cents
                        + COALESCE((SELECT SUM(s.amount_cents) FROM split s JOIN txn t ON t.id = s.txn_id
-                                   WHERE t.account_id = a.id AND t.txn_date <= ?), 0)
+                                   WHERE t.account_id = a.id AND (t.txn_date <= ? %s)), 0)
                 FROM account a WHERE a.id = ?
-                """)) {
+                """.formatted(fromToday ? "OR " + COMMITTED : ""))) {
             ps.setString(1, date.toString());
             ps.setLong(2, accountId);
             try (ResultSet rs = ps.executeQuery()) {
@@ -669,12 +680,13 @@ public class AccountRepository {
      * The balance shown next to each account in the account tree, by account id:
      * the cleared balance (opening + reconciled, cleared and reconciling), except
      * for envelopes and loans, which show their current balance (opening +
-     * every transaction dated today or earlier; for a loan, its remaining
-     * balance, as its top panel shows it).
+     * every transaction dated today or earlier, or committed (see COMMITTED);
+     * for a loan, its remaining balance, as its top panel shows it).
      */
     public java.util.Map<Long, Long> treeBalances() throws SQLException {
         String sql = "SELECT a.id, a.opening_balance_cents + a.balance_adjustment_cents + COALESCE(SUM(CASE"
-                + " WHEN a.type IN ('ENVELOPE', 'LOAN') THEN CASE WHEN t.txn_date <= ? THEN s.amount_cents END"
+                + " WHEN a.type IN ('ENVELOPE', 'LOAN') THEN CASE WHEN t.txn_date <= ? OR " + COMMITTED
+                + " THEN s.amount_cents END"
                 + " WHEN t.status IN (?, ?, ?) THEN s.amount_cents END), 0)"
                 + " FROM account a LEFT JOIN txn t ON t.account_id = a.id LEFT JOIN split s ON s.txn_id = t.id"
                 + " GROUP BY a.id";

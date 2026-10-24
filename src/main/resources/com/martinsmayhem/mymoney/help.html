@@ -126,6 +126,11 @@ type into it, and it's saved as soon as it has an amount. Ctrl+N jumps to it.</p
       its status to None first). <b>Reconciled</b> ones are locked the same way, but their tag
       can change too. Neither's category can make it into, or out of, a transfer. These hold
       here, in the transaction window, in Edit Transactions and from the phone.</li>
+  <li><b>Dated ahead:</b> a transaction dated after today that's still <i>Scheduled</i> is still to
+      come: it's in grey, below the blank row, and not in the current balance. Give it any other
+      status (None, Pending, Paid, ...) and it's <b>committed</b>: treated as done, among today's
+      transactions, and counted in the current balance (Summary, envelopes, the phone). Loans
+      follow their dates, so their calculated interest isn't counted early.</li>
   <li><b>Tab</b> and <b>Shift+Tab</b> move from field to field of the transaction you're
       editing (round to the first after the last), without saving it yet: the row stays white
       while it has changes. <b>Enter</b> saves all of them at once (one step for Undo) and

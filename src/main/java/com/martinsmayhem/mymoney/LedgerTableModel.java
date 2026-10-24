@@ -16,10 +16,10 @@ import javax.swing.table.AbstractTableModel;
  * The ledger for one account, edited in place.
  *
  * Every saved transaction is a row, plus one blank row for entering a new
- * transaction, placed just below the last transaction dated today or earlier
- * (so above any future-dated ones). The blank row is saved as soon as it gets
- * a Payment or Deposit amount, and a fresh blank row takes its place. Edits to saved rows
- * are written to the database as soon as each cell is changed.
+ * transaction, placed just below the last transaction dated today or earlier,
+ * or committed ahead (so above the ones still to come; see ahead). The blank
+ * row is saved by recordDraft (Enter), and a fresh blank row takes its place.
+ * Edits to a saved row are kept until commitEdit saves them all at once.
  *
  * A reconciled transaction is locked, except for its status, category and
  * tag: none of them changes any account balance. (Changing the status away
@@ -352,14 +352,14 @@ public class LedgerTableModel extends AbstractTableModel {
 
     /**
      * Puts the blank row just below the last transaction dated today or
-     * earlier, so it sits above the future-dated ones (at the top if every
-     * transaction is in the future, at the bottom if none is).
+     * earlier (or committed, see ahead), so it sits above the ones still to
+     * come (at the top if every transaction is, at the bottom if none is).
      */
     private void placeDraft() {
         LocalDate today = LocalDate.now();
         draftIndex = 0;
         for (int i = 0; i < entries.size(); i++) {
-            if (!entries.get(i).date.isAfter(today)) {
+            if (!ahead(entries.get(i), today)) {
                 draftIndex = i + 1;
             }
         }
@@ -506,7 +506,7 @@ public class LedgerTableModel extends AbstractTableModel {
         int best = -1;
         for (int i = 0; i < entries.size(); i++) {
             LedgerEntry e = entries.get(i);
-            if (e.date.isAfter(today)) {
+            if (ahead(e, today)) {
                 continue;
             }
             if (best < 0) {
@@ -521,9 +521,19 @@ public class LedgerTableModel extends AbstractTableModel {
         return best < 0 || best < draftIndex ? best : best + 1;     // skip over the blank row
     }
 
-    /** True for a saved transaction dated after today. */
+    /** True for a saved transaction still to come (see ahead): drawn in grey. */
     public boolean isFuture(int row) {
-        return isSavedRow(row) && entryAt(row).date.isAfter(LocalDate.now());
+        return isSavedRow(row) && ahead(entryAt(row), LocalDate.now());
+    }
+
+    /**
+     * True for a transaction still to come: dated after today and still
+     * Scheduled (or a loan's calculated interest). One dated ahead with any
+     * other status is committed: it's treated as done, like today's, in its
+     * place among them and in the balances (see AccountRepository.COMMITTED).
+     */
+    static boolean ahead(LedgerEntry e, LocalDate today) {
+        return e.date.isAfter(today) && (e.status == TxnStatus.SCHEDULED || e.scheduledInterest);
     }
 
     /**
@@ -1122,10 +1132,10 @@ public class LedgerTableModel extends AbstractTableModel {
 
     /** Current before future; then the sort levels in order, then date and entry order to break ties. */
     private Comparator<LedgerEntry> sortOrder() {
-        // Future-dated transactions always come after the rest, whatever the sort,
-        // so the blank row (placed after the last current one) divides the two.
+        // Transactions still to come (see ahead) always come after the rest, whatever the
+        // sort, so the blank row (placed after the last current one) divides the two.
         LocalDate today = LocalDate.now();
-        Comparator<LedgerEntry> order = Comparator.comparing(e -> e.date.isAfter(today));
+        Comparator<LedgerEntry> order = Comparator.comparing(e -> ahead(e, today));
         for (SortKey k : sortKeys) {
             order = order.thenComparing(columnOrder(k.column(), k.ascending()));
         }
@@ -1148,7 +1158,7 @@ public class LedgerTableModel extends AbstractTableModel {
                 // Future transactions are all simply upcoming: status doesn't separate them, so the
                 // next sort level (normally Date) keeps them in date order, Scheduled or not.
                 LocalDate today = LocalDate.now();
-                yield by(e -> e.date.isAfter(today) ? FUTURE_RANK : statusRank(e),
+                yield by(e -> ahead(e, today) ? FUTURE_RANK : statusRank(e),
                         Comparator.<Integer>naturalOrder(), ascending);
             }
             case PAYMENT -> amountOrder(true, ascending);

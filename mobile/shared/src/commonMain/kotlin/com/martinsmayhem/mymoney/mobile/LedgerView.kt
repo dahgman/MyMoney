@@ -197,7 +197,7 @@ class LedgerView(val state: PhoneState) {
     /**
      * An account's transactions in the computer's ledger order (by status:
      * Reconciled, Cleared, transfers to an envelope, Pending, Paid, Scheduled,
-     * then none; each by date; transactions dated after today last, by date),
+     * then none; each by date; scheduled ones dated after today last, by date),
      * with the balance after each running in that order, so the last cleared
      * one shows the cleared balance. Returned last first, as the phone shows
      * it (newest at the top). The phone's settings can leave out reconciled
@@ -206,9 +206,12 @@ class LedgerView(val state: PhoneState) {
      */
     fun ledger(accountUid: String, today: LocalDate, prefs: Prefs = state.prefs): List<LedgerRow> {
         var balance = accountsByUid[accountUid]?.ledgerStartCents ?: 0
+        // Still to come: dated after today and still Scheduled. Dated ahead with any other status, it's
+        // committed: treated as done, among today's (as on the computer, LedgerTableModel.ahead).
+        fun ahead(t: TxnView) = t.date > today && t.status == "S"
         val rows = transactions.filter { it.accountUid == accountUid }.withIndex()
-            .sortedWith(compareBy<IndexedValue<TxnView>>({ it.value.date > today })
-                .thenBy { if (it.value.date > today) 0 else statusRank(it.value) }
+            .sortedWith(compareBy<IndexedValue<TxnView>>({ ahead(it.value) })
+                .thenBy { if (ahead(it.value)) 0 else statusRank(it.value) }
                 .thenBy { it.value.date }.thenBy { it.index })
             .map { (_, t) ->
                 balance += t.netCents
